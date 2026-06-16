@@ -1,0 +1,34 @@
+# =============================================================================
+#  DO NOT COMMIT PROPRIETARY HEIDENHAIN / ORACLE ARTIFACTS
+# =============================================================================
+# The downloaded software package and everything extracted/derived from it is
+# copyrighted by Dr. Johannes Heidenhain GmbH (and Oracle, for VirtualBox).
+# It must NOT be redistributed (the JHIO extension pack license literally says
+# redistribution is "strongly prohibited"). Only original documentation/analysis
+# lives in this repository. See docs/09-legal.md.
+
+# The original download (OVA, MSIs, extpack, setup.zip, PDFs, installers, ...)
+34059518SP4/
+34059518/
+
+# All extracted / converted / derived artifacts (disk images, DLLs, rootfs, ...)
+work/
+
+# Raw disk images / VM artifacts anywhere
+*.vmdk
+*.ova
+*.raw
+*.img
+*.qcow2
+*.vdi
+*.vhd
+*.cab
+*.msi
+*.rpm
+*.tar.xz
+*.vbox-extpack
+
+# OS / editor noise
+.DS_Store
+*.swp
+*~
