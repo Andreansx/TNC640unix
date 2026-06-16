@@ -23,7 +23,7 @@ how it is built and what it would take to run it elsewhere.
 This repository contains **only original documentation and analysis**. It deliberately does
 **not** contain any HEIDENHAIN or Oracle software. The downloaded package, the VM image, the
 extension pack, the manuals, and everything extracted from them are proprietary and are
-**git‑ignored** (`34059518SP4/`, `34059518/`, `work/`). Do not commit them. Full reasoning, including why
+**git‑ignored**. Full reasoning, including why
 the documentation itself is lawful (EU interoperability rights) while redistributing the
 binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
 
@@ -43,6 +43,7 @@ binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
 | [10 — Methodology](docs/10-methodology.md) | Exactly how this was analysed (reproducible) |
 | [11 — Running on x86‑64 Linux](docs/11-running-on-linux.md) | **Verified** procedure: boots the real control headless under VirtualBox |
 | [12 — Keypad: full button map](docs/12-keypad-keymap.md) | Every keypad button + the exact code it sends (the input protocol) |
+| [13 — Investigation log](docs/13-investigation-log.md) | The full dissection story: what was checked → what was learned, step by step |
 | [reference/](docs/reference/) | Hard data tables: OVF summary, partition map, file inventories |
 
 ## TL;DR of findings
