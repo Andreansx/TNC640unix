@@ -42,6 +42,7 @@ binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
 | [09 — Legal & redistribution](docs/09-legal.md) | Copyright, EULA/ToS, can the repo be public |
 | [10 — Methodology](docs/10-methodology.md) | Exactly how this was analysed (reproducible) |
 | [11 — Running on x86‑64 Linux](docs/11-running-on-linux.md) | **Verified** procedure: boots the real control headless under VirtualBox |
+| [12 — Keypad: full button map](docs/12-keypad-keymap.md) | Every keypad button + the exact code it sends (the input protocol) |
 | [reference/](docs/reference/) | Hard data tables: OVF summary, partition map, file inventories |
 
 ## TL;DR of findings
