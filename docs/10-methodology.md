@@ -1,12 +1,15 @@
 # 10 — Methodology & Reproduction
 
 How the analysis was done, so it can be re‑checked or extended. All steps were **read‑only**
-against a copy of the package; the VM was never booted or modified, and nothing proprietary was
-committed.
+against a copy of the package; during this static analysis the VM was never booted or modified, and nothing proprietary was
+committed. (The dynamic bring-up that does boot it is covered in
+[11-running-on-linux.md](11-running-on-linux.md).)
 
 ## Host & tools
 
-- Host: macOS (Apple Silicon, M2 Max). Analysis tools via Homebrew:
+- Static-analysis host: macOS (Apple Silicon); tools via Homebrew. The later dynamic bring-up
+  was done on an x86-64 **Linux** host (see [11-running-on-linux.md](11-running-on-linux.md)),
+  using the Linux equivalents (`qemu-nbd`/`losetup` + `mount` in place of `hdiutil`).
   - `sevenzip` (`7z`/`7zz`), `cabextract`, `binwalk` — archive/PE inspection
   - `qemu` (`qemu-img`) — VMDK → raw conversion
   - `e2fsprogs` (`debugfs`, `dumpe2fs`) — **read ext4 without mounting** (no root, no FUSE)

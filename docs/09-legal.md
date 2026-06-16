@@ -33,7 +33,7 @@
 ## What we *can* do and publish
 
 Our **documentation, notes, measurements, diagrams, and any clean‑room code** we write are our
-own copyrightable work and are fine to publish. Key legal footing (EU, where the user is based):
+own copyrightable work and are fine to publish. Key legal footing (the EU is the most relevant jurisdiction here):
 
 - **Directive 2009/24/EC (Computer Programs Directive):**
   - **Art. 5(3)** — a lawful user may **observe, study and test** the program to determine the

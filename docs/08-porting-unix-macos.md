@@ -1,112 +1,127 @@
 # 08 — Porting to UNIX / macOS
 
-This is the project's actual goal. Below is an honest map of what's easy, what's hard, and a
-concrete plan. Nothing here has been *attempted* yet — it's the analysis‑backed strategy.
+This is the project's goal: run the programming station on UNIX-like systems instead of only
+Windows. The picture below separates what is done, what is portable, and what still needs work.
 
-## What's portable vs. Windows‑locked
+## Current status
+
+- **x86-64 Linux: working.** Under VirtualBox 7.1 on an x86-64 Linux host, the OVA installs the
+  NC software and boots into the live TNC 640 MMI in demo mode, fully headless, and the MMI
+  responds to injected keyboard input. Verified and reproducible — see
+  [11-running-on-linux.md](11-running-on-linux.md).
+- **Remaining:** a complete input solution / shippable on-screen keypad; the PLC-I/O (JHIO)
+  question for full machine power-on; and ARM64 hosts (including Apple Silicon).
+
+## What's portable vs. Windows-locked
 
 | Piece | Portable? | Notes |
 |---|---|---|
-| HeROS5 guest (the control itself) | ✅ yes | Stock VirtualBox Linux appliance; runs on any VirtualBox/QEMU **x86‑64** host |
-| VirtualBox | ✅ Linux/mac‑Intel; ⚠️ macOS‑ARM | VirtualBox exists for Linux and Intel macOS. On Apple‑Silicon it only runs **ARM** guests |
+| HeROS5 guest (the control itself) | ✅ yes | Stock VirtualBox Linux appliance; runs on any VirtualBox/QEMU **x86-64** host |
+| VirtualBox | ✅ Linux / Intel macOS; ⚠️ ARM | Exists for Linux and Intel macOS. On ARM64 it only virtualizes **ARM** guests |
 | Shared folders / guest properties | ✅ yes | Standard VBox features — reproducible with `VBoxManage` on any host |
-| `heuinput` FIFO input | ✅ yes | Pure guest‑side Linux; a Linux host keypad can feed it |
-| Handwheel (TCP 19035) | ✅ protocol | Need to reverse the wire format, then any client works |
-| **JHIO PLC‑I/O extpack** | ❌ Windows‑only, no source | The hard blocker — see below |
-| **Qt control suite** (`tncvbcntl`/`keypad`/`handwheel`) | ❌ Windows binaries | Qt is portable but we only have binaries; options below |
+| Keyboard input to the MMI | ✅ yes | The MMI reads X keyboard events; delivering them works on Linux (see below) |
+| Handwheel (TCP 19035) | ✅ protocol | Reimplementable once the wire format is captured |
+| **JHIO PLC-I/O extpack** | ❌ Windows-only, no source | The hard blocker for full machine behaviour — see below |
+| **Qt control suite** (`tncvbcntl`/`keypad`/`handwheel`) | ❌ Windows binaries | Qt is portable, but only binaries exist; substitute natively (below) |
 | USB dongle licensing | ➖ optional | Not needed for demo mode; dongles pass through by VID:PID on any host |
 
-## The two real blockers
+## The ARM64 / Apple-Silicon constraint
 
-### Blocker A — the guest is x86‑64; your Mac is ARM64
+The guest is **x86-64 Linux**. The reverse-engineering for this project began on an Apple-Silicon
+(ARM64) Mac, which surfaced the core constraint for any ARM64 host:
 
-HeROS5 is **x86‑64 Linux**. To run it you need x86‑64 execution:
+- **VirtualBox on ARM64 cannot run x86 guests** — the ARM build only virtualizes ARM guests, so
+  native VirtualBox is not an option for this VM on Apple Silicon.
+- **QEMU/UTM with full x86-64 emulation (TCG)** *can* boot it on ARM64, but it is **slow**, and
+  the control software has real-time expectations (PLC scan cycle, motion), so the machine
+  operating modes may be sluggish or unstable. Pure NC editing + simulation is more tolerant.
+- **The robust answer is a real x86-64 host** running VirtualBox/KVM natively with VT-x.
 
-- **VirtualBox on Apple Silicon cannot run x86 guests** (the ARM build only virtualizes ARM
-  guests). So native VirtualBox on the M2 Max is out for this VM.
-- **QEMU/UTM with full x86‑64 emulation (TCG)** *can* boot it on the M2, but it's **slow** —
-  and the control software has real‑time expectations (PLC scan cycle, motion), so emulation
-  may be sluggish or unstable for the operating modes (programming/simulation likely tolerable).
-- **The clean answer is a real x86‑64 host** running VirtualBox/KVM natively with VT‑x. This is
-  also what you already proved works (you booted the VMDK on a Linux VM).
+**Recommendation:** target an **x86-64 Linux host** for real use; treat ARM64 (Apple Silicon)
+as an emulation-only convenience path, or use a remote/headless x86-64 host with a thin client.
 
-→ **Recommendation:** do the bring‑up on an **x86‑64 Linux box**. Use the Mac as the
-workstation/SSH client. (You offered access to an x86‑64 machine — that's exactly what's
-needed; see "What I need from you" below.)
+## Input on Linux: keystroke injection vs. the original keypad
 
-### Blocker B — the host control suite + JHIO are Windows‑only
+**How input actually reaches the control.** The MMI is a Qt/X application that reads its keyboard
+from the guest's X server. On a real programming station the Windows `keypad.exe` is just one
+source of those key events. On Linux the *same* events can be delivered two ways, both verified:
 
-On a Linux x86 host we replace the Windows host suite with open equivalents:
+- **Hypervisor-level scancode injection** — `VBoxManage controlvm <vm> keyboardputscancode …`
+  (works headless; confirmed that **F1–F8 = the 8 horizontal soft keys**).
+- **In-guest X injection** — `xdotool` against the MMI's `:0` display (the guest ships
+  `xdotool`, and local X access is permissive), allowing named keys, typed strings, and mouse
+  clicks on soft keys by coordinate.
 
-- **Launcher** (`tncvbcntl`): trivially replaced by `VBoxManage` (import OVA, set shared
-  folders + guest properties, `startvm`) — `tncvbinst.dll`'s actions are effectively a
-  `VBoxManage` script (see [05](05-host-control-suite.md)).
-- **Screen**: the native VirtualBox GUI window already shows the control; no porting needed.
-- **Keypad**: a small Linux on‑screen keyboard that writes the right tokens into the guest's
-  `/tmp/__heuinput` (over SSH or VBox guest control). The hardest part is learning the token
-  vocabulary the real keypad sends.
-- **Handwheel**: optional; reimplement the TCP‑19035 client once the protocol is captured.
-- **JHIO PLC‑I/O** (the real unknown): either
-  1. **test whether demo programming/simulation works without it** (quite possibly yes for
-     pure NC editing + 3D simulation; the "machine operating modes" likely need it), or
-  2. **reimplement the host service** for VirtualBox‑on‑Linux. We have a strong spec already:
-     the `_JHIOIntern*` block API, the per‑PLC‑cycle handshake, and the memory‑mapped file in
-     the `IOsim` shared folder. A Linux daemon could mmap that file and run a minimal "machine
-     ready, all I/O nominal" model — `jhiosimhostd.exe` + `iosim.dll`/`plcmap.dll` are the
-     reference for the exact semantics.
+This is **genuine keyboard input** to the MMI through the normal X input path — not a hack or a
+"fake." It is exactly the channel any keyboard (including a reimplemented keypad) uses. So a
+Linux launcher does **not** need `keypad.exe` to be functional: it needs (a) an on-screen panel
+UI and (b) a way to deliver the correctly-mapped key events — and (b) is already solved.
 
-## Phased plan
+**Could the original `keypad.exe` run on Linux?** It is a Windows Qt6 binary. In principle it
+could run under **Wine**, but it manages/contacts the VM through the **Windows VirtualBox COM
+API** plus HEIDENHAIN-specific channels, which do not translate cleanly under Wine against a
+Linux VirtualBox — fragile at best, and doubly so on ARM64 (x86 Windows under Wine + CPU
+emulation). It also **cannot be redistributed** (proprietary). So shipping or running the
+original keypad is not a sound basis for a cross-platform launcher.
 
-**Phase 0 — capture a golden reference (needs a Windows x86 PC, optional but very valuable).**
-Install the real product once and record how it wires everything, so we don't reverse‑engineer
-blind: `VBoxManage showvminfo` of the created VM, the generated `.vbox`, the exact shared‑folder
-names/paths, all `/HEIDENHAIN/*` guest properties, a packet capture of handwheel:19035 and any
-keypad traffic, and the contents of the `IOsim` mmap file while running. This single capture
-de‑risks Phases 2–3 enormously.
+**Does decompiling `keypad.exe` make sense?** Limited value:
 
-**Phase 1 — boot the guest on x86‑64 Linux (no host suite).** `VBoxManage import TNCvbProg.ova`;
-add shared folders `Install`/`IOsim`/`PLC`/`TNC` pointing at host dirs; set the known
-`/HEIDENHAIN/*` guest properties; `startvm`. Let it flash `setup.zip` on first boot. Goal: reach
-the control MMI on screen. (This is roughly what you did; we'll do it deliberately and
-documented.)
+- It is compiled C++ (Qt6). Decompilation yields unmaintainable pseudo-code, not real source.
+- Its embedded **QML/resources** (layouts, soft-key labels, icons) can be *extracted* for visual
+  reference, and static analysis can reveal the **exact key codes and the protocol** it uses to
+  deliver keys to the guest. *Studying* it for that is worthwhile to make a native keypad
+  faithful. *Running or "porting" the binary itself* is not.
 
-**Phase 2 — input.** Get a keystroke into the running control by writing to `/tmp/__heuinput`
-(via SSH/guest‑control). Build/borrow a minimal on‑screen keypad. Goal: navigate menus, type an
-NC program.
+**Recommended approach — a native, open keypad.** Build a small native on-screen panel (any
+toolkit) that reproduces the TNC key layout and injects the mapped key events into the guest via
+the proven channel. This is cross-platform (Linux, macOS, any arch), needs no proprietary
+redistribution, and is robust. The open work item is completing the **PC-key → TNC-key map**
+(partly documented; F1–F8 confirmed) — best informed by the captured keypad protocol plus the
+HEIDENHAIN keyboard documentation.
 
-**Phase 3 — decide on JHIO.** Determine empirically what *doesn't* work without the I/O sim. If
-programming + simulation are fine, document "demo programming station on Linux works." If the
-operating modes are needed, prototype a Linux JHIO host service against the `IOsim` mmap file.
+## The JHIO PLC-I/O question
 
-**Phase 4 — package & document** a reproducible Linux setup (scripts + this documentation). A
-macOS‑ARM path (UTM/QEMU emulation) can be evaluated separately as a convenience, accepting the
-performance hit.
+For full **machine operating modes** (power-on / control voltage / axis motion), the guest PLC
+expects an I/O peer every scan cycle. On Windows that is the JHIO extension pack feeding
+`iosim.dll`; there is no non-Windows build and no source (see
+[05](05-host-control-suite.md) and [06](06-bridge-and-io.md)). Two paths:
 
-## What I need from you
+1. **Determine empirically what needs it.** Pure NC-program editing and toolpath simulation in
+   Programming/Test mode may not require it; the operating modes likely do. Measure this before
+   investing in a reimplementation.
+2. **Reimplement the host service** for VirtualBox-on-Linux. The interface is well understood:
+   the `_JHIOIntern*` block API, the per-PLC-cycle handshake
+   (`SignalPlcCycleDone`/`WaitForSimCycleDone`), and a memory-mapped file in the `IOsim` shared
+   folder; `jhiosimhostd.exe` + `iosim.dll`/`plcmap.dll` are the behavioural reference.
 
-To make real progress, in rough priority order:
+## A native launcher (replacing the Windows host suite)
 
-1. **An x86‑64 Linux box** (the most useful thing). Ideally:
-   - Ubuntu/Debian 22.04+ (or similar), **bare‑metal or a host with nested‑virt enabled**, with
-     **VT‑x/AMD‑V available to the OS** (check `egrep -c '(vmx|svm)' /proc/cpuinfo` > 0).
-   - ≥ **8 GB RAM** free, ≥ **40 GB** free disk, `sudo`, internet for `apt`.
-   - **SSH access** for me (or you running commands I provide). Tell me the distro/version and
-     whether it's bare‑metal or itself a VM (nested virt matters).
-2. **The product download** present on that box (the same `34059518SP4/`), since the VM image
-   isn't in this repo (and must not be). You already have it locally.
-3. **Optional but high‑value: one‑time access to a Windows x86 PC** to do the Phase‑0 golden
-   capture (even a throwaway/eval VM). If that's not possible, we proceed by experimentation.
-4. **Confirm intent/scope** for licensing: are we targeting **demo mode** (no dongle — simplest,
-   fully legal to run) or do you hold a license/dongle you want to use? Demo is the default.
+On an x86-64 Linux host the Windows host suite maps to open equivalents:
 
-Tell me which of these you can provide and I'll give you exact, copy‑pasteable steps (or drive
-it over SSH).
+- **Launcher** (`tncvbcntl`): replaced by `VBoxManage` (import OVA, set shared folders + guest
+  properties, `startvm`) — the install-time custom actions are effectively a `VBoxManage` script.
+  See `scripts/setup_vm.sh` and [11](11-running-on-linux.md).
+- **Screen**: the native VirtualBox window shows the control; for headless/remote use, capture
+  with `VBoxManage … screenshotpng`, or enable VRDE (needs Oracle's extpack) / a VNC into the
+  guest.
+- **Keypad / handwheel**: native reimplementations as described above.
+
+## Reproducing / extending this
+
+- An **x86-64 Linux host** with hardware virtualization (`vmx`/`svm`) available to the OS —
+  bare-metal or a VM with **nested virtualization** enabled; ≥ 8 GB RAM, ≥ 40 GB free disk, KVM.
+- The HEIDENHAIN package, obtained legitimately — it is **not** in this repo
+  (see [09-legal.md](09-legal.md)).
+- VirtualBox 7.1.x. Full steps in [11-running-on-linux.md](11-running-on-linux.md).
+- **Optional, high value:** a one-time capture on a Windows install ("golden reference") of how
+  the real `keypad.exe`/`handwheel.exe` talk to the VM — the cleanest way to nail the keypad and
+  handwheel (TCP 19035) protocols for native reimplementations.
 
 ## Reality check
 
-- A **demo‑mode programming station on x86‑64 Linux** is very likely achievable and is the
-  right first milestone.
-- **Full machine‑operating‑mode behaviour** depends on the JHIO I/O sim, which needs either a
-  tolerance test or a reimplementation — solvable but the deepest work.
-- **Native, smooth operation on the Apple‑Silicon Mac itself** is the least realistic near‑term
-  outcome (x86 emulation cost); plan to use a Linux x86 host and treat the Mac as the client.
+- A **demo-mode programming station on x86-64 Linux** is achieved and is the right first
+  milestone; NC editing + simulation are the natural next demonstrations.
+- **Full machine-operating-mode behaviour** depends on the JHIO I/O sim — solvable, but the
+  deepest work.
+- **Native, smooth operation on ARM64 (Apple Silicon)** is the least realistic near-term outcome
+  because of x86 emulation cost; an x86-64 Linux host (local or remote) is the practical target.
