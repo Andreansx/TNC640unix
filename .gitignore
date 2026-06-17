@@ -28,6 +28,16 @@ work/
 *.tar.xz
 *.vbox-extpack
 
+# Proprietary host binaries (defense in depth; they also live under work/)
+*.exe
+*.dll
+
+# Python virtualenv / caches for the native keypad dev (keypad/ source IS committed)
+.venv-keypad/
+.venv/
+__pycache__/
+*.pyc
+
 # OS / editor noise
 .DS_Store
 *.swp

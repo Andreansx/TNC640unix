@@ -1,0 +1,4 @@
+# Native TNC 640 keypad - Python dependencies.
+# Only PySide6 (Qt 6) is needed for the GUI. The "Essentials" wheel is enough
+# and much smaller than the full PySide6.
+PySide6-Essentials>=6.6

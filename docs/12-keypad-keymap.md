@@ -28,16 +28,28 @@ buttons use `operation = "M_" + pngfile`.
 `keypad.exe` detects the target (`typeOfVm`: 1=VBox, 2=VMware, 3=WindowsTnc) and delivers keys
 two ways:
 
-- **Virtual machine (VBox/VMware)** → it starts the guest's `heuinput` service and writes
-  tokens to the FIFO **`/tmp/__heuinput`**. `heuinput` synthesizes the keypress via Linux
-  **`uinput`**. Token format (from `heuinput` itself):
-  ```
-  KP <code>\n     key press        KR <code>\n     key release
-  ```
-  where `<code>` is a **Linux input keycode** (decimal, or `0x..` hex). Modifiers are sent as
-  their own press/release around the key.
+- **Virtual machine (VBox/VMware)** — two equivalent mechanisms are present in the binary:
+  - **VirtualBox `putScancodes`** — it injects raw **AT scancode set 1** straight into the
+    emulated keyboard via the VirtualBox COM API `IKeyboard::putScancodes` (the binary contains
+    the diagnostics `VBox putScancodes: GetKeyboard failed!` / `LockMachine failed!` …). This is
+    **identical to `VBoxManage controlvm <vm> keyboardputscancode <bytes…>`** and needs nothing
+    inside the guest. *This is the mechanism our native keypad uses by default.*
+  - **`heuinput` FIFO** — alternatively it starts the guest service (`/etc/init.d/heuinput
+    start`) and appends tokens to the FIFO **`/tmp/__heuinput`** (`… >>/tmp/__heuinput`).
+    `heuinput` synthesizes the keypress via Linux **`uinput`**. Token format (from `heuinput`
+    itself):
+    ```
+    KP <code>\n     key press        KR <code>\n     key release
+    ```
+    where `<code>` is a **Linux input keycode** (decimal, or `0x..` hex). Modifiers are sent as
+    their own press/release around the key.
 - **Real control on Windows (`WindowsTnc`)** → it connects over TCP and uses the **LSV2
   `KeyPress`** command (HEIDENHAIN's protocol, the one TNCremo also speaks).
+
+Because the VBox path is just `putScancodes`, a host‑side keypad can be **fully faithful** to
+the original with no guest cooperation at all — it only needs to convert each `operation` into
+the right AT set‑1 make/break bytes (with `CTRL`=`0x1D`, `ALT`=`0x38`, `SHIFT`=`0x2A` wrapped
+around the key, extended keys prefixed with `0xE0`).
 
 ## Keycode conventions (important)
 
@@ -186,3 +198,27 @@ soft-key-1 = `3b bb`.
 
 This makes a faithful, cross-platform keypad possible with **no proprietary redistribution** and
 no dependency on `keypad.exe`.
+
+## Implemented: `keypad/` (native, cross‑platform)
+
+A working clean‑room keypad lives in [`../keypad/`](../keypad/) (PySide6 / Qt 6, Python):
+
+- `tnckeymap.py` — the full `operation → Linux keycode (+modifiers) → AT set‑1 scancodes /
+  heuinput tokens` table, with a self‑test. Run it to dump the table.
+- `transport.py` — `vbox` (default, `putScancodes`), `heuinput`, and `dry` backends.
+- `tnc_keypad.py` — the GUI, reproducing the horizontal NC layout (`qml_08`) panel‑for‑panel.
+
+**Live validation (vbox transport, against the running TNC 640 in demo mode):**
+
+| Key | Sent (AT set‑1) | Result |
+|---|---|---|
+| `CE` | `53 d3` | clears entry / dialogs |
+| soft‑key 1 (F1) | `3b bb` | presses horizontal soft key 1 |
+| `MOD` (Ctrl+Alt+M) | `1d 38 32 b2 b8 9d` | opens Settings/MOD window |
+| `EDIT` (Ctrl+Alt+4) | `1d 38 05 85 b8 9d` | switches to Programming mode |
+| `PGMMGT` (Ctrl+Alt+P) | `1d 38 19 99 b8 9d` | opens file management (Programming mode) |
+
+Both no‑modifier keys and Ctrl+Alt combinations work via a single `putScancodes` burst.
+Operations that the control gates by context (e.g. `PGMMGT` only opens file management while in
+Programming mode) behave exactly as on the real machine. One key, `VSKDOWN` (vertical soft‑key
+scroll‑down), has no entry in the guest keymap and is left unmapped pending further live testing.

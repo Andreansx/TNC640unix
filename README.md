@@ -46,6 +46,10 @@ binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
 | [13 — Investigation log](docs/13-investigation-log.md) | The full dissection story: what was checked → what was learned, step by step |
 | [reference/](docs/reference/) | Hard data tables: OVF summary, partition map, file inventories |
 
+Plus working code: [**`keypad/`**](keypad/) — a native, cross‑platform on‑screen keypad
+(PySide6) that replaces the Windows‑only `keypad.exe`, reproducing its button layout and
+sending the same key codes via VirtualBox's `putScancodes`. Validated live against the control.
+
 ## TL;DR of findings
 
 - The product is **VirtualBox + a hardened Linux guest (HeROS5) + a Qt host "Control Panel"**.
