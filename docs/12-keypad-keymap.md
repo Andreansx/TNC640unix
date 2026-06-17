@@ -206,7 +206,10 @@ A working clean‑room keypad lives in [`../keypad/`](../keypad/) (PySide6 / Qt 
 - `tnckeymap.py` — the full `operation → Linux keycode (+modifiers) → AT set‑1 scancodes /
   heuinput tokens` table, with a self‑test. Run it to dump the table.
 - `transport.py` — `vbox` (default, `putScancodes`), `heuinput`, and `dry` backends.
-- `tnc_keypad.py` — the GUI, reproducing the horizontal NC layout (`qml_08`) panel‑for‑panel.
+- `tnc_keypad.py` — the GUI, reproducing **both** original NC panels:
+  `--layout vertical` (`qml_07`, what `keypad.exe -nv` / the desktop launcher opens — the default)
+  and `--layout horizontal` (`qml_08`, `keypad.exe -n`). Both layouts use the **same** `operation`
+  set and therefore the same key codes; only the arrangement differs.
 
 **Live validation (vbox transport, against the running TNC 640 in demo mode):**
 

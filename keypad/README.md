@@ -5,15 +5,17 @@ programming station** running under VirtualBox on UNIX‑like systems (Linux,
 macOS, …). It replaces the Windows‑only `keypad.exe` ("steering panel") with a
 clean‑room reimplementation.
 
-![keypad layout](preview.png)
-
-It reproduces the button **layout** of the original NC panel
-(`keypad.exe`'s *"NC Steuerungsbedienfeld horizontal"*) and, for every button,
-sends the **same keypress** the original would — by default through
-VirtualBox's `putScancodes`, which is exactly what `keypad.exe` itself does for
-a VBox VM (`IKeyboard::putScancodes`). No HEIDENHAIN code or icons are used;
-labels are plain text and every key code is documented in
+It reproduces **both** original NC panel layouts and, for every button, sends the
+**same keypress** the original would — by default through VirtualBox's
+`putScancodes`, which is exactly what `keypad.exe` itself does for a VBox VM
+(`IKeyboard::putScancodes`). No HEIDENHAIN code or icons are used; labels are plain
+text and every key code is documented in
 [`../docs/12-keypad-keymap.md`](../docs/12-keypad-keymap.md).
+
+| **Vertical** (`--layout vertical`, default) | **Horizontal** (`--layout horizontal`) |
+|:---:|:---:|
+| from `keypad.exe -nv`, the panel the desktop launcher opens | from `keypad.exe -n` |
+| ![vertical](preview-vertical.png) | ![horizontal](preview.png) |
 
 > Clean‑room: the mapping was reconstructed from the keypad's QML (button →
 > `operation` string), the guest keymap (`keymap_te530_*_vbox.xml`), the
@@ -33,14 +35,17 @@ pip install -r requirements.txt                   # PySide6
 ## Run
 
 ```sh
-# Send keys to a running VirtualBox VM named "TNC640" (default transport):
+# Vertical panel (default) -> running VirtualBox VM named "TNC640":
 python3 tnc_keypad.py --vm TNC640
+
+# Horizontal panel instead:
+python3 tnc_keypad.py --layout horizontal --vm TNC640
 
 # Develop / inspect codes without a VM (prints what would be sent):
 python3 tnc_keypad.py --transport dry
 
-# Render the layout to a PNG and exit (works headless):
-QT_QPA_PLATFORM=offscreen python3 tnc_keypad.py --screenshot preview.png
+# Render a layout to a PNG and exit (works headless):
+QT_QPA_PLATFORM=offscreen python3 tnc_keypad.py --layout vertical --screenshot preview-vertical.png
 ```
 
 Hover any button to see its `operation`, the AT scancodes, and the `heuinput`
@@ -75,7 +80,7 @@ PC keyboard (they reach the control unchanged).
 |---|---|
 | `tnckeymap.py` | The mapping: `operation` → Linux keycode (+ modifiers) → AT set‑1 scancodes / `heuinput` tokens. Run it directly to dump the full table and self‑test. |
 | `transport.py` | The three delivery backends (`vbox`, `heuinput`, `dry`). |
-| `tnc_keypad.py` | The PySide6 GUI: the panel layout + wiring. |
+| `tnc_keypad.py` | The PySide6 GUI: both panel layouts (`vertical` = qml_07, `horizontal` = qml_08) + wiring. Both drive the exact same key codes. |
 | `requirements.txt` | PySide6. |
 
 ## Validation status
