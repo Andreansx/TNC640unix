@@ -10,11 +10,28 @@ dry‑run G‑code / Klartext (conversational) NC programs without a real machin
 wasting material. HEIDENHAIN ships it as a **Windows‑only** product. This project documents
 how it is built and what it would take to run it elsewhere.
 
-> **Status:** Architecture fully mapped **and** the real control now **boots on x86‑64 Linux**.
-> Under VirtualBox 7.1 on an x86‑64 host the OVA installs the NC software and reaches the live
-> TNC 640 MMI in demo mode, headless — verified, reproducible (see
-> [docs/11](docs/11-running-on-linux.md)). Remaining: full input mapping and the PLC‑I/O (JHIO)
-> question. See [`docs/`](docs/).
+> **Status:** Architecture fully mapped, the real control **runs on x86‑64 Linux**, the input
+> protocol is reverse‑engineered, and there's a **native keypad** plus a one‑command launcher.
+> Remaining: the PLC‑I/O (JHIO) question for full machine power‑on. See [`docs/`](docs/).
+
+---
+
+## 🚀 Quickstart
+
+You supply the official HEIDENHAIN package (see [docs/14](docs/14-install-and-run.md) §2);
+this repo is the glue. On an **x86‑64 Linux PC** with **VirtualBox 7.1+** and **Python 3**:
+
+```sh
+git clone https://github.com/Andreansx/TNC640unix && cd TNC640unix
+./tnc640 doctor                                    # check prerequisites
+./tnc640 keypad --install-deps                     # install the keypad's PySide6
+./tnc640 setup --package /path/to/HEIDENHAIN/download   # first time only (~15-20 min)
+./tnc640 run                                       # start the control + keypad
+```
+
+Everyday use is just `./tnc640 run` (and `./tnc640 stop`). Full manual:
+**[docs/14 — Install & Run](docs/14-install-and-run.md)**. It runs in **demo mode** — no
+dongle, no license needed (100 NC lines / 10 CAD elements).
 
 ---
 
@@ -44,11 +61,14 @@ binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
 | [11 — Running on x86‑64 Linux](docs/11-running-on-linux.md) | **Verified** procedure: boots the real control headless under VirtualBox |
 | [12 — Keypad: full button map](docs/12-keypad-keymap.md) | Every keypad button + the exact code it sends (the input protocol) |
 | [13 — Investigation log](docs/13-investigation-log.md) | The full dissection story: what was checked → what was learned, step by step |
+| [14 — Install & run (the manual)](docs/14-install-and-run.md) | **Start here to run it.** Prerequisites, getting the package, `./tnc640 setup`/`run`, troubleshooting |
 | [reference/](docs/reference/) | Hard data tables: OVF summary, partition map, file inventories |
 
-Plus working code: [**`keypad/`**](keypad/) — a native, cross‑platform on‑screen keypad
-(PySide6) that replaces the Windows‑only `keypad.exe`, reproducing its button layout and
-sending the same key codes via VirtualBox's `putScancodes`. Validated live against the control.
+Plus working code:
+- [**`tnc640`**](tnc640) — the one‑command launcher (`doctor` / `setup` / `run` / `keypad` / `stop` / `status` / `shot`).
+- [**`keypad/`**](keypad/) — a native, cross‑platform on‑screen keypad (PySide6) that replaces the
+  Windows‑only `keypad.exe`, reproducing both NC panel layouts and sending the same key codes via
+  VirtualBox's `putScancodes`. Validated live against the control.
 
 ## TL;DR of findings
 

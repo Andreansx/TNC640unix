@@ -38,6 +38,9 @@ work/
 __pycache__/
 *.pyc
 
+# Local launcher config (use config.env.example as a template)
+config.env
+
 # OS / editor noise
 .DS_Store
 *.swp

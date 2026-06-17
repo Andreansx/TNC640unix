@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+#
+# tnc640 - run the HEIDENHAIN TNC 640 programming station on Linux.
+#
+# One command to set up and launch the real control (HeROS5 guest under
+# VirtualBox) together with the native on-screen keypad. You supply the
+# official HEIDENHAIN package yourself; this repo ships only the glue.
+#
+#   ./tnc640 doctor                 check prerequisites
+#   ./tnc640 setup --package DIR     first-time: import + provision the VM
+#   ./tnc640 run                     start the VM and the keypad (the usual command)
+#   ./tnc640 keypad                  just the keypad (VM already running)
+#   ./tnc640 stop | status | shot    power off / show state / screenshot
+#
+# See docs/14-install-and-run.md for the full manual.
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+usage() {
+    cat <<EOF
+${_C_B}tnc640${_C_0} - run the HEIDENHAIN TNC 640 programming station on Linux
+
+usage: ./tnc640 <command> [options]
+
+commands:
+  doctor                 check prerequisites (VirtualBox, kernel module, Python/PySide6)
+  setup [opts]           first-time provisioning: import the OVA, wire it up, flash NC SW
+      --package DIR       path to the unpacked HEIDENHAIN download (auto-detected if omitted)
+      --vm NAME           VM name (default: $VM)
+      --headless          install without opening a VM window (poll with 'shot')
+      --yes               don't ask before replacing an existing VM
+      --dry-run           print what it would do, change nothing
+  run [opts]             start the VM (if needed) and launch the keypad
+      --gui | --headless  VM window mode (default: gui if a display is present)
+      --fullscreen        start the VM window fullscreen
+      --layout vertical|horizontal   keypad layout (default: vertical)
+      --no-keypad         start the VM only
+  keypad [opts]          launch only the keypad against a running VM
+      --layout L          vertical (default) or horizontal
+      --install-deps      create keypad/.venv and install PySide6
+  stop                   power off the VM
+  status                 show VM state
+  shot [FILE]            save a screenshot (default: $RUNDIR/shot.png)
+  help                   this text
+
+config: copy config.env.example to config.env to pin VM name, RAM, package path, ...
+EOF
+}
+
+# ---------------------------------------------------------------------------
+cmd_doctor() {
+    local ok=1
+    log "checking prerequisites"
+
+    if have VBoxManage || have vboxmanage; then
+        info "${_C_G}ok${_C_0}  VirtualBox: $(vbm --version 2>/dev/null | head -n1)"
+    else
+        ok=0; info "${_C_R}no${_C_0}  VirtualBox not found - install 7.1+ from virtualbox.org"
+    fi
+
+    if [ -e /dev/kvm ]; then info "${_C_G}ok${_C_0}  /dev/kvm present (hardware acceleration available)"
+    else info "${_C_Y}--${_C_0}  /dev/kvm absent - VirtualBox still runs, just slower"; fi
+
+    if lsmod 2>/dev/null | grep -q '^vboxdrv'; then info "${_C_G}ok${_C_0}  vboxdrv kernel module loaded"
+    else info "${_C_Y}--${_C_0}  vboxdrv not loaded (run: sudo modprobe vboxdrv)"; fi
+
+    if have python3; then info "${_C_G}ok${_C_0}  python3: $(python3 --version 2>&1)"
+    else ok=0; info "${_C_R}no${_C_0}  python3 not found (needed for the keypad)"; fi
+
+    if kp="$(keypad_python)"; then info "${_C_G}ok${_C_0}  keypad deps: PySide6 available via $kp"
+    else info "${_C_Y}--${_C_0}  PySide6 not installed - run: ./tnc640 keypad --install-deps"; fi
+
+    if pkg="$(find_package "${1:-}")"; then
+        info "${_C_G}ok${_C_0}  HEIDENHAIN package: OVA $(printf '%s' "$pkg" | cut -f1)"
+        [ -n "$(printf '%s' "$pkg" | cut -f2)" ] || info "${_C_Y}--${_C_0}  setup.zip not found in package (needed for first boot)"
+    else
+        info "${_C_Y}--${_C_0}  HEIDENHAIN package not found - download it and pass --package DIR to setup"
+    fi
+
+    if vm_exists; then
+        info "${_C_G}ok${_C_0}  VM \"$VM\" is registered ($(vm_running && echo running || echo stopped))"
+    else
+        info "${_C_Y}--${_C_0}  VM \"$VM\" not set up yet - run: ./tnc640 setup"
+    fi
+
+    [ "$ok" = 1 ] && log "core prerequisites satisfied" || warn "some prerequisites are missing (see above)"
+}
+
+# ---------------------------------------------------------------------------
+cmd_setup() {
+    local pkg_hint="" headless=0 yes=0 dry=0
+    while [ $# -gt 0 ]; do case "$1" in
+        --package) pkg_hint="$2"; shift 2;;
+        --vm) VM="$2"; shift 2;;
+        --headless) headless=1; shift;;
+        --yes|-y) yes=1; shift;;
+        --dry-run) dry=1; shift;;
+        --cpus) CPUS="$2"; shift 2;;
+        --memory) MEMORY="$2"; shift 2;;
+        *) die "setup: unknown option $1";;
+    esac; done
+
+    require_vbox
+    local pkg ova zip
+    pkg="$(find_package "$pkg_hint")" || die "HEIDENHAIN package not found. Download it (see README) and pass --package DIR."
+    ova="$(printf '%s' "$pkg" | cut -f1)"
+    zip="$(printf '%s' "$pkg" | cut -f2)"
+    [ -f "$ova" ] || die "OVA not found: $ova"
+    [ -n "$zip" ] && [ -f "$zip" ] || die "setup.zip not found in the package (needed to flash the NC software)."
+
+    log "package OVA:       $ova"
+    log "package setup.zip: $zip"
+    log "target VM:         $VM   (${CPUS} vCPU, ${MEMORY} MiB)"
+
+    run() { if [ "$dry" = 1 ]; then printf '    [dry-run] %s\n' "$*"; else "$@"; fi; }
+
+    if vm_exists; then
+        if [ "$yes" != 1 ] && [ "$dry" != 1 ]; then
+            read -r -p "VM \"$VM\" already exists. Replace it (destroys its disk)? [y/N] " a
+            [ "$a" = y ] || [ "$a" = Y ] || die "aborted."
+        fi
+        log "removing existing VM \"$VM\""
+        run "$VBOXMANAGE" controlvm "$VM" poweroff || true
+        run "$VBOXMANAGE" unregistervm "$VM" --delete || true
+    fi
+
+    run mkdir -p "$VBOXDIR" "$VMDIR/Install" "$VMDIR/IOsim" "$VMDIR/PLC" "$VMDIR/TNC" "$RUNDIR"
+    run "$VBOXMANAGE" setproperty machinefolder "$VBOXDIR"
+
+    log "importing OVA (this copies a multi-GB disk image)"
+    run "$VBOXMANAGE" import "$ova" --vsys 0 --vmname "$VM"
+
+    log "configuring hardware + NAT + shared folders"
+    run "$VBOXMANAGE" modifyvm "$VM" --cpus "$CPUS" --memory "$MEMORY" --vram "$VRAM" \
+        --graphicscontroller vmsvga --pae on --ioapic on
+    run "$VBOXMANAGE" modifyvm "$VM" --nic1 nat
+    run "$VBOXMANAGE" modifyvm "$VM" --natpf1 "ssh,tcp,,${SSH_PORT},,22" || true
+    run "$VBOXMANAGE" sharedfolder add "$VM" --name Install --hostpath "$VMDIR/Install" --automount
+    run "$VBOXMANAGE" sharedfolder add "$VM" --name IOsim   --hostpath "$VMDIR/IOsim"   --automount
+    run "$VBOXMANAGE" sharedfolder add "$VM" --name PLC     --hostpath "$VMDIR/PLC"
+    run "$VBOXMANAGE" sharedfolder add "$VM" --name TNC     --hostpath "$VMDIR/TNC"
+    run "$VBOXMANAGE" guestproperty set "$VM" /HEIDENHAIN/CFG/Display/VMSVGA "$VRAM"
+
+    log "staging NC software for first-boot flashing"
+    if [ "$dry" = 1 ]; then
+        printf '    [dry-run] link %s -> %s\n' "$zip" "$VMDIR/Install/setup.zip"
+    else
+        ln -f "$zip" "$VMDIR/Install/setup.zip" 2>/dev/null || cp "$zip" "$VMDIR/Install/setup.zip"
+        chmod 0755 "$VMDIR/Install/setup.zip"
+        printf 'Interactive=NO\nConfirm=NO\nDelSource=YES\nDoInstall=TNC640_PLC_DefaultConfig.*zip\nDoInstall=TNC640_TNC_DefaultConfig.*zip\n' \
+            > "$VMDIR/Install/setup.ini"
+    fi
+
+    local mode=gui
+    { [ "$headless" = 1 ] || [ -z "${DISPLAY:-}" ]; } && mode=headless
+    log "starting VM ($mode) to flash the NC software"
+    run "$VBOXMANAGE" startvm "$VM" --type "$mode"
+
+    cat <<EOF
+
+${_C_B}First boot is installing the NC software (~15-20 min).${_C_0}
+The VM copies, extracts (~657 MB), installs RPMs, then ${_C_B}reboots itself${_C_0} into the
+TNC 640 control in demo mode.
+  - GUI mode: just watch the window until you see the control.
+  - Headless:  poll with  ./tnc640 shot  and open $RUNDIR/shot.png
+When the control is up, run:  ${_C_B}./tnc640 run${_C_0}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+start_vm() {
+    local mode="$1" fullscreen="$2"
+    vm_exists || die "VM \"$VM\" is not set up. Run: ./tnc640 setup"
+    if vm_running; then info "VM \"$VM\" already running"; return 0; fi
+    [ "$fullscreen" = 1 ] && vbm setextradata "$VM" GUI/Fullscreen true >/dev/null 2>&1 || true
+    log "starting VM \"$VM\" ($mode)"
+    vbm startvm "$VM" --type "$mode" >/dev/null
+    local _
+    for _ in $(seq 1 30); do vm_running && break; sleep 1; done
+    vm_running || die "VM did not start"
+}
+
+launch_keypad() {
+    local layout="$1"
+    local py
+    if ! py="$(keypad_python)"; then
+        warn "PySide6 not installed; cannot open the keypad."
+        info "install it with:  ./tnc640 keypad --install-deps"
+        info "(the VM is running; you can also press F1-F8 / type on the VBox window directly)"
+        return 1
+    fi
+    log "launching keypad ($layout) -> VM \"$VM\""
+    "$py" "$REPO_ROOT/keypad/tnc_keypad.py" --vm "$VM" --layout "$layout" --transport vbox
+}
+
+cmd_run() {
+    local mode="" fullscreen=0 layout=vertical keypad=1
+    while [ $# -gt 0 ]; do case "$1" in
+        --gui) mode=gui; shift;;
+        --headless) mode=headless; shift;;
+        --fullscreen) fullscreen=1; shift;;
+        --layout) layout="$2"; shift 2;;
+        --no-keypad) keypad=0; shift;;
+        --vm) VM="$2"; shift 2;;
+        *) die "run: unknown option $1";;
+    esac; done
+    require_vbox
+    [ -n "$mode" ] || { [ -n "${DISPLAY:-}" ] && mode=gui || mode=headless; }
+    start_vm "$mode" "$fullscreen"
+    if [ "$keypad" = 1 ]; then
+        launch_keypad "$layout" || true
+    else
+        log "VM running; keypad skipped (--no-keypad). Stop with: ./tnc640 stop"
+    fi
+}
+
+cmd_keypad() {
+    local layout=vertical
+    while [ $# -gt 0 ]; do case "$1" in
+        --layout) layout="$2"; shift 2;;
+        --install-deps) install_keypad_deps; shift;;
+        --vm) VM="$2"; shift 2;;
+        *) die "keypad: unknown option $1";;
+    esac; done
+    require_vbox
+    vm_running || warn "VM \"$VM\" is not running (start it with ./tnc640 run)."
+    launch_keypad "$layout"
+}
+
+cmd_stop()   { require_vbox; vm_running || { info "VM not running"; return 0; }
+               log "powering off \"$VM\""; vbm controlvm "$VM" acpipowerbutton >/dev/null 2>&1 || true
+               local _; for _ in $(seq 1 15); do vm_running || break; sleep 1; done
+               vm_running && { warn "graceful shutdown timed out; forcing"; vbm controlvm "$VM" poweroff; } || true; }
+cmd_status() { require_vbox
+               if vm_exists; then
+                   info "VM:      $VM"
+                   info "state:   $(vbm showvminfo "$VM" --machinereadable 2>/dev/null | sed -n 's/^VMState="\(.*\)"/\1/p')"
+                   info "running: $(vm_running && echo yes || echo no)"
+               else info "VM \"$VM\" not set up. Run: ./tnc640 setup"; fi; }
+cmd_shot()   { require_vbox; vm_running || die "VM not running."
+               local f="${1:-$RUNDIR/shot.png}"; vbm controlvm "$VM" screenshotpng "$f"; log "wrote $f"; }
+
+# ---------------------------------------------------------------------------
+main() {
+    local cmd="${1:-help}"; shift || true
+    case "$cmd" in
+        doctor) cmd_doctor "$@";;
+        setup)  cmd_setup "$@";;
+        run)    cmd_run "$@";;
+        keypad) cmd_keypad "$@";;
+        stop)   cmd_stop "$@";;
+        status) cmd_status "$@";;
+        shot)   cmd_shot "$@";;
+        help|-h|--help) usage;;
+        *) err "unknown command: $cmd"; usage; exit 1;;
+    esac
+}
+main "$@"

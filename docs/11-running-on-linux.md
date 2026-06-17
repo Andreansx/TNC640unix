@@ -8,6 +8,10 @@ nested VT-x via `/dev/kvm`).
 > Proprietary files (`34059518/…`, the OVA, `setup.zip`) are **not** in this repo — supply your
 > own legitimately obtained copy. See [09-legal.md](09-legal.md).
 
+> **Just want to run it?** Use the launcher: `./tnc640 setup` then `./tnc640 run` — it automates
+> everything below. See the user manual, [14-install-and-run.md](14-install-and-run.md). This page
+> is the underlying, hand‑verified procedure (what the launcher does and why).
+
 ## Why VirtualBox (not plain QEMU/KVM)
 
 The guest's `/etc/init.d/applaunch` only auto-installs `setup.zip` when it detects a supported
