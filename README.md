@@ -62,6 +62,7 @@ binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
 | [12 — Keypad: full button map](docs/12-keypad-keymap.md) | Every keypad button + the exact code it sends (the input protocol) |
 | [13 — Investigation log](docs/13-investigation-log.md) | The full dissection story: what was checked → what was learned, step by step |
 | [14 — Install & run (the manual)](docs/14-install-and-run.md) | **Start here to run it.** Prerequisites, getting the package, `./tnc640 setup`/`run`, troubleshooting |
+| [15 — Apple Silicon (ARM64)](docs/15-apple-silicon.md) | Can we get past x86 emulation on M‑series Macs? What's really inside, why recompiling is out, the paths that work |
 | [reference/](docs/reference/) | Hard data tables: OVF summary, partition map, file inventories |
 
 Plus working code:

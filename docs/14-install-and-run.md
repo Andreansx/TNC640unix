@@ -28,10 +28,12 @@ still runs, just slower.
 
 Download the **TNC 640 programming station** ("PGM‑Platz Virtual") from HEIDENHAIN:
 
-> **Official download:** `<add the official HEIDENHAIN link here>`
+> **Official download:** <https://www.heidenhain.com/service/downloads/software>
 >
-> It's offered on the HEIDENHAIN website under the TNC 640 software / programming‑station
-> section (also reachable via HEIDENHAIN's *TNCmanager*). You need a free HEIDENHAIN account.
+> On that page, find the **TNC 640** programming station / "Programming Station" software
+> (NC ident **340595**, version **18 SP4** is what this project was built against; newer SPs
+> should work the same way). You may need a free HEIDENHAIN account. The download is also
+> reachable via HEIDENHAIN's *TNCmanager*.
 
 Unpack it somewhere. The folder you want is the one that contains, somewhere beneath it:
 

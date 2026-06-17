@@ -40,6 +40,12 @@ The guest is **x86-64 Linux**. The reverse-engineering for this project began on
 **Recommendation:** target an **x86-64 Linux host** for real use; treat ARM64 (Apple Silicon)
 as an emulation-only convenience path, or use a remote/headless x86-64 host with a thin client.
 
+> **Deep dive:** [15-apple-silicon.md](15-apple-silicon.md) examines the ARM64 question in full —
+> what's actually inside the VM (the control is proprietary **32-bit x86**, with near-zero
+> proprietary *kernel* coupling), why recompiling it for ARM is infeasible **and** not legally
+> permitted, and the paths that do work (QEMU/UTM with a VirtualBox-masquerade; FEX/box86
+> user-mode translation; remote x86 + Mac client).
+
 ## Input on Linux: keystroke injection vs. the original keypad
 
 **How input actually reaches the control.** The MMI is a Qt/X application that reads its keyboard
