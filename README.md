@@ -1,25 +1,28 @@
 # TNC640 on UNIX — Reverse‑Engineering & Documentation Project
 
-Goal: understand the **HEIDENHAIN TNC 640 Programming Station** ("PGM‑Platz Virtual" /
-virtual control, NC ident **340595**, version **18 SP4**) deeply enough to run it on
-**UNIX‑like systems (Linux, macOS)** instead of only Windows.
+Goal: understand the **HEIDENHAIN TNC 640 Programming Station** deeply enough to run it on
+UNIX‑like systems. It already runs on x86‑64 Linux (see status below); the open frontier is
+Apple Silicon / ARM64 and full machine power‑on.
 
 A HEIDENHAIN TNC 640 is a CNC milling control. The *Programming Station* is the exact
 same control software running inside a virtual machine on a PC, so you can write and
 dry‑run G‑code / Klartext (conversational) NC programs without a real machine and without
-wasting material. HEIDENHAIN ships it as a **Windows‑only** product. This project documents
-how it is built and what it would take to run it elsewhere.
+wasting material. HEIDENHAIN ships it as a Windows‑only product. This project documents
+how it is built, what already runs on Linux, and what it would take to go further.
 
-> **Status:** Architecture fully mapped, the real control **runs on x86‑64 Linux**, the input
-> protocol is reverse‑engineered, and there's a **native keypad** plus a one‑command launcher.
+The exact product analysed here is the "PGM‑Platz Virtual" virtual control, NC ident
+340595, software version 18 SP4.
+
+> **Status:** Architecture mapped end to end, the real control **runs on x86‑64 Linux**, the
+> input protocol is reverse‑engineered, and there's a native keypad plus a one‑command launcher.
 > Remaining: the PLC‑I/O (JHIO) question for full machine power‑on. See [`docs/`](docs/).
 
 ---
 
-## 🚀 Quickstart
+## Quickstart
 
 You supply the official HEIDENHAIN package (see [docs/14](docs/14-install-and-run.md) §2);
-this repo is the glue. On an **x86‑64 Linux PC** with **VirtualBox 7.1+** and **Python 3**:
+this repo is the glue. On an x86‑64 Linux PC with VirtualBox 7.1+ and Python 3:
 
 ```sh
 git clone https://github.com/Andreansx/TNC640unix && cd TNC640unix
@@ -30,19 +33,19 @@ git clone https://github.com/Andreansx/TNC640unix && cd TNC640unix
 ```
 
 Everyday use is just `./tnc640 run` (and `./tnc640 stop`). Full manual:
-**[docs/14 — Install & Run](docs/14-install-and-run.md)**. It runs in **demo mode** — no
+[docs/14 — Install & Run](docs/14-install-and-run.md). It runs in demo mode — no
 dongle, no license needed (100 NC lines / 10 CAD elements).
 
 ---
 
-## ⚠️ Legal / what is (and isn't) in this repo
+## Legal / what is (and isn't) in this repo
 
-This repository contains **only original documentation and analysis**. It deliberately does
+This repository contains only original documentation and analysis. It deliberately does
 **not** contain any HEIDENHAIN or Oracle software. The downloaded package, the VM image, the
 extension pack, the manuals, and everything extracted from them are proprietary and are
-**git‑ignored**. Full reasoning, including why
+git‑ignored. Full reasoning, including why
 the documentation itself is lawful (EU interoperability rights) while redistributing the
-binaries is not, is in **[docs/09-legal.md](docs/09-legal.md)**.
+binaries is not, is in [docs/09-legal.md](docs/09-legal.md).
 
 ## Documentation index
 
@@ -73,19 +76,20 @@ Plus working code:
 
 ## TL;DR of findings
 
-- The product is **VirtualBox + a hardened Linux guest (HeROS5) + a Qt host "Control Panel"**.
+- The product is VirtualBox + a locked‑down Linux guest (HeROS5) + a Qt host "Control Panel".
   The guest is the real TNC 640 control software; the Windows side is just orchestration.
-- The **"steering panel"** (absent when the bare VMDK is booted) is a set of Qt host apps: `tncvbcntl.exe`
-  (launcher), **`keypad.exe`** (on‑screen NC keyboard / soft keys), `handwheel.exe`
+- The "steering panel" (absent when the bare VMDK is booted) is a set of Qt host apps: `tncvbcntl.exe`
+  (launcher), `keypad.exe` (on‑screen NC keyboard / soft keys), `handwheel.exe`
   (jog wheel), and `jhiosimhostd.exe` (PLC‑I/O simulation).
-- Host↔guest is glued by **VirtualBox shared folders** (`Install`, `IOsim`, `PLC`, `TNC`),
-  **guest properties** under `/HEIDENHAIN/*`, a guest **synthetic‑input daemon** (`heuinput`),
-  a **handwheel TCP port `19035`**, and the **JHIO** PLC‑I/O service.
-- It runs in **demo mode with no dongle and no hardware** (limited to 100 NC lines / 10 CAD
-  elements) — which means *the VM is meant to run essentially standalone*.
-- **Main constraint on ARM64 hosts (e.g. Apple Silicon):** the guest is **x86‑64**; Apple‑Silicon VirtualBox can't run
-  x86 guests. The realistic path is a **Linux x86‑64 host**. Two host pieces are Windows‑only
-  (the **JHIO extpack** and the **Qt control suite**) and would need to be substituted.
-- **Done so far:** on an x86‑64 Linux host the control **installs and boots to the live MMI in
-  demo mode, headless**, and responds to injected keypresses (soft keys = F1‑F8). Reproducible
+- Host↔guest is connected by VirtualBox shared folders (`Install`, `IOsim`, `PLC`, `TNC`),
+  guest properties under `/HEIDENHAIN/*`, a guest synthetic‑input daemon (`heuinput`),
+  a handwheel TCP port `19035`, and the JHIO PLC‑I/O service.
+- It runs in demo mode with no dongle and no hardware (limited to 100 NC lines / 10 CAD
+  elements), so it needs nothing external to start.
+- **Main constraint on ARM64 hosts (e.g. Apple Silicon):** the guest is x86‑64, and
+  Apple‑Silicon VirtualBox can't run x86 guests. The realistic path is a Linux x86‑64 host.
+  Two host pieces are Windows‑only (the JHIO extpack and the Qt control suite) and would need
+  to be substituted.
+- **Done so far:** on an x86‑64 Linux host the control installs and boots to the live MMI in
+  demo mode, headless, and responds to injected keypresses (soft keys = F1‑F8). Reproducible
   procedure in [docs/11](docs/11-running-on-linux.md); script `scripts/setup_vm.sh`.
