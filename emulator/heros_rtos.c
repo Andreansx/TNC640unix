@@ -55,7 +55,8 @@ static void dbg(const char*s){ int n=0; while(s[n])n++; raw5(SYS_write,2,(long)s
 /* ---------------- shared control segment ---------------- */
 #define MAXTASK 512
 #define MAXSEM  512
-#define MAXQ    96
+#define MAXQ    2048       /* ConfigServer registers a ~1000-entry HwsM<task>N<ctr> mailslot pool
+                            * at startup; 96 overflowed → "table full" → a retry spin (1.4GB log). */
 #define MAXREG  64
 #define QSLOTS  12         /* messages buffered per queue                        */
 #define QMSGCAP 16384      /* max bytes per message (kernel caps Q_send @ 0x8000) */
@@ -149,12 +150,27 @@ static uint32_t task_by_name(const char*nm){
 }
 
 /* ---------------- events ---------------- */
+/* monotonic clock (i386 SYS_clock_gettime=265, CLOCK_MONOTONIC=1) for honoring
+ * finite timeouts across spurious wakeups. i386 timespec = two 32-bit longs. */
+static void mono_now(struct timespec *ts){ ts->tv_sec=0; ts->tv_nsec=0; raw5(265,1,(long)ts,0,0,0); }
+
 /* cond: 1 = wait for ALL wanted bits, 2 = wait for ANY wanted bit. timeout in ms
- * (0=no wait, 0xffffffff=forever). Returns the caught event word; clears caught. */
+ * (0=no wait, 0xffffffff=forever). Returns the caught event word; clears caught.
+ * A finite-timeout Ev_receive is a BLOCKING wait, not a poll (pollers pass
+ * timeout=0) — so it must sleep the FULL timeout across spurious futex wakeups /
+ * EINTR (the As_send→SIGUSR1 path interrupts futex). Returning after a single
+ * disturbed futex turned a 100s wait into a busy-spin (422MB log of one caller). */
 static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
+    struct timespec deadline; int have_dl=0;
+    if(timeout && timeout!=0xffffffff){
+        mono_now(&deadline);
+        deadline.tv_sec += timeout/1000; deadline.tv_nsec += (long)(timeout%1000)*1000000L;
+        if(deadline.tv_nsec>=1000000000L){ deadline.tv_sec++; deadline.tv_nsec-=1000000000L; }
+        have_dl=1;
+    }
     for(;;){
         uint32_t cur=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
         int ok = cond==1 ? ((cur&want)==want) : ((cur&want)!=0);
@@ -164,10 +180,14 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
             return caught;
         }
         if(timeout==0) return 0;
-        struct timespec ts,*tp=0;
-        if(timeout!=0xffffffff){ ts.tv_sec=timeout/1000; ts.tv_nsec=(timeout%1000)*1000000L; tp=&ts; }
-        futex(ev,FUTEX_WAIT,cur,tp);
-        if(timeout!=0xffffffff) return __atomic_load_n(ev,__ATOMIC_ACQUIRE)&want; /* best effort on timeout */
+        struct timespec rel,*tp=0;
+        if(have_dl){                                          /* compute the remaining slice */
+            struct timespec now; mono_now(&now);
+            long rem=(deadline.tv_sec-now.tv_sec)*1000L+(deadline.tv_nsec-now.tv_nsec)/1000000L;
+            if(rem<=0) return __atomic_load_n(ev,__ATOMIC_ACQUIRE)&want;   /* genuinely timed out */
+            rel.tv_sec=rem/1000; rel.tv_nsec=(rem%1000)*1000000L; tp=&rel;
+        }
+        futex(ev,FUTEX_WAIT,cur,tp);                          /* forever (tp=0) or remaining slice */
     }
 }
 static int ev_send(uint32_t task,uint32_t bits){
@@ -342,6 +362,12 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
 static int q_is_probe_name(const char*base){
     static const char*const probe[]={ "QueueHeLogger", 0 };
     for(int i=0;probe[i];i++) if(!strcmp(base,probe[i])) return 1;
+    /* HwsMailslot transient per-instance mailslots ("HwsM<task>N<ctr>"): the control
+     * SCANS these by incrementing the counter, stopping when Q_ident reports "not
+     * found" (a peer server owns the real ones). Auto-creating each as a black hole
+     * makes the scan never terminate — an unbounded loop (120MB+ log, starves peers
+     * on the global lock). Report absent so the scan ends. */
+    if(!strncmp(base,"HwsM",4)) return 1;
     return 0;
 }
 static uint32_t q_ident(const char*nm){

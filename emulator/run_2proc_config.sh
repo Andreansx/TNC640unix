@@ -32,9 +32,11 @@ export SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC:
 export HEROSCALL_VERBOSE=1 HEROSCALL_SEM_INIT=1
 
 echo "### ConfigServer (background, creates the shared namespace + queues) ###"
-timeout 45 env LD_PRELOAD="$PRE" "$LD" --library-path "$LP" \
+# -s KILL: the control catches/ignores SIGTERM, so plain `timeout` hangs forever
+# waiting for a child that won't die. head -c caps the log if a spin reappears.
+( timeout -s KILL 30 env LD_PRELOAD="$PRE" "$LD" --library-path "$LP" \
   "$SYSROOT/heros5/bin/ConfigServer.elf" '-p=~/cfgserver' cfgserver \
-  "-f=/tmp/s/config/jhconfigfiles.cfg" -i=Nc > /tmp/cfgsrv.log 2>&1 &
+  "-f=/tmp/s/config/jhconfigfiles.cfg" -i=Nc 2>&1 | head -c 120000000 > /tmp/cfgsrv.log ) &
 CFGPID=$!
 for i in $(seq 1 24); do
   grep -q 'Q_create "CfgServerQueue"' /tmp/cfgsrv.log 2>/dev/null && break
@@ -43,7 +45,7 @@ done
 echo "ConfigServer queues:"; grep -E 'Q_create "(CfgServerQueue|CfgFileMan)"' /tmp/cfgsrv.log | sed 's/.*rtos] //'
 
 echo "### IPO (foreground, attaches the SAME namespace; does NOT clear it) ###"
-timeout 25 env LD_PRELOAD="$PRE" "$LD" --library-path "$LP" \
+timeout -s KILL 20 env LD_PRELOAD="$PRE" "$LD" --library-path "$LP" \
   "$SYSROOT/heros5/bin/ipo_progstation.elf" '-p=~/IPO' IPO -k=NC -M > /tmp/ipo2.log 2>&1
 echo "IPO exit=$?"
 echo "IPO -> CfgServerQueue:"; grep -E 'Q_ident "CfgServerQueue"|Q_send -> queue' /tmp/ipo2.log | tail -4

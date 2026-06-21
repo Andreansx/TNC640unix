@@ -365,6 +365,49 @@ round-trip is thus a **chain of missing-service dependencies** — the path forw
 **constellation** (AppStartMP spawning the SIK/Hws/event-server peers) or add per-service reply stubs,
 **not** any change to the message layer.
 
+## Update (2026-06-22): serve loop PROVEN; root cause = host-side peers with no i386 binary
+
+Two real emulator bugs were fixed and the diagnosis was nailed down end-to-end with the 2-process
+experiment (`run_2proc_config.sh`, now `timeout -s KILL` + a `head -c` log cap so a spin can't hang
+20 min or fill the disk):
+
+1. **`Ev_receive` finite-timeout busy-spin (fixed).** A finite-timeout `Ev_receive` is a *blocking*
+   wait (pollers pass timeout 0), but the runtime returned after a *single* disturbed `futex`
+   ("best effort on timeout"). The `As_send→SIGUSR1` path interrupts `futex` constantly, so a
+   100 s wait (`Ev_receive(0x1000, ALL, 100000ms)`) became a 422 MB busy-spin. Now honors the full
+   timeout across spurious wakeups via a `CLOCK_MONOTONIC` deadline.
+2. **`MAXQ=96` overflow (fixed → 2048).** Once past SIK, ConfigServer registers a large `HwsMailslot`
+   pool; 96 overflowed → `Q_create: table full` retry-spin. Bumped to 2048 (≈393 MB `/dev/shm`
+   segment; box has 16 GB shm / 30 GB RAM).
+
+**With both fixed, ConfigServer's serve loop runs and reads IPO's connect.** The dispatch thread
+(task 0x100) does `Q_read <- queue CfgServerQueue size 69` — 69 B is exactly IPO's connect message.
+So GMessage transport + dispatch are wholly functional (re-confirming the message-layer is NOT the
+bug). What's broken is the **reply**: during startup ConfigServer punts *every* client ACK to
+`Q_send … qid 0xffffffed`. `0xffffffed == -0x13`, the `Q_ident` "not-found" sentinel — i.e. the
+server's "client not-yet-connected, startup incomplete" state. IPO's connect is read but its ACK is
+discarded, so IPO blocks forever on `Q_read(0-0000106CfgM / 0x311)`.
+
+**Why startup never completes — the `HwsMailslot` loop is a retry-until-peer, not a probe-scan.**
+After the SIK cap, ConfigServer enters an outer loop re-scanning `HwsM<task>N<ctr>` (counter rising
+unbounded; ~150 k iterations/run). Decisive observation: the loop's continuation is **independent of
+the `Q_ident` result** — it spins identically whether the name auto-creates (non-zero id) or returns
+not-found (0x0). So it is waiting on an *external condition* (the Hws server's presence), not on
+anything `Q_ident` can return. `HwsM` = `HwsMailslot` (libGMessageHardware); the awaited peer is the
+**hardware-message / I/O-simulation server**. (`q_ident` now reports `HwsM*` absent — kept, because
+auto-creating ~150 k unique names would re-exhaust even `MAXQ=2048`.)
+
+**Root cause (confirmed).** Both missing peers — `SikServer` (license) and the Hws/IOsim
+hardware-message server — **have no i386 binary in `heros5/bin`** (only Hws *client* libs:
+`libhwsinterface`, `libhwspathname`, `libHWSPythonInterface`; and **no `AppStartMP.elf`**). They are
+the **host-side** pieces (the Windows Qt control suite + JHIO extpack / `jhiosimhostd` — per
+`CLAUDE.md`, "the only host piece with no cross-platform binary"). So there is nothing to *run* for
+them: finishing ConfigServer startup requires **reimplementing/stubbing the SIK + Hws service replies
+inside the emulator** (the "option A" host-reimplementation surface), not launching a constellation.
+This is the live frontier. Next tractable sub-step: make one `HwsM` slot resolve to a real queue and
+inject a minimal/empty `HwsSrvValue` reply (and a SIK "available/empty" reply) so ConfigServer's
+startup-state machine advances to "connected" and binds IPO's real reply queue.
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
