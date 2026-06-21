@@ -405,11 +405,12 @@ long syscall(long n,...){
         if(!p) return -1;
         uint32_t tid=p[4],size=p[0],src=p[2]; int s=task_slot(tid);
         if(s<0){ LOG("T_start unknown task 0x%x\n",tid); return -1; }
-        if(C->tasks[s].ctx_dst&&src&&size) memcpy((void*)(uintptr_t)C->tasks[s].ctx_dst,(void*)(uintptr_t)src,size);
+        uint32_t cap=C->tasks[s].msgsize; uint32_t cp=size; if(cap&&cp>cap) cp=cap; /* never exceed the task's buffer */
+        if(C->tasks[s].ctx_dst&&src&&cp) memcpy((void*)(uintptr_t)C->tasks[s].ctx_dst,(void*)(uintptr_t)src,cp);
         if(C->tasks[s].arg_dst) *(uint32_t*)(uintptr_t)C->tasks[s].arg_dst=size;
         __atomic_store_n(&C->tasks[s].started,1,__ATOMIC_RELEASE);
         futex(&C->tasks[s].started,FUTEX_WAKE,0x7fffffff,0);
-        LOG("T_start task 0x%x size %u -> delivered+resumed\n",tid,size);
+        LOG("T_start task 0x%x size %u (buf %u, copied %u) -> resumed\n",tid,size,cap,cp);
         return 0;                                       /* >=0 -> t_start() returns true (success) */
     }
     case 0x01:{ /* T_ident: name inline p[0..1] (0=self) */

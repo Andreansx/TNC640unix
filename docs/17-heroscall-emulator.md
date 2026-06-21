@@ -189,10 +189,29 @@ wrapper): `syscall(222, 0x12340002, {p[0]=size, p[2]=ctx, p[4]=tid})`. The stub
 `T_start` returns success without copying/delivering `ctx`, so the pthread runs
 `_run` with a dead/zero context → the NULL+0x84 fault.
 
-**Next:** implement the `T_create`/`T_start` rendezvous — `T_start` copies the
-`size`-byte context and hands it to the task pthread, which calls `_run(size,
-copy)`. Then continue the blocker chain (`FThread::Run`, config read, the mailslot
-serve loop).
+**The `T_create`/`T_start` rendezvous — IMPLEMENTED, working.** Recovered from
+libheros `sub_D330`/`t_create_ex`:
+- `t_create_ex` does `pthread_create(sub_D330, arg)` (arg[3]=parent task id,
+  arg[4]=tid-out), then blocks on `ev_receive(0x80000)`.
+- The task pthread (`sub_D330`) issues `T_create` (cmd 0x00) — param `p[2]=msgsize,
+  p[6]=&arg_out, p[8]=&taskid_out, p[10]=ctx_buf, p[12]=parent` — which **blocks
+  until started**, then calls `_run(arg_out, ctx_buf)`.
+- The emulator: `T_create` writes the task id to `*p[8]`, records the delivery slots,
+  sends `0x80000` to the parent, and blocks the pthread on a per-task futex.
+  `T_start` (cmd 0x02; `p[0]=size, p[2]=ctx, p[4]=tid`) memcpys the context into the
+  task's `ctx_buf` (carrying `ctx[0]=FThread*`), sets `*arg_out=size`, wakes it.
+
+Result: ConfigServer now creates+starts **five tasks** (0x101–0x105) cleanly, the
+`_run` NULL-context crash is gone, and it runs a real **internal multi-task
+constellation** — inter-task `Ev_send`/`Ev_receive`, queues, ~100 `As_mask` async
+calls. The next blocker is a different control-side stack-smash in that
+async-signal-heavy task activity (config files still not opened). The fault-locator
+confirms it's not the emulator (the `T_start` memcpy is bounded/safe); locating it
+needs the **async-signal subsystem** (`As_send`/`As_receive`/`As_mask`/`P_signal`,
+all still stubbed) implemented, or deeper stack forensics.
+
+**Chain so far:** kernel-API init → blocking RTOS primitives → **task creation
+(done)** → async signals (next) → config read → the mailslot serve loop.
 
 ## Files
 
