@@ -71,6 +71,7 @@ struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count;
 struct qmsg { uint32_t len; uint8_t data[QMSGCAP]; };   /* one variable-length message */
 struct queue{ int used; uint32_t id; char name[NAMELEN];
               uint32_t depth, flags;                  /* from Q_create (advisory)         */
+              uint32_t owner, notify_bits;            /* Q_send Ev_sends notify_bits->owner (kernel +0xb8/+0xe8) */
               volatile uint32_t head, tail;           /* tail-head = count; futex on tail */
               struct qmsg msg[QSLOTS]; };
 struct region{int used; uint32_t id; char name[20]; uint32_t size; };
@@ -187,6 +188,12 @@ static int as_deliver=1;             /* HEROSCALL_AS_DELIVER=0 disables real sig
 static int q_autocreate=1;           /* HEROSCALL_AUTO_QUEUE=0 disables black-hole queues */
 static uint32_t qread_maxwait=0;     /* HEROSCALL_QREAD_MAXWAIT=ms caps "forever" Q_read waits (debug) */
 static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for auto-created sems */
+static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue message payloads */
+static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
+    if(!qdump||!p) return; if(n>112)n=112;
+    fprintf(stderr,"   %s[0x%x]:",tag,id);
+    for(uint32_t k=0;k<n;k++) fprintf(stderr,"%02x",((const uint8_t*)p)[k]); fprintf(stderr,"\n");
+}
 
 /* raise SIGUSR1 (and optionally 18) on the task's OS thread to invoke its ASR */
 static void as_kick(int32_t tgid,int32_t tid,uint32_t trig){
@@ -308,6 +315,8 @@ static int q_find_slot(const char*base){
 }
 static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     char base[NAMELEN]; q_basename(base,nm);
+    uint32_t owner=task_self();                          /* creator owns the queue (kernel +0xb8) */
+    uint32_t nbits=(flags&2)?(flags&0xff000000u):0;      /* flag bit1 => notify; bits = top byte (kernel +0xe8) */
     lock();
     int s=q_find_slot(base);
     if(s>=0){ uint32_t id=C->queues[s].id; unlock(); return id; }   /* idempotent on name */
@@ -315,9 +324,10 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
     C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
     C->queues[s].depth=depth; C->queues[s].flags=flags;
+    C->queues[s].owner=owner; C->queues[s].notify_bits=nbits;
     C->queues[s].name[0]=0; strncpy(C->queues[s].name,base,NAMELEN-1);
     uint32_t id=C->queues[s].id; unlock();
-    LOG("Q_create \"%s\" depth %u flags %x -> 0x%x\n",base,depth,flags,id);
+    LOG("Q_create \"%s\" depth %u flags %x owner 0x%x notify %08x -> 0x%x\n",base,depth,flags,owner,nbits,id);
     return id;
 }
 /* Names used as service PRESENCE PROBES: auto-creating these defeats the control's
@@ -348,10 +358,13 @@ static int q_send(uint32_t id,const void*msg,uint32_t size){
     uint32_t slot=q->tail%QSLOTS;
     q->msg[slot].len=size;
     if(msg&&size) memcpy(q->msg[slot].data,msg,size);
+    qhex("Q_send",id,msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
+    uint32_t owner=q->owner, nbits=q->notify_bits;
     unlock();
-    futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);
-    LOG("Q_send -> queue 0x%x size %u (depth now %u)\n",id,size,used+1);
+    futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
+    if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
+    LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
     return 0;
 }
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout){
@@ -364,6 +377,7 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout){
             uint32_t slot=q->head%QSLOTS;
             uint32_t len=q->msg[slot].len; if(maxsize&&len>maxsize) len=maxsize;
             if(buf&&len) memcpy(buf,q->msg[slot].data,len);
+            qhex("Q_read",id,buf,len);
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
             unlock();
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
@@ -433,6 +447,7 @@ static void ensure_init(void){
         if(qw) for(const char*q=qw; *q>='0'&&*q<='9'; q++) qread_maxwait=qread_maxwait*10+(uint32_t)(*q-'0');
         const char *si=getenv("HEROSCALL_SEM_INIT"); if(si){ sem_autocount=0;
             for(const char*q=si; *q>='0'&&*q<='9'; q++) sem_autocount=sem_autocount*10+(*q-'0'); }
+        const char *dq=getenv("HEROSCALL_DUMPQ"); qdump=dq&&dq[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
