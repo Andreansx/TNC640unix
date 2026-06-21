@@ -12,6 +12,65 @@ Working environment (Apple Silicon M2 Max):
   Combined i386 sysroot for running: `work/target/rootfs` with `/heros5` grafted in.
 - Decompiler pipeline: `work/re/scripts/DecompileToFile.java` + `batch_decompile.sh`.
 
+> **NOTE — this tracker was consolidated for migration to an x86_64 host** (2026-06-21). The two
+> auto-memory files that previously held the background below do NOT travel with the git clone, so
+> their full content is inlined here (sections "Product architecture & background" and
+> "Migration notes: moving the RE work to x86_64"). Everything needed to resume is in this file +
+> `docs/` + `work/` + `recomp/`.
+
+---
+
+## Product architecture & background (HEIDENHAIN TNC640 PGM-Platz Virtual)
+
+**Identity:** HEIDENHAIN **TNC640 Programming Station** (PGM-Platz Virtual), NC ident **340595**,
+version **18 SP4**, extracted from the official download `34059518SP4/`. The shipped product is a
+**Windows-native** package; goal of this repo is to run it on UNIX/macOS (and now ARM64). The user
+already booted the bare `.vmdk` in a Linux VM but lacked the on-screen "steering panel".
+
+**Architecture (as shipped on Windows):**
+- Hypervisor: bundled **VirtualBox 7.1.4** (Win) runs the **HeROS5** guest (HEIDENHAIN Realtime OS,
+  Yocto-based **x86_64** Linux, v5.18.04.002). VMware (VIX) is an alternative the installer accepts.
+- Base VM = `base/TNCvbProg.ova` (OVF + 49 GB streamOptimized vmdk; partitions: **HEROS5** root,
+  **BOOT**, **SYS**, **PLC**, **TNC**). On the base image SYS/PLC/TNC are EMPTY — the actual NC
+  software (NCK/PLC/MMI) is flashed from `prog/setup.zip` (`target.tar.xz` 657 MB + SYS/PLC/TNC
+  zips + RPMs) into those partitions on first install via the `Install` shared folder + HeROS
+  `jhupdate`.
+- **Host↔guest bridge** = (a) VirtualBox **shared folders** `Install`, `IOsim`, `PLC`, `TNC` mapped
+  under the per-VM host folder; (b) VirtualBox **guest properties** `/HEIDENHAIN/*` (VMUSER/PW,
+  CMD/Cmd, LC_ALL, CFG/Display/*); guest detects VBox via PCI `80eecafe` and loads
+  vboxguest/vboxvideo/vboxsf in `/etc/init.d/virtualbox`.
+- **Host control suite** (Qt6, in base MSI under `HEIDENHAIN\TNCvbBase\control\`):
+  - `tncvbcntl.exe` (= `JHCNTLEXE`, the launcher: imports/creates VM, starts it as a **fullscreen
+    native VirtualBox VM window** via `GUI/*` extradata, spawns the others),
+  - **`keypad.exe`** (on-screen TNC keyboard / soft-key panel = the missing "steering panel"; feeds
+    guest `heuinput` synthetic-input daemon via FIFO `/tmp/__heuinput`),
+  - `handwheel.exe` (jog wheel, **QTcpSocket to guest port 19035**),
+  - `jhiosimhostd.exe` + `iosim.dll` (= JHIOsim) + `plcmap.dll` (machine **PLC I/O simulation**).
+- **JHIO extpack** `Heidenhain_VBoxJHIO_Extension_Pack-4.3.0-r6.vbox-extpack` = VBox HGCM host
+  service `VBoxJHIO` (Win-only DLLs); bridges guest PLC I/O to host `iosim.dll` via a memory-mapped
+  file in the `IOsim` shared folder, synced per PLC scan cycle. **Only host piece with no
+  cross-platform binary.**
+- Licensing: **SIK** options (`hegetsikopt`/`helicenseviewer`), USB dongles **MARX CrypToken**
+  (VID 0d7a) + **AKS Hardlock** (VID 0529), and TE 5xx/6xx/7xx keyboard units (VID 1091) — all
+  USB-passthrough device filters in the OVF. Without license → demo mode.
+
+**Original porting blockers (Windows→UNIX):** x86_64 guest on Apple Silicon needs slow QEMU/UTM
+emulation (VBox-ARM can't run x86 guests); the Windows Qt control suite + Win-only JHIO extpack must
+be replaced/reimplemented or run via a Linux x86 VBox host. The reimplementation surface is: the Qt
+apps + small iosim/plcmap DLLs + the documented **port 19035** / **heuinput FIFO** / shared-folder +
+guestproperty protocol. (This is the "option A" path; the current focus below is "option B" =
+translate/run the i386 control directly.)
+
+**Workspace / extraction provenance:**
+- Extracted artifacts live in `work/`: `ova/`, `extpack/`, `msi_prog/`, `msi_base/` (APPDIR:./control),
+  `setupmeta/`. Raw disk = `work/ova/disk.raw` (sparse), inspected read-only via
+  `hdiutil attach -nomount` (slices /dev/disk4s1..s7) + `debugfs` (brew e2fsprogs) — no mounting.
+- **Control binaries are NOT in `target.tar.xz`** (that's just the HeROS OS). They live in
+  `prog/setup.zip` → `TNC640_SYS.{1,2,3}.zip` → tree rooted at `heros5/bin/`. Extracted to
+  `work/control/sysroot/`; HeROS OS to `work/target/rootfs/`.
+- Host tools installed during this work: sevenzip, cabextract, binwalk, qemu, e2fsprogs, msitools,
+  Ghidra 12.1.2 + openjdk@21, rizin 0.8.2, patchelf, lima 2.1.3.
+
 ---
 
 ## Inventory: 335 i386 ELF objects (87 executables + 248 shared libraries) — ALL Intel 80386
@@ -151,3 +210,61 @@ closure and runs its own init). First hard blocker = the **HeROS kernel API**.
 ### Reproduce
 - Translation + dep-closure + device shim: `scripts/arm64_translate_poc.sh`
 - Recompile proof: `recomp/build_and_verify.sh`
+
+---
+
+## Triage facts (key numbers, for orientation)
+- 335 ELF objects, **ALL i386 (Intel 80386), zero x86-64** = 87 executables (`.elf`) + 248 libraries
+  (`.so`). All dynamically linked, interpreter `/lib/ld-linux.so.2`, **not stripped** (symbols
+  present → legible decompilation). Largest: `ipo_progstation.elf` 8.2 MB (NCK interpolator).
+- Honest limit: Ghidra pseudo-C ≠ buildable source for the C++ product; recompiling the *whole*
+  control is infeasible + legally barred. Decompilation's real use here = interface recon for shims;
+  per-leaf-function recompile is what's been proven (see recomp tables).
+
+## Lessons / tooling caveats (carry these forward)
+- **Rosetta is x86-64-only** → it CANNOT translate this i386 control. (Relevant on macOS; on a real
+  x86_64 host this whole problem disappears — see migration notes.)
+- **rz-ghidra is NOT a brew formula** — use full Ghidra (`analyzeHeadless` + the post-script).
+- Native `objdump` in an ARM64 lima VM can't disassemble i386 ("architecture UNKNOWN"); use
+  `i686-linux-gnu-objdump`. (On x86_64, plain `objdump`/`gcc -m32` work natively.)
+- Host↔lima-VM mount was READ-ONLY → built in VM `/tmp` + `limactl copy` back; patchelf ran host-side.
+- **x87 fistp/fisttp** integer conversions of 80-bit intermediates near integer boundaries are NOT
+  cleanly reproducible on ARM SSE; `fisttpl(inf)=0x80000000` (x87 indefinite). This is why a few FP
+  fns (e.g. `FCYC_AnzahlSchichten`, `BCYC_*` originally) were excluded from the byte-identical bar.
+- **Cycle libs are function-pointer-table architectures** (esp. `libEp90_Drehcyc`): most "exports"
+  are runtime-registered forwarder thunks (`jmp *GOT`), NOT reimplementable. Filter real leaves by
+  "has `fld`/`fmul` AND no `@plt` AND no indirect `jmp`/`call *`".
+- When Ghidra's decomp ABI looks confused/pointless (e.g. a function typed `void` that actually
+  tail-returns a value in `eax`/`st0`), **disassemble** — the eax/st0 passthrough tail-return and
+  true arg order are recoverable from the stack-slot shuffles (`dmathe_PktAufBogen`,
+  `get_einfahr_radius` were recovered this way).
+- A recompile candidate must be **EXPORTED in `.dynsym`** to serve as the truth oracle — local
+  symbols (`hexbyte`, `FlModAccess`, `SlowPgmGetTaskIndex`, …) are genuine machine code but not
+  dynamically linkable, so they can't be diffed against.
+
+---
+
+## Migration notes: moving the RE work to x86_64 (2026-06-21)
+**Why:** decompilation/recompilation/verification is far easier on a native x86_64 host — no qemu,
+no cross-compiler, no lima VM, no read-only-mount dance.
+
+What changes on x86_64 (vs the Apple-Silicon M2 Max setup documented above):
+- The i386 control runs **natively** (32-bit on x86_64 via multilib) — no `qemu-i386`, no
+  translation layer. The whole "TRANSLATION PORT ROADMAP / heroscall" story is an ARM64-specific
+  concern; on x86_64 the original HeROS `heros.ko` kernel module can load for the full-system route.
+- Build/verify recompiled libs with native `gcc -m32` (install `gcc-multilib` / `glibc-devel.i686`).
+  No `gcc-i686-linux-gnu` cross-compiler needed; plain `objdump`/`gdb` handle i386.
+- The verification target on x86_64 is the genuine i386 `.so` running **natively** as the oracle
+  (still apply the same trim-NEEDED / stub-soname / neuter-ctors recipe so the leaf loads
+  standalone). Byte-identical (`recomp/*/`) results should reproduce; behavioral-FP results may now
+  match the oracle even MORE closely (no qemu x87 emulation in the loop) — re-run
+  `build_and_verify*.sh` to confirm and adjust tolerances if anything tightens.
+- Still install: Ghidra 12.1.2 + JDK 21 (headless decompile pipeline is host-arch-agnostic),
+  patchelf, rizin. The `recomp/*` artifacts named `*_arm64.dylib`/`*_aarch64.so` are ARM outputs;
+  regenerate x86_64/`.so` equivalents as needed (the `.text` of verified fns is genuine and unchanged).
+- IDA Pro MCP tools are available in this environment (see `mcp__ida-pro-mcp__*`) — an alternative/
+  complement to the Ghidra headless pipeline for the heavier decompile work on the new host.
+
+Open work still pending (unchanged by the move): more `libEp90_Gtlib` single-field classifiers
+(~40 IsGewinde-style candidates), `libplckernel` integer accessors, un-scanned libs. The recomp set
+is explicitly **NOT exhausted**.
