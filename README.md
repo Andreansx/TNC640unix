@@ -4,6 +4,8 @@ Goal: understand the **HEIDENHAIN TNC 640 Programming Station** deeply enough to
 UNIX‑like systems. It already runs on x86‑64 Linux (see status below); the open frontier is
 Apple Silicon / ARM64 and full machine power‑on.
 
+
+> I dont own a windows pc and i cant set up a windows 11 arm vm on my mac (cause the vm isnt arm64), so i wanted to be able to run this natively on Apple Silicon.
 > its gonna work on apple silicon ig
 
 A HEIDENHAIN TNC 640 is a CNC milling control. The *Programming Station* is the exact
