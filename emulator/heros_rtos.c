@@ -186,6 +186,7 @@ static int ev_send(uint32_t task,uint32_t bits){
 static int as_deliver=1;             /* HEROSCALL_AS_DELIVER=0 disables real signalling  */
 static int q_autocreate=1;           /* HEROSCALL_AUTO_QUEUE=0 disables black-hole queues */
 static uint32_t qread_maxwait=0;     /* HEROSCALL_QREAD_MAXWAIT=ms caps "forever" Q_read waits (debug) */
+static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for auto-created sems */
 
 /* raise SIGUSR1 (and optionally 18) on the task's OS thread to invoke its ASR */
 static void as_kick(int32_t tgid,int32_t tid,uint32_t trig){
@@ -260,7 +261,13 @@ static uint32_t sem_ident(const char*nm){
     lock();
     for(int i=0;i<MAXSEM;i++) if(C->sems[i].used&&!strncmp(C->sems[i].name,nm,NAMELEN-1)){
         uint32_t id=C->sems[i].id; unlock(); return id; }
-    unlock(); return 0;
+    unlock();
+    if(q_autocreate&&nm&&nm[0]){            /* peer-owned sem absent standalone: provide it
+                                             * AVAILABLE (count 1) so the waiter proceeds */
+        uint32_t id=sem_make(nm,sem_autocount); LOG("Sm_ident auto \"%s\" -> 0x%x (count %d)\n",nm,id,sem_autocount);
+        return id;
+    }
+    return 0;
 }
 static int sem_request(uint32_t id,uint32_t timeout){      /* P / wait */
     int s=sem_slot(id); if(s<0) return -7;
@@ -313,9 +320,21 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     LOG("Q_create \"%s\" depth %u flags %x -> 0x%x\n",base,depth,flags,id);
     return id;
 }
+/* Names used as service PRESENCE PROBES: auto-creating these defeats the control's
+ * graceful "service absent" degradation. e.g. HeLogging::CheckHeloggerIsRunning does
+ * q_ident("QueueHeLogger") and, on failure, logs locally instead of blocking on the
+ * logger handshake (ConnectToHelogger). So these must report "not found". */
+static int q_is_probe_name(const char*base){
+    static const char*const probe[]={ "QueueHeLogger", 0 };
+    for(int i=0;probe[i];i++) if(!strcmp(base,probe[i])) return 1;
+    return 0;
+}
 static uint32_t q_ident(const char*nm){
     char base[NAMELEN]; q_basename(base,nm);
     lock(); int s=q_find_slot(base); uint32_t id=(s>=0)?C->queues[s].id:0; unlock();
+    if(!id && q_autocreate && !q_is_probe_name(base)){    /* black-hole sink for absent peers */
+        id=q_create(base,2,0); LOG("Q_ident \"%s\" -> auto 0x%x\n",base,id); return id;
+    }
     LOG("Q_ident \"%s\" -> 0x%x\n",base,id);
     return id;                                            /* 0 => not found */
 }
@@ -412,6 +431,8 @@ static void ensure_init(void){
         const char *aq=getenv("HEROSCALL_AUTO_QUEUE"); q_autocreate=!(aq&&aq[0]=='0');
         const char *qw=getenv("HEROSCALL_QREAD_MAXWAIT"); qread_maxwait=0;
         if(qw) for(const char*q=qw; *q>='0'&&*q<='9'; q++) qread_maxwait=qread_maxwait*10+(uint32_t)(*q-'0');
+        const char *si=getenv("HEROSCALL_SEM_INIT"); if(si){ sem_autocount=0;
+            for(const char*q=si; *q>='0'&&*q<='9'; q++) sem_autocount=sem_autocount*10+(*q-'0'); }
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -554,8 +575,9 @@ long syscall(long n,...){
     case 0x14: /* As_read(reqptr@p[0], outptr@p[2]) — drains caught async signals */
         if(p) return as_read((uint32_t*)(uintptr_t)p[0],(uint32_t*)(uintptr_t)p[2]);
         return -22;
-    case 0x15: /* Sm_create -> sem id (p[2]=initial count, common pSOS layout) */
-        if(p) return (long)sem_make(0, (int)p[2]>=0?(int)p[2]:0);
+    case 0x15: /* Sm_create(name@p[0], count@p[2], flags@p[3]) -> sem id */
+        if(p&&p[0]) return (long)sem_make((const char*)(uintptr_t)p[0], (int)p[2]);
+        if(p) return (long)sem_make(0, (int)p[2]);
         return (long)sem_make(0,0);
     case 0x16: /* Sm_ident(name@p[0]) */
         if(p&&p[0]){ uint32_t id=sem_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-2; }
@@ -570,12 +592,10 @@ long syscall(long n,...){
         if(p&&p[0]) return (long)(int32_t)q_create((const char*)(uintptr_t)p[0], p[2], p[3]);
         return (long)(int32_t)q_create("", 0, 0);
     case 0x0b: /* Q_ident(name@p[0]) -> queue id (-0x13 if not found).
-                * Absent central services (QEvtServer, QueueHeLogger, …) are owned by
-                * peer processes not present standalone; auto-provide a black-hole queue
-                * so strict FMailslotQueue::Write sends succeed instead of asserting. */
-        if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]);
-            if(!id && q_autocreate) id=q_create((const char*)(uintptr_t)p[0],2,0);
-            return id?(long)id:-0x13; }
+                * q_ident() black-holes absent fire-and-forget sinks (QEvtServer, …) so
+                * strict FMailslotQueue::Write succeeds, but reports presence-probed names
+                * (QueueHeLogger) as not-found so the control degrades gracefully. */
+        if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-0x13; }
         return -0x13;
     case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4]) */
         if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2]);
