@@ -192,22 +192,42 @@ closure and runs its own init). First hard blocker = the **HeROS kernel API**.
   - `Sys_getenv` names: **SYS, SYS_NAME, USR, USR_NAME, OEM, OEM_NAME, OEME, OEME_NAME, EXECDIR, EXECDIRH, EXECBAT** (partition/identity/exec paths)
   - `T_ident` name=0 (ident self) → needs a valid task id; plus `Sm_create`/`Q_create`/`T_name` handle setup
 
-### Phase 2 — Build the LD_PRELOAD heroscall emulator  ← NEXT
-- [ ] 2.1 Skeleton: interpose `syscall()`, dispatch on `cmd & 0xffff`, decode each param struct from `heros_ko.decomp.c` handlers
-- [ ] 2.2 `Sys_getenv` — return correct HeROS env values. **OPEN QUESTION: what values?** Find them (HeROS guestproperty `/HEIDENHAIN/CFG/*`, init scripts, or SYS/PLC/TNC partition paths). Write value into the user out-buffer per the struct layout.
-- [ ] 2.3 `T_ident(self)` → return non-zero tid; `Sm_create`/`Q_create`/`T_name` → success + fake handle
-- [ ] 2.4 Re-run NCK, get past `PciHardware::Exception`, capture blocker #3
+### Phase 2 — Build the LD_PRELOAD heroscall emulator  ✓ DONE (passes blockers #1–#4)
+Built natively on the x86_64 box (no qemu). Sources in **`emulator/`**, full write-up in
+**`docs/17-heroscall-emulator.md`**. The NCK now boots through its whole RTOS/kernel-API init.
+- [x] 2.1 Skeleton: interpose `syscall()`, dispatch `cmd & 0xff`, pass non-222 to raw `int 0x80`.
+- [x] 2.2 `Sys_getenv` — values recovered VERBATIM from the control's own boot scripts
+  (`heros5/bin/../application` + `appproduct`): `SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc
+  OEME=/mnt/plce EXECDIRH=/mnt/sys/heros5/bin EXECBAT=/mnt/sys/batch/heros5 SYS_NAME=SYSTEM:
+  OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC:`. Served via `getenv()` from `run_nck.sh`.
+- [x] 2.3 `T_ident(self)`→nonzero tid; `Sm/Q/M_create`→fake handles; **`M_ident`→nonzero region id,
+  `M_attach`→a real 64 MB zeroed `mmap`** (this is what clears PciHardware).
+- [x] 2.4 Past `PciHardware::Exception` ✓. Then past `FProcess` argv assert (#3) with
+  `-p=~/IPO IPO -k=NC -M` (argv recovered from `batch/TNC640heros.txt`), then past IPO option
+  parsing → reached blocker **#5 = the configuration subsystem**.
 
-### Phase 3 — Iterate the blocker chain to a running control
-- [ ] message bus (`libGMessage*`), config, FUSE backends, device nodes, X/Qt MMI
-- [ ] each: understand → shim → advance → log
+### Phase 3 — Iterate the blocker chain to a running control  ← NEXT
+Blocker #5 is the first **application-level**, inherently **multi-process** dependency:
+`CfgMailslot::GetData` (libbackend-server.so) is a CLIENT of a config **server** over a HeROS
+mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has no server → the
+"NC" channel-group lookup returns err 42 → IPO aborts (misleading "Invalid Command Option -k").
+- [ ] 3.1 Upgrade the emulator's RTOS primitives from in-process fakes to **real cross-process IPC**
+  (SysV shm/sem/msg keyed by the HeROS names) so forked peers share one namespace.
+- [ ] 3.2 Run `AppStartMP.elf` (the process manager) so it spawns the constellation
+  (IPO + PLC + config server + Geo + …) which then answer each other's config/queue requests.
+- [ ] 3.3 Then: message bus (`libGMessage*`), FUSE backends, device nodes, X/Qt MMI. Full boot to
+  the Qt MMI remains the documented infeasible/legally-barred ceiling.
 
 ### Known blockers (live)
-- **#1 `/dev/herosapi` open** — PASSED via `work/re/shim/herosapi_shim.c` (LD_PRELOAD device stub)
-- **#2 `heroscall` syscall 222** — MECHANISM SOLVED: issued via libc `syscall()`, so LD_PRELOAD CAN catch it (`heroscall_probe.c` already intercepts all 57 calls, 0 leak to qemu). Remaining: emulate the commands (Phase 2). Control still aborts at `PciHardware::Exception` only because the stub returns empty data.
+- **#1 `/dev/herosapi` open** — PASSED (`emulator/herosapi_shim.c`).
+- **#2 `heroscall` syscall 222 / `PciHardware::Exception`** — PASSED. `M_ident("IPO_SHARED_MEMORY")`
+  + `M_attach` now serve a real zeroed region (`emulator/heroscall_emu.c`).
+- **#3 `FProcess` argv assert** — PASSED (correct argv).  **#4 empty `Sys_getenv`** — PASSED (real env).
+- **#5 config subsystem (`CfgMailslot` → config server)** — OPEN; needs the multi-process route (3.1/3.2).
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
+- heroscall emulator (the live frontier): **`emulator/run_nck.sh`** (see `docs/17-heroscall-emulator.md`)
 - Translation + dep-closure + device shim: `scripts/arm64_translate_poc.sh`
 - Recompile proof: `recomp/build_and_verify.sh`
 
