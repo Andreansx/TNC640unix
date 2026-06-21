@@ -68,7 +68,9 @@ struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
               volatile uint32_t as_pending;          /* async-signals raised but not yet read (TCB+0x1f0) */
               volatile uint32_t as_mask; };          /* enabled async-signal mask          (TCB+0x1f4) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
-struct qmsg { uint32_t len; uint8_t data[QMSGCAP]; };   /* one variable-length message */
+/* one variable-length message + the 12-byte sender header the kernel returns in Q_read's p[4]
+ * (from Q_send's message-node fields: source queue id, sender task, mode|size) */
+struct qmsg { uint32_t len; uint32_t hdr[3]; uint8_t data[QMSGCAP]; };
 struct queue{ int used; uint32_t id; char name[NAMELEN];
               uint32_t depth, flags;                  /* from Q_create (advisory)         */
               uint32_t owner, notify_bits;            /* Q_send Ev_sends notify_bits->owner (kernel +0xb8/+0xe8) */
@@ -348,15 +350,19 @@ static uint32_t q_ident(const char*nm){
     LOG("Q_ident \"%s\" -> 0x%x\n",base,id);
     return id;                                            /* 0 => not found */
 }
-static int q_send(uint32_t id,const void*msg,uint32_t size){
+static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x\n",id); return -9; }
     if(size>QMSGCAP){ LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
+    uint32_t sender=task_self();
     struct queue*q=&C->queues[s];
     lock();
     uint32_t used=q->tail-q->head;
     if(used>=QSLOTS) q->head++;                           /* drop oldest to make room */
     uint32_t slot=q->tail%QSLOTS;
     q->msg[slot].len=size;
+    q->msg[slot].hdr[0]=id;                               /* source queue id (kernel node +0x20) */
+    q->msg[slot].hdr[1]=sender;                           /* sender task    (kernel node +0x24) */
+    q->msg[slot].hdr[2]=(mode&0xffff)|((size&0xffff)<<16);/* mode | size    (kernel node +0x28) */
     if(msg&&size) memcpy(q->msg[slot].data,msg,size);
     qhex("Q_send",id,msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
@@ -367,7 +373,7 @@ static int q_send(uint32_t id,const void*msg,uint32_t size){
     LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
     return 0;
 }
-static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout){
+static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
     int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); return -9; }
     if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap forever-waits */
     struct queue*q=&C->queues[s];
@@ -377,6 +383,7 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout){
             uint32_t slot=q->head%QSLOTS;
             uint32_t len=q->msg[slot].len; if(maxsize&&len>maxsize) len=maxsize;
             if(buf&&len) memcpy(buf,q->msg[slot].data,len);
+            if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
             qhex("Q_read",id,buf,len);
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
             unlock();
@@ -612,11 +619,12 @@ long syscall(long n,...){
                 * (QueueHeLogger) as not-found so the control degrades gracefully. */
         if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-0x13; }
         return -0x13;
-    case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4]) */
-        if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2]);
+    case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */
+        if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
         return -9;
-    case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], timeout@p[6], qid@p[7]) */
-        if(p) return q_read(p[7], (void*)(uintptr_t)p[0], p[2], p[6]);
+    case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], hdr/base@p[4], timeout@p[6], qid@p[7]).
+                * p[4]!=0 (q_receive) -> kernel writes a 12-byte sender header there. */
+        if(p) return q_read(p[7], (void*)(uintptr_t)p[0], p[2], p[6], (uint32_t*)(uintptr_t)p[4]);
         return -9;
     case 0x1a:{ /* Tm_wkafter(ms@p[0]) — sleep, then return 0 */
         if(p&&p[0]){ struct timespec ts={p[0]/1000,(long)(p[0]%1000)*1000000L};
