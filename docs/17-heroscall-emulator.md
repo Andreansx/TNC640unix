@@ -127,10 +127,45 @@ constellation processes. That is the practical meaning of the documented
 result) is the tractable, proven part: it runs a genuine control binary through
 its whole kernel-API init.
 
+## The RTOS runtime (`heros_rtos.c`) — faithful blocking primitives
+
+`heroscall_emu.c` stubs each primitive (return success); that makes the genuine
+multi-threaded framework busy-loop or assert. `heros_rtos.c` replaces the stubs
+with a **real, cross-process RTOS runtime**:
+
+- **State in `/dev/shm/heros_rtos_ctl`** — a `MAP_SHARED` segment that survives
+  `fork()`+`execve()`, so the whole constellation (AppStart + children) shares one
+  RTOS namespace. Everything inside is referenced by INDEX, never pointer. Lazy,
+  idempotent init on the first heroscall (the LD_PRELOAD constructor doesn't fire
+  reliably under the explicit-loader invocation).
+- **Tasks** — per-thread ids (`T_ident` self maps `(tgid,tid)`→a unique id, cached
+  in TLS; named lookup via `T_name`/`T_ident`). This is essential: the old constant
+  id aliased every thread.
+- **Events** — per-task event word; `Ev_send(task,bits)` ORs bits in + `FUTEX_WAKE`;
+  `Ev_receive(want,cond,timeout)` `FUTEX_WAIT`s until `cond` (1=ALL,2=ANY) is met,
+  returns the caught word, clears it. Real blocking, no spin.
+- **Semaphores** (`Sm_*`), **queues/mailslots** (`Q_*`, ring buffer + futex),
+  **named shared regions** (`M_*` → per-name `/dev/shm` files). All futex-blocking.
+
+**Measured result on ConfigServer:** the runtime works. ConfigServer now allocates
+**two tasks with distinct ids** (main + a worker thread it spawns), the startup
+event wait **blocks** (3 `Ev_receive`, vs 8000 spins under the stub), and it runs
+through env + IPC setup (`Q_create`/`Q_ident`/`Q_send`) + the `As_mask` async-signal
+burst. It then stops in the worker thread's `sigchildcatcher` / async-signal setup
+(`P_signal(ASCHILD)`) with a SIGSEGV/stack-smash — a crash **present with the stub
+emulator too**, i.e. the next unimplemented subsystem: the **async-signal layer**
+(`As_send`/`As_receive`/`As_mask`/`P_signal`). Debugging it needs a backtrace (the
+box has no gdb/strace — next step is a no-sudo gdb or an interposed sigaction +
+glibc `backtrace()`).
+
+This is the genuine "make it bootable" substrate, incrementally proven: kernel-API
+init (doc above) → blocking RTOS primitives (here) → async signals (next) → the
+config server answering IPO's mailslot query.
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
 (first probe), `heroscall_probe2.c` (full param-struct dump), `heroscall_emu.c`
-(the emulator: env `HEROSCALL_VERBOSE`/`HEROSCALL_GRANT_EVENTS`), `run_nck.sh`
-(IPO), `run_cfgserver.sh` (the 2-process config-server experiment). Build each
-`.c` as an i386 shared object (`gcc -m32 -shared -fPIC`).
+(stub emulator: `HEROSCALL_VERBOSE`/`HEROSCALL_GRANT_EVENTS`), **`heros_rtos.c`**
+(the faithful RTOS runtime), `run_nck.sh` (IPO), `run_cfgserver.sh` (config-server
+experiment). Build each `.c` as an i386 shared object (`gcc -m32 -shared -fPIC`).
