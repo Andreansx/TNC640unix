@@ -1,0 +1,22 @@
+HEROSLIB_500.0 {
+  global:
+    as_enable;
+    p_name;
+    q_create;
+    q_delete;
+    q_ident;
+    q_rcvmsg;
+    q_read;
+    q_send;
+    sm_release;
+    sm_request;
+    sys_apphook_key;
+    sys_getenv;
+    sys_setenv;
+    t_atexit;
+    t_create;
+    t_ident;
+    t_name;
+    t_start;
+    tm_get;
+};

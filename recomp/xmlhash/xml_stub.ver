@@ -1,0 +1,4 @@
+HEROSLIB_500.0 {
+  global:
+    _sopen;
+};

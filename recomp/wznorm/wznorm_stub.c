@@ -1,0 +1,22 @@
+/* auto-generated stub for the trimmed libEp90_Wznorm oracle (see errplib). */
+long _s0 __asm__("_Z10turn_punktPdS_ddd") = 0;
+long _s1 __asm__("_Z11new_element9basvar_at") = 0;
+long _s2 __asm__("_Z12GTLIB_IsEveni") = 0;
+long _s3 __asm__("_Z13new_abschnitt7plan_at9gruppe_at9basvar_at") = 0;
+long _s4 __asm__("_Z14dealloc_geotecP6geotec") = 0;
+long _s5 __asm__("_Z16find_first_akopf7plan_at9gruppe_at") = 0;
+long _s6 __asm__("_Z22CreateAndConnectGeotecP5akopfP6geotec9basvar_at") = 0;
+long _s7 __asm__("_Z25insert_akopf_on_top_levelP5akopf") = 0;
+long _s8 __asm__("_Z27konturdrehsinn_in_abschnittP5akopfdd") = 0;
+long _s9 __asm__("_Z30GTFIND_BereichKennungImCalstatP5akopfmPP6geotecS3_") = 0;
+long _s10 __asm__("_ZN6nckern9codecheck12RegistrationC1ENS0_7SegmentESt17basic_string_viewIcSt11char_traitsIcEE") = 0;
+long _s11 __asm__("_ZN6nckern9codecheck12RegistrationD1Ev") = 0;
+long _s12 __asm__("compare_winkel") = 0;
+long _s13 __asm__("ERR_GenNewExternError") = 0;
+long _s14 __asm__("ERR_GenNewExternErrorTextArg") = 0;
+long _s15 __asm__("ERR_GenNewFatalError") = 0;
+long _s16 __asm__("ERR_InitErrorStatus") = 0;
+long _s17 __asm__("GEOLIB_IsGeoringAbschnitt") = 0;
+long _s18 __asm__("norm_winkel") = 0;
+long _s19 __asm__("normiere_winkel") = 0;
+long _s20 __asm__("winkelhalbierende") = 0;

@@ -1,0 +1,5 @@
+GEN gen_stub.c
+STUB libQt5Core.so.5 stub_libQt5Core_so_5.c stub_libQt5Core_so_5.ver
+STUB libQt5Gui.so.5 stub_libQt5Gui_so_5.c stub_libQt5Gui_so_5.ver
+STUB libQt5Quick.so.5 stub_libQt5Quick_so_5.c stub_libQt5Quick_so_5.ver
+STUB libQt5Svg.so.5 stub_libQt5Svg_so_5.c stub_libQt5Svg_so_5.ver

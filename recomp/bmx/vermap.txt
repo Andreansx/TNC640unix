@@ -1,0 +1,5 @@
+Qt_5 libQt5Svg.so.5
+Qt_5 libQt5Gui.so.5
+Qt_5 libQt5Core.so.5
+Qt_5.15 libQt5Core.so.5
+Qt_5 libQt5Quick.so.5

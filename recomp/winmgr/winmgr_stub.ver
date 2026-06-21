@@ -1,0 +1,12 @@
+HEROSLIB_500.0 {
+  global:
+    ev_send;
+    p_ident;
+    q_create;
+    q_delete;
+    q_ident;
+    q_read;
+    q_send;
+    t_ident;
+    tm_wkafter;
+};

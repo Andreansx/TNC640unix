@@ -4,6 +4,8 @@ Goal: understand the **HEIDENHAIN TNC 640 Programming Station** deeply enough to
 UNIX‑like systems. It already runs on x86‑64 Linux (see status below); the open frontier is
 Apple Silicon / ARM64 and full machine power‑on.
 
+> its gonna work on apple silicon ig
+
 A HEIDENHAIN TNC 640 is a CNC milling control. The *Programming Station* is the exact
 same control software running inside a virtual machine on a PC, so you can write and
 dry‑run G‑code / Klartext (conversational) NC programs without a real machine and without

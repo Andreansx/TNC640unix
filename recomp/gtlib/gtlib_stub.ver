@@ -1,0 +1,10 @@
+HEROSLIB_500.0 {
+  global:
+    ev_receive;
+    p_ident;
+    p_name;
+    sm_release;
+    sm_request;
+    t_mode;
+    tm_get;
+};

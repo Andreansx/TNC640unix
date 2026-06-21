@@ -1,0 +1,5 @@
+HEROSLIB_500.0 {
+  global:
+    sm_release;
+    sm_request;
+};

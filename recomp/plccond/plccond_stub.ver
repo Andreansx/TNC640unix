@@ -1,0 +1,4 @@
+JHVOLUMELIB_500.0 {
+  global:
+    jhv_path2vol;
+};
