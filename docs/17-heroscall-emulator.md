@@ -275,10 +275,43 @@ The worker threads build the constellation regardless, so the **2-process config
 experiment** — run `ipo_progstation.elf` against this live `CfgServerQueue` — is now the
 natural next test. The verbose log is thread-tagged (`[t<tid> hc ..]`).
 
+## Cross-process config IPC works (blocker #5 — the multi-process path)
+
+With ConfigServer standing up `CfgServerQueue` and idling, the **2-process experiment**
+(`run_2proc_config.sh`) finally runs: ConfigServer (background) creates the shared
+`/dev/shm/heros_rtos_ctl` namespace and its queues, then `ipo_progstation.elf`
+(foreground) attaches the *same* namespace. The runtime's futexes are process-SHARED
+(no `FUTEX_PRIVATE`), so cross-process wakeups work on the MAP_SHARED segment.
+
+Result — **IPO blows past the standalone blocker #5**:
+- `Q_ident "CfgServerQueue" -> 0x306` — IPO resolves ConfigServer's queue *across
+  processes* (it was created in the other process);
+- `Q_send -> queue 0x306 size 69` — IPO sends its config request to the live server;
+- IPO then `Q_read`s its own reply queue, waiting for the answer.
+
+No more "Invalid Command Option -k" / err 42 / immediate exit — the config client now
+connects to a real server. `CfgMailslot::GetData("NC")` issues a genuine request.
+
+**Open — ConfigServer's serve loop isn't active yet.** The request sits unread because
+no ConfigServer thread is reading `CfgServerQueue`: the five workers are parked on
+`Ev_receive 0x01011000` (an event, waiting for "start serving"), and the **main thread
+parks in a glibc futex** (`/proc/<tid>/wchan = futex_wait_queue`, but its last *heroscall*
+was the temp-queue `Q_delete` — so it's a pthread_cond/join, not the emulator) right
+after init, before it signals the workers. ConfigServer also **forks** a supervisor
+parent (in `sigsuspend`) over the real multithreaded child. Next: decompile
+ConfigServer's main post-init orchestration (what it waits on after the `Q_delete`s —
+likely an AppStart "go" / a peer-process registration) so the serve loop activates and a
+worker drains `CfgServerQueue` to answer IPO.
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
 (first probe), `heroscall_probe2.c` (full param-struct dump), `heroscall_emu.c`
 (stub emulator: `HEROSCALL_VERBOSE`/`HEROSCALL_GRANT_EVENTS`), **`heros_rtos.c`**
-(the faithful RTOS runtime), `run_nck.sh` (IPO), `run_cfgserver.sh` (config-server
-experiment). Build each `.c` as an i386 shared object (`gcc -m32 -shared -fPIC`).
+(the faithful RTOS runtime), `run_nck.sh` (IPO standalone), `run_cfgserver.sh` (early
+stub-emulator config experiment), **`run_rtos_cfgserver.sh`** (ConfigServer under the
+RTOS runtime, full constellation), **`run_2proc_config.sh`** (the IPO↔ConfigServer
+cross-process experiment). Build each `.c` as an i386 shared object
+(`gcc -m32 -shared -fPIC`). Runtime env flags: `HEROSCALL_VERBOSE` (thread-tagged
+trace), `HEROSCALL_AS_DELIVER`, `HEROSCALL_AUTO_QUEUE`, `HEROSCALL_SEM_INIT`,
+`HEROSCALL_QREAD_MAXWAIT`, `HEROSCALL_BTRACE` (fault locator).
