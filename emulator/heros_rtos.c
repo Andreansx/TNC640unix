@@ -36,6 +36,8 @@
 #include <linux/futex.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <signal.h>
+#include <ucontext.h>
 
 long syscall(long n, ...);
 /* raw 5-arg syscall (i386 int 0x80). All syscalls we issue fit in <=5 args
@@ -44,7 +46,7 @@ long syscall(long n, ...);
 static long raw5(long n,long a,long b,long c,long d,long e){ long r;
     __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a),"c"(b),"d"(c),"S"(d),"D"(e):"memory"); return r; }
 
-static int vrb=0;
+static int vrb=0, btrace_on=0;
 #define LOG(...) do{ if(vrb) fprintf(stderr,"[rtos] " __VA_ARGS__); }while(0)
 static const char* hcname(int lo);
 /* unbuffered debug via raw write(2) — survives early-constructor / pre-crash */
@@ -294,12 +296,71 @@ static void ensure_init(void){
     while(__atomic_exchange_n(&g_guard,1,__ATOMIC_ACQUIRE)) ;
     if(!__atomic_load_n(&g_inited,__ATOMIC_ACQUIRE)){
         const char *v=getenv("HEROSCALL_VERBOSE"); vrb=v&&v[0]=='1';
+        const char *bt=getenv("HEROSCALL_BTRACE"); btrace_on=bt&&bt[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
     __atomic_store_n(&g_guard,0,__ATOMIC_RELEASE);
 }
 __attribute__((constructor)) static void rtos_init(void){ ensure_init(); }
+
+/* ---------------- opt-in crash fault-locator (HEROSCALL_BTRACE=1) -------------
+ * The box has no gdb/strace, and glibc backtrace()/dlsym pull GLIBC_2.34 (the
+ * control's glibc is 2.31). So: interpose sigaction(), forward via RAW
+ * rt_sigaction with our own restorer trampoline (no dlsym), and on a fatal signal
+ * print the faulting EIP + address + /proc/self/maps so EIP can be mapped to a
+ * lib+offset (and thence a function, offline) — no glibc backtrace needed. */
+static struct { int set; void(*h)(int); void(*sa)(int,siginfo_t*,void*); int flags; } ctrl_h[40];
+static int is_fatal(int s){ return s==SIGSEGV||s==SIGABRT||s==SIGBUS||s==SIGILL||s==SIGFPE; }
+/* i386 signal restorer: handlers return through here -> rt_sigreturn */
+__attribute__((naked)) static void rtos_restorer(void){ __asm__("movl $173,%eax; int $0x80"); }
+/* kernel rt_sigaction(sig, kact, koldact, 8). kernel act = {handler,flags,restorer,mask[2]} */
+static int kern_sigaction(int sig,void*h,unsigned long flags,unsigned long m0,unsigned long m1,int wrap){
+    unsigned long ka[5]={ (unsigned long)h, flags|0x04000000/*SA_RESTORER*/|(wrap?0x00000004/*SA_SIGINFO*/:0),
+                          (unsigned long)rtos_restorer, m0, m1 };
+    return (int)raw5(SYS_rt_sigaction,sig,(long)ka,0,8,0);
+}
+static void hx(unsigned long v){ char b[11]="0x00000000"; for(int i=0;i<8;i++){ int d=(v>>((7-i)*4))&0xf; b[2+i]=d<10?'0'+d:'a'+d-10; } raw5(SYS_write,2,(long)b,10,0,0); }
+static void crash_locate(int sig,siginfo_t*si,void*ucv){
+    ucontext_t*uc=(ucontext_t*)ucv;
+    raw5(SYS_write,2,(long)"\n=== [rtos] FAULT sig=",22,0,0); hx(sig);
+    raw5(SYS_write,2,(long)" eip=",5,0,0); hx(uc?(unsigned long)uc->uc_mcontext.gregs[REG_EIP]:0);
+    raw5(SYS_write,2,(long)" addr=",6,0,0); hx(si?(unsigned long)si->si_addr:0);
+    raw5(SYS_write,2,(long)"\n--- /proc/self/maps ---\n",25,0,0);
+    int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)"/proc/self/maps",0,0,0);
+    if(fd>=0){ char buf[1024]; long r; while((r=raw5(SYS_read,fd,(long)buf,sizeof buf,0,0))>0) raw5(SYS_write,2,(long)buf,r,0,0); raw5(SYS_close,fd,0,0,0,0); }
+    raw5(SYS_write,2,(long)"=== [rtos] end fault ===\n",25,0,0);
+    if(sig>0&&sig<40&&ctrl_h[sig].set){  /* chain to control's handler */
+        if((ctrl_h[sig].flags&SA_SIGINFO)&&ctrl_h[sig].sa) ctrl_h[sig].sa(sig,si,ucv);
+        else if(ctrl_h[sig].h) ctrl_h[sig].h(sig); }
+    raw5(SYS_exit_group,128+sig,0,0,0,0);
+}
+static void chk_btrace(void){ static int done=0; if(done)return; done=1;
+    const char*b=getenv("HEROSCALL_BTRACE"); btrace_on=(b&&b[0]=='1'); }
+int sigaction(int sig,const struct sigaction*act,struct sigaction*old){
+    chk_btrace();
+    if(act&&btrace_on&&is_fatal(sig)){
+        ctrl_h[sig].set=1; ctrl_h[sig].flags=act->sa_flags;
+        ctrl_h[sig].h=act->sa_handler; ctrl_h[sig].sa=act->sa_sigaction;
+        const unsigned long*m=(const unsigned long*)&act->sa_mask;
+        return kern_sigaction(sig,(void*)crash_locate,act->sa_flags,m[0],m[1],1);
+    }
+    if(act){ const unsigned long*m=(const unsigned long*)&act->sa_mask;
+        return kern_sigaction(sig,(void*)act->sa_handler,act->sa_flags,m[0],m[1],
+                              (act->sa_flags&SA_SIGINFO)!=0); }
+    return (int)raw5(SYS_rt_sigaction,sig,0,(long)old,8,0);
+}
+/* signal(): older API some HeROS code uses to install handlers */
+void (*signal(int sig,void(*h)(int)))(int){
+    chk_btrace();
+    if(btrace_on&&is_fatal(sig)&&h!=SIG_DFL&&h!=SIG_IGN){
+        ctrl_h[sig].set=1; ctrl_h[sig].flags=0; ctrl_h[sig].h=h; ctrl_h[sig].sa=0;
+        kern_sigaction(sig,(void*)crash_locate,0,0,0,1);
+        return (void(*)(int))0;
+    }
+    kern_sigaction(sig,(void*)h,0,0,0,0);
+    return (void(*)(int))0;
+}
 
 long syscall(long n,...){
     va_list ap; va_start(ap,n);
