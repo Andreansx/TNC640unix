@@ -98,7 +98,7 @@ translate/run the i386 control directly.)
 | `libfile.so` | lib | HeROS file layer | **recompiled+verified** ✓ (BitFieldTst, IsNcFile/IsAscFile, …) |
 | `libplckernel.so` | lib | PLC kernel | decompiled; clean leaves reference globals (table extraction needed) |
 
-## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 30 batches, 215 functions
+## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 38 batches, 265 functions
 ### (14 byte-identical libraries / 88 fns below; 13 behavioral-equivalence libraries / 112 fns in the next table; `gtlib2`: +13 fns, `geometri2`: +2 fns — see "x86_64 native migration" section at end)
 
 | Binary | Artifacts | Verification |
@@ -299,5 +299,19 @@ The migration to x86_64 (above) is **done and proven**. The host is a Ryzen Wind
   `IsPolaresWinkelInkrement`) completing the libEp90_Geometri family; reimplemented as flat
   dword-array readers (mask selects field idx 54/55/60/61, gated by 22/23, `&0x126 == K`),
   verified **byte-IDENTICAL** (5 fns incl. the 3 prior, 1344 vectors). ARM64 deliverables built.
-- **Project total: 215 verified functions.** Still NOT exhausted — more Gtlib geometry classifiers,
-  plckernel accessors, and 240+ un-mined libs remain. Method now fast (native, no qemu) + IDA-assisted.
+- **More new batches (all IDA-decompiled, native-verified IDENTICAL, ARM64 built, committed):**
+  `aeplib` (6 flat-field: SchlittenInKanal/MehrSpindler/chk_zustellung/VorschubTyp/ElementNichtBearbeiten/
+  set_ovsi_0), `aeplib2` (3 Bam list-mutators, per-arch list), `dcsiface` (5 DcsInterface:: flat-this:
+  _cfgYAxis/_isAxisAvailable[Ch]/KernOpenSpm/KernOpenWkz), `spurgen` (SwapN buffer-reverse, Box_erweitern
+  bbox min/max), `geocontours` (6 libgeolibcontours flat-this predicates incl. self-ptr PocketsDefined),
+  `geoxcontour` (16 libgeoextendedcontour accessors: ValueRange<uint|double> min/max/span/empty/valid +
+  SplittableValueRange getters + FixedGridHash cell_*), `geoxcontour2` (12 setters: CleaningGroup fluent
+  setters + ValueRange set_min/set_max).
+- **IDA leaf-scanner (`D:\TNC\ida\ida_scan.py`):** lists exported leaf candidates (size 7-400, no internal
+  callees — libc/import/thunk callees allowed). KEY: high-level C++ libs (libtnc/libGeoModule/libPlc*/
+  libStartUpCtrl/etc.) are leaf-POOR (orchestration); the leaf-RICH libs are the low-level computational
+  ones — esp. **libgeolibcontours (136 cand) and libgeoextendedcontour (215 cand)** still have many more.
+- **Project total: 265 verified functions** (started this migration at 200). Still NOT exhausted.
+- Deferred (need disasm or are non-leaves): GTFIND_HasRuck (garbled bitmask), GeometryTools::
+  is_value_inside_range (garbled FP), is_consistent family (call externals), SplittableValueRange::
+  set_range/set_number_of_samples (cold paths). Build helper: `recomp/x86_64_native/build_arm64.sh`.
