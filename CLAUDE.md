@@ -98,7 +98,7 @@ translate/run the i386 control directly.)
 | `libfile.so` | lib | HeROS file layer | **recompiled+verified** ✓ (BitFieldTst, IsNcFile/IsAscFile, …) |
 | `libplckernel.so` | lib | PLC kernel | decompiled; clean leaves reference globals (table extraction needed) |
 
-## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 70 batches, 475 functions
+## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 73 batches, 490 functions
 ### (14 byte-identical libraries / 88 fns below; 13 behavioral-equivalence libraries / 112 fns in the next table; `gtlib2`: +13 fns, `geometri2`: +2 fns — see "x86_64 native migration" section at end)
 
 | Binary | Artifacts | Verification |

@@ -28,9 +28,9 @@ for i,(sym,kind,*offs) in enumerate(items):
     hp.append(f"extern int {sym}(void*);")
     if kind.startswith('pimpl'):
         m=offs[0]
-        calls.append(f'{{unsigned char o[1024],d[1024];fill(o,1024,{i*7+1});fill(d,1024,{i*13+3});*(void**)(o+{m})=d;int r={sym}(o);int n=sprintf(buf,"%d %d\\n",{i},r);write(1,buf,n);}}')
+        calls.append(f'{{static unsigned char o[70000],d[70000];fill(o,70000,{i*7+1});fill(d,70000,{i*13+3});*(void**)(o+{m})=d;int r={sym}(o);int n=sprintf(buf,"%d %d\\n",{i},r);write(1,buf,n);}}')
     else:
-        calls.append(f'{{unsigned char o[1024];fill(o,1024,{i*7+1});int r={sym}(o);int n=sprintf(buf,"%d %d\\n",{i},r);write(1,buf,n);}}')
+        calls.append(f'{{static unsigned char o[70000];fill(o,70000,{i*7+1});int r={sym}(o);int n=sprintf(buf,"%d %d\\n",{i},r);write(1,buf,n);}}')
 hp.append("int main(void){char buf[64];")
 hp+=calls
 hp.append("return 0;}")
