@@ -189,6 +189,9 @@ static int ev_send(uint32_t task,uint32_t bits){
 static int as_deliver=1;             /* HEROSCALL_AS_DELIVER=0 disables real signalling  */
 static int q_autocreate=1;           /* HEROSCALL_AUTO_QUEUE=0 disables black-hole queues */
 static uint32_t qread_maxwait=0;     /* HEROSCALL_QREAD_MAXWAIT=ms caps "forever" Q_read waits (debug) */
+static uint32_t sync_timeout=0;      /* HEROSCALL_SYNC_TIMEOUT=ms caps forever Q_read on "*Sync" handshake
+                                      * queues only (e.g. QSikSync) — these deadlock when their server peer
+                                      * isn't running (no external SikServer); legit fast replies still pass */
 static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for auto-created sems */
 static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue message payloads */
 static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
@@ -351,7 +354,7 @@ static uint32_t q_ident(const char*nm){
     return id;                                            /* 0 => not found */
 }
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
-    int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x\n",id); return -9; }
+    int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x size %u\n",id,size); qhex("Q_FAIL",id,msg,size); return -9; }
     if(size>QMSGCAP){ LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
     uint32_t sender=task_self();
     struct queue*q=&C->queues[s];
@@ -375,7 +378,9 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
 }
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
     int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); return -9; }
-    if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap forever-waits */
+    if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap ALL forever-waits */
+    if(timeout==0xffffffff && sync_timeout && strstr(C->queues[s].name,"Sync")){ /* cap only *Sync handshakes */
+        timeout=sync_timeout; LOG("Q_read \"%s\" forever-wait capped to %ums (no server peer)\n",C->queues[s].name,sync_timeout); }
     struct queue*q=&C->queues[s];
     for(;;){
         lock();
@@ -452,6 +457,8 @@ static void ensure_init(void){
         const char *aq=getenv("HEROSCALL_AUTO_QUEUE"); q_autocreate=!(aq&&aq[0]=='0');
         const char *qw=getenv("HEROSCALL_QREAD_MAXWAIT"); qread_maxwait=0;
         if(qw) for(const char*q=qw; *q>='0'&&*q<='9'; q++) qread_maxwait=qread_maxwait*10+(uint32_t)(*q-'0');
+        const char *st=getenv("HEROSCALL_SYNC_TIMEOUT"); sync_timeout=0;
+        if(st) for(const char*q=st; *q>='0'&&*q<='9'; q++) sync_timeout=sync_timeout*10+(uint32_t)(*q-'0');
         const char *si=getenv("HEROSCALL_SEM_INIT"); if(si){ sem_autocount=0;
             for(const char*q=si; *q>='0'&&*q<='9'; q++) sem_autocount=sem_autocount*10+(*q-'0'); }
         const char *dq=getenv("HEROSCALL_DUMPQ"); qdump=dq&&dq[0]=='1';
@@ -618,6 +625,7 @@ long syscall(long n,...){
                 * strict FMailslotQueue::Write succeeds, but reports presence-probed names
                 * (QueueHeLogger) as not-found so the control degrades gracefully. */
         if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-0x13; }
+        LOG("Q_ident EMPTY/NULL name (p0=%08x) -> -0x13 (reply will black-hole)\n", p?p[0]:0);
         return -0x13;
     case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */
         if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
