@@ -98,8 +98,8 @@ translate/run the i386 control directly.)
 | `libfile.so` | lib | HeROS file layer | **recompiled+verified** ✓ (BitFieldTst, IsNcFile/IsAscFile, …) |
 | `libplckernel.so` | lib | PLC kernel | decompiled; clean leaves reference globals (table extraction needed) |
 
-## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 27 libraries, 200 functions
-### (14 byte-identical libraries / 88 fns below; 13 behavioral-equivalence libraries / 112 fns in the next table)
+## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 30 batches, 215 functions
+### (14 byte-identical libraries / 88 fns below; 13 behavioral-equivalence libraries / 112 fns in the next table; `gtlib2`: +13 fns, `geometri2`: +2 fns — see "x86_64 native migration" section at end)
 
 | Binary | Artifacts | Verification |
 |---|---|---|
@@ -268,3 +268,36 @@ What changes on x86_64 (vs the Apple-Silicon M2 Max setup documented above):
 Open work still pending (unchanged by the move): more `libEp90_Gtlib` single-field classifiers
 (~40 IsGewinde-style candidates), `libplckernel` integer accessors, un-scanned libs. The recomp set
 is explicitly **NOT exhausted**.
+
+---
+
+## x86_64 native migration COMPLETE + IDA + new work (2026-06-21) — `ssh pawel`
+
+The migration to x86_64 (above) is **done and proven**. The host is a Ryzen Windows box reached via
+`ssh pawel`; the workhorse is its **WSL2 Ubuntu 24.04**. Full mechanics in memory
+`project-x86_64-native-verify` and `recomp/x86_64_native/README.md`. Highlights:
+
+- **Native verification pipeline works (no qemu).** No-sudo 32-bit toolchain (`~/tnc/m32gcc`, deb
+  `apt-get download` + `dpkg -x`), universal auto oracle-load recipe (trim non-glibc NEEDED, supply
+  versioned stubs for VERNEED sonames, neuter init, weak `ret` stub for unversioned proprietary
+  syms), tolerant comparator (`recomp/x86_64_native/{nverify.sh,fpdiff.py}`).
+- **All 25 prior recomp libs re-validated natively:** 22 byte-IDENTICAL (same SHA-256) + 3
+  FP-EQUIVALENT (anfahr/dmathe/geolib). IMPORTANT correction: the M2 "0 ULP" FP claims were a
+  **qemu x87-emulation artifact**; on real x87 hardware the FP-geometry libs differ by a few ULP —
+  max **relative** error ~1e-14 (negligible, sub-femtometer). `file` lib has one cosmetic OOB-read
+  harness artifact in its negative bit-index sweep (84/85 rows exact).
+- **IDA Pro (idalib 9.2) works directly** via the mrexodia venv python (`ida_list.py`/`ida_decomp.py`
+  in `D:\TNC\ida\`); the `mcp__ida-pro-mcp__*` tools wired to the Mac session do NOT connect.
+- **NEW: `recomp/gtlib2/` — 13 new `GTFIND_*` classifiers** decompiled with IDA off libEp90_Gtlib.so,
+  reimplemented via the per-arch named-field-struct technique, verified **byte-IDENTICAL** (same
+  SHA-256, 46080 vectors, native i386 oracle vs native x86_64 rebuild). ARM64 deliverables built:
+  `libEp90_Gtlib2_arm64.dylib` (macOS) + `libEp90_Gtlib2_aarch64.so` (Linux, via no-sudo
+  `~/tnc/a64gcc` cross-compiler). Functions: IsAbflach/IsMehrkant/IsMuster/IsFigur/IsBohrung(akopf)/
+  IsRohr/IsStange/IsTasche/IsRucksackTyp/IsGeoKomplett/IsGeoError/IsLine/IsCirc. Skipped HasRuck
+  (IDA-garbled sparse bitmask) + IsHorLine/IsVertLine (call non-leaf `stg_element`).
+- **NEW: `recomp/geometri2/` — 2 new coordinate-type classifiers** (`IsPolaresLaengenInkrement`,
+  `IsPolaresWinkelInkrement`) completing the libEp90_Geometri family; reimplemented as flat
+  dword-array readers (mask selects field idx 54/55/60/61, gated by 22/23, `&0x126 == K`),
+  verified **byte-IDENTICAL** (5 fns incl. the 3 prior, 1344 vectors). ARM64 deliverables built.
+- **Project total: 215 verified functions.** Still NOT exhausted — more Gtlib geometry classifiers,
+  plckernel accessors, and 240+ un-mined libs remain. Method now fast (native, no qemu) + IDA-assisted.
