@@ -85,17 +85,52 @@ This is the first blocker that is **not** a kernel/RTOS primitive: it is
 inherently multi-process. The config data itself *is* present in the extraction
 (`config/ChannelCfg.atr`, `default/oem/config/channel.cfg`, dozens of `.cfg`).
 
-The genuine path forward is therefore the **multi-process route**: upgrade the
-emulator's RTOS primitives (`M_*`, `Sm_*`, `Q_*`/mailslots, `Ev_*`) from
-in-process fakes to *real cross-process IPC* (SysV shm/sem/msg keyed by the HeROS
-names), then run `AppStartMP.elf` so it spawns the constellation
-(IPO + PLC + config server + …), which then share one RTOS namespace and answer
-each other's queries. Full boot to the Qt MMI remains the documented
-infeasible/legally-barred ceiling, but getting the constellation to start and
-exchange config is the next meaningful milestone.
+The genuine path forward is therefore the **multi-process route**: run the config
+*server* alongside IPO and let them talk. That experiment was run, and it pins the
+real ceiling precisely (below).
+
+## Blocker #5 investigation — the 2-process experiment (ConfigServer + IPO)
+
+The config server is **`ConfigServer.elf`** (process `~/cfgserver`, launched
+`-f=%SYS%\config\jhconfigfiles.cfg -i=Nc` per `batch/TNC640heros.txt`).
+`jhconfigfiles.cfg` lists the machine-config DB (`SYS:\config\jh.cfg`, `…\tnc.cfg`,
+`ChannelCfg.atr`, `AxisCfg.atr`, …) — all present in the extraction.
+
+Run standalone under the emulator (with `SYS`/`OEM`/`USR` pointed at the config
+tree), `ConfigServer.elf`:
+1. resolves env identity, parses `-f`/`-i` ✓;
+2. sets up async-signal handling — a burst of `As_mask` (heroscall `0x13`) +
+   `P_signal` (the `libheros` `sigchildcatcher`) ✓;
+3. then **blocks in an infinite `Ev_receive` for event `0x80000`** — the
+   `FProcess` *startup-synchronisation barrier*. A child normally waits here for
+   its parent (`AppStartMP`) to grant the next startup state. Standalone, nobody
+   sends it, so it never reads config.
+
+`Ev_receive` returns the received event word in **eax** (kernel: `task[0x21]`;
+valid conditions 1/2). The emulator's no-op stub returns 0 ⇒ "no event" ⇒ with an
+infinite timeout the process busy-loops. An **experimental** coarse grant
+(`HEROSCALL_GRANT_EVENTS=1` → return the requested bits) pushes it past the
+barrier — but then `ConfigServerProcess::MainContext` → `FThread::EvalContextThread`
+asserts **"Context could not be created"** (fthread.cpp:546).
+`FThread::CreateContextFromCallback` builds an `FEvent` + `FWaitableEV` and
+**asserts that the registered waitable's id equals the event id** — coarse stubs
+can't satisfy that.
+
+**Conclusion (the concrete ceiling):** running the *genuine multi-threaded* HeROS
+server processes requires faithfully reimplementing the HeROS **task / context /
+event / waitable runtime** — tasks as real threads, with `Ev_*`/`Sm_*`/`Q_*` as
+real blocking primitives whose ids and wake semantics match what the `FThread`/
+`FEvent`/`FProcess` framework asserts on. This is not one bug; it is an entire
+subsystem (a HeROS-compatible userspace RTOS), and ConfigServer is one of ~30
+constellation processes. That is the practical meaning of the documented
+"infeasible to fully port" ceiling. The single-process emulator (this doc's main
+result) is the tractable, proven part: it runs a genuine control binary through
+its whole kernel-API init.
 
 ## Files
 
-`emulator/` — `herosapi_shim.c`, `heroscall_probe.c` (first probe),
-`heroscall_probe2.c` (full param-struct dump), `heroscall_emu.c` (the emulator),
-`run_nck.sh`. Build each `.c` as an i386 shared object (`gcc -m32 -shared -fPIC`).
+`emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
+(first probe), `heroscall_probe2.c` (full param-struct dump), `heroscall_emu.c`
+(the emulator: env `HEROSCALL_VERBOSE`/`HEROSCALL_GRANT_EVENTS`), `run_nck.sh`
+(IPO), `run_cfgserver.sh` (the 2-process config-server experiment). Build each
+`.c` as an i386 shared object (`gcc -m32 -shared -fPIC`).

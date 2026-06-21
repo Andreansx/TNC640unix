@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -29,6 +30,14 @@ static int fake_n = 0;
 
 static int is_heros_dev(const char *p) {
     return p && (strstr(p, "herosapi") || strstr(p, "/dev/events"));
+}
+/* Optional: log interesting file opens (HEROSAPI_LOGOPEN=1) — config DB resolution. */
+static int logopen = -1;
+static void logo(const char *path, int fd) {
+    if (logopen < 0) { const char *e = getenv("HEROSAPI_LOGOPEN"); logopen = (e && e[0]=='1'); }
+    if (!logopen || !path) return;
+    if (strstr(path,".cfg")||strstr(path,".atr")||strstr(path,"config")||strstr(path,":\\")||strstr(path,"SYS")||strstr(path,"PLC"))
+        fprintf(stderr, "[open] %s\"%s\" -> %d\n", fd<0?"FAIL ":"", path, fd);
 }
 static void remember(int fd) { if (fd >= 0 && fake_n < MAX_FAKE) fake_fds[fake_n++] = fd; }
 static int is_fake(int fd) {
@@ -47,17 +56,17 @@ static int make_fake(const char *path) {
 int open(const char *path, int flags, ...) {
     if (is_heros_dev(path)) return make_fake(path);
     va_list ap; va_start(ap, flags); int m = va_arg(ap, int); va_end(ap);
-    return (int)syscall(SYS_openat, AT_FDCWD, path, flags, m);
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, flags, m); logo(path, fd); return fd;
 }
 int open64(const char *path, int flags, ...) {
     if (is_heros_dev(path)) return make_fake(path);
     va_list ap; va_start(ap, flags); int m = va_arg(ap, int); va_end(ap);
-    return (int)syscall(SYS_openat, AT_FDCWD, path, flags | O_LARGEFILE, m);
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, flags | O_LARGEFILE, m); logo(path, fd); return fd;
 }
 int openat(int dfd, const char *path, int flags, ...) {
     if (is_heros_dev(path)) return make_fake(path);
     va_list ap; va_start(ap, flags); int m = va_arg(ap, int); va_end(ap);
-    return (int)syscall(SYS_openat, dfd, path, flags, m);
+    int fd = (int)syscall(SYS_openat, dfd, path, flags, m); logo(path, fd); return fd;
 }
 
 /* Answer every ioctl on a faked device fd with success. */
