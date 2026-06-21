@@ -98,7 +98,7 @@ translate/run the i386 control directly.)
 | `libfile.so` | lib | HeROS file layer | **recompiled+verified** ✓ (BitFieldTst, IsNcFile/IsAscFile, …) |
 | `libplckernel.so` | lib | PLC kernel | decompiled; clean leaves reference globals (table extraction needed) |
 
-## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 38 batches, 265 functions
+## Recompiled to native ARM64 + verified equivalent (`recomp/`) — 43 batches, 270 functions
 ### (14 byte-identical libraries / 88 fns below; 13 behavioral-equivalence libraries / 112 fns in the next table; `gtlib2`: +13 fns, `geometri2`: +2 fns — see "x86_64 native migration" section at end)
 
 | Binary | Artifacts | Verification |
@@ -311,7 +311,7 @@ The migration to x86_64 (above) is **done and proven**. The host is a Ryzen Wind
   callees — libc/import/thunk callees allowed). KEY: high-level C++ libs (libtnc/libGeoModule/libPlc*/
   libStartUpCtrl/etc.) are leaf-POOR (orchestration); the leaf-RICH libs are the low-level computational
   ones — esp. **libgeolibcontours (136 cand) and libgeoextendedcontour (215 cand)** still have many more.
-- **Project total: 265 verified functions** (started this migration at 200). Still NOT exhausted.
+- **Project total: 270 verified functions** (started this migration at 200). Still NOT exhausted.
 - Deferred (need disasm or are non-leaves): GTFIND_HasRuck (garbled bitmask), GeometryTools::
   is_value_inside_range (garbled FP), is_consistent family (call externals), SplittableValueRange::
   set_range/set_number_of_samples (cold paths). Build helper: `recomp/x86_64_native/build_arm64.sh`.
