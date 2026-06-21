@@ -62,7 +62,9 @@ static void dbg(const char*s){ int n=0; while(s[n])n++; raw5(SYS_write,2,(long)s
 #define NAMELEN 32
 
 struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
-              volatile uint32_t events; };           /* futex word */
+              volatile uint32_t events;              /* futex word (events) */
+              volatile uint32_t started;             /* futex word (t_create<->t_start rendezvous) */
+              uint32_t ctx_dst, arg_dst, msgsize; }; /* delivery slots (process-local ptrs) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
 struct queue{ int used; uint32_t id; char name[NAMELEN];
               volatile uint32_t head, tail;          /* tail-head = count; futex on tail */
@@ -326,6 +328,16 @@ static void crash_locate(int sig,siginfo_t*si,void*ucv){
     raw5(SYS_write,2,(long)"\n=== [rtos] FAULT sig=",22,0,0); hx(sig);
     raw5(SYS_write,2,(long)" eip=",5,0,0); hx(uc?(unsigned long)uc->uc_mcontext.gregs[REG_EIP]:0);
     raw5(SYS_write,2,(long)" addr=",6,0,0); hx(si?(unsigned long)si->si_addr:0);
+    /* EBP-chain walk + raw stack dump from ESP (catches the smashing function even
+     * when glibc's abort path omits frame pointers — correlate addrs with maps). */
+    raw5(SYS_write,2,(long)"\n frames:",9,0,0);
+    if(uc){ unsigned long bp=(unsigned long)uc->uc_mcontext.gregs[REG_EBP];
+        for(int i=0;i<10&&bp>0x1000&&bp<0xfffff000;i++){
+            raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(bp+4));
+            unsigned long nb=*(unsigned long*)bp; if(nb<=bp) break; bp=nb; } }
+    raw5(SYS_write,2,(long)"\n stack:",8,0,0);
+    if(uc){ unsigned long sp=(unsigned long)uc->uc_mcontext.gregs[REG_ESP];
+        for(int i=0;i<96&&sp;i++){ raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(sp+4*i)); } }
     raw5(SYS_write,2,(long)"\n--- /proc/self/maps ---\n",25,0,0);
     int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)"/proc/self/maps",0,0,0);
     if(fd>=0){ char buf[1024]; long r; while((r=raw5(SYS_read,fd,(long)buf,sizeof buf,0,0))>0) raw5(SYS_write,2,(long)buf,r,0,0); raw5(SYS_close,fd,0,0,0,0); }
@@ -375,6 +387,31 @@ long syscall(long n,...){
     if(vrb&&p&&(lo==0x00||lo==0x02)){ fprintf(stderr,"   FULL[%02x]:",lo);
         for(int i=0;i<14;i++) fprintf(stderr," %08x",p[i]); fprintf(stderr,"\n"); }
     switch(lo){
+    case 0x00:{ /* T_create (task side, sub_D330): register + block until t_start delivers ctx.
+                 * param: p[2]=msgsize, p[6]=&arg_out, p[8]=&taskid_out, p[10]=ctx_buf, p[12]=parent */
+        if(!p) return -1;
+        uint32_t T=task_self(); int s=task_slot(T);
+        if(s>=0){ C->tasks[s].ctx_dst=p[10]; C->tasks[s].arg_dst=p[6];
+                  C->tasks[s].msgsize=p[2]; __atomic_store_n(&C->tasks[s].started,0,__ATOMIC_RELEASE); }
+        if(p[8]) *(uint32_t*)(uintptr_t)p[8]=T;        /* deliver task id to the parent (arg[4]) */
+        if(p[12]) ev_send(p[12],0x80000);              /* wake t_create_ex's ev_receive(0x80000) */
+        LOG("T_create task 0x%x parent 0x%x ctxbuf %08x -> wait t_start\n",T,p[12],p[10]);
+        if(s>=0){ for(;;){ uint32_t st=__atomic_load_n(&C->tasks[s].started,__ATOMIC_ACQUIRE);
+                  if(st) break; futex(&C->tasks[s].started,FUTEX_WAIT,0,0); } }
+        return 0;                                       /* success -> sub_D330 calls _run(arg_out, ctx_buf) */
+    }
+    case 0x02:{ /* T_start (parent): deliver context to task & resume it.
+                 * param: p[0]=size, p[2]=ctx src, p[4]=task id */
+        if(!p) return -1;
+        uint32_t tid=p[4],size=p[0],src=p[2]; int s=task_slot(tid);
+        if(s<0){ LOG("T_start unknown task 0x%x\n",tid); return -1; }
+        if(C->tasks[s].ctx_dst&&src&&size) memcpy((void*)(uintptr_t)C->tasks[s].ctx_dst,(void*)(uintptr_t)src,size);
+        if(C->tasks[s].arg_dst) *(uint32_t*)(uintptr_t)C->tasks[s].arg_dst=size;
+        __atomic_store_n(&C->tasks[s].started,1,__ATOMIC_RELEASE);
+        futex(&C->tasks[s].started,FUTEX_WAKE,0x7fffffff,0);
+        LOG("T_start task 0x%x size %u -> delivered+resumed\n",tid,size);
+        return 0;                                       /* >=0 -> t_start() returns true (success) */
+    }
     case 0x01:{ /* T_ident: name inline p[0..1] (0=self) */
         if(p&&(p[0]||p[1])){
             char nm[9]; memcpy(nm,p,8); nm[8]=0;
