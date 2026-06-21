@@ -303,6 +303,35 @@ ConfigServer's main post-init orchestration (what it waits on after the `Q_delet
 likely an AppStart "go" / a peer-process registration) so the serve loop activates and a
 worker drains `CfgServerQueue` to answer IPO.
 
+## Serve loop activated — ConfigServer reads + processes IPO's request
+
+Backtracing all 7 ConfigServer threads (via `/proc/<pid>/task/*/{syscall,maps,mem}` — yama=1
+so the reader forks the server as an ancestor; ConfigServer itself forks a supervisor parent
+in `sigsuspend` over the real 7-thread child) showed the serve loop is the HeROS event loop:
+`FThread::DispatchEvents → FWaitableList::NotifyEvAll → ev_receive(mask, ANY, -1)`, where the
+mask ORs each input-queue waitable's event bit; on an event it runs `FWaitableQueue::Notify →
+PollMessage` (non-blocking `Q_read`) → `FModule::DispatchMessage`. So a queue message must
+`Ev_send` the queue's event bit to the owner.
+
+The kernel does exactly that: `Q_send`, on enqueue, calls `Ev_sendtcb(owner@+0xb8, bits@+0xe8)`
+when the queue is notify-enabled; `Q_create` sets `owner = creating task` and, if `flags & 2`,
+`bits = flags & 0xff000000`. `CfgServerQueue` (flags `0x1000003`) → notify `0x01000000` → owner
+task `0x100`, matching the receiver's `ev_receive` mask `0x01011000`. The emulator now records
+`owner`/`notify_bits` on `Q_create` and `ev_send`s them on `Q_send` (cross-process via the shared
+ctl). **Result: the serve loop wakes, `Q_read`s `CfgServerQueue`, reads IPO's 69-byte config
+request, processes it, and emits responses to `QEvtServer` (sizes up to 4380).**
+
+**Final gap — reply routing back to IPO.** The request carries IPO's reply-queue name as a
+length-prefixed string (`"0-0000106CfgM"`), but ConfigServer replies to qid `0xffffffed` (`-0x13`,
+a failed resolution) and never `Q_ident`s that name. `FMailslotQueue::Open(astring)` *would*
+`q_ident` the name — so the server isn't taking the name from the body; it's using a numeric
+reply reference (kernel `Q_send` stores the sender's reply queue in the message node; `Q_read_ex`
+returns it) that the emulator doesn't yet surface. Next: decompile the CfgServer message handler
++ kernel `Q_msgpack`/`Q_read_ex` sender metadata, then deliver the sender's reply-queue id on
+`Q_read`. Once the reply lands on IPO's reply queue, IPO's blocking `Q_read` wakes via the futex
+`__wake_up` path and `CfgMailslot::GetData("NC")` returns — clearing blocker #5. Debug:
+`HEROSCALL_DUMPQ=1` hex-dumps queue payloads.
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
