@@ -55,20 +55,24 @@ static void dbg(const char*s){ int n=0; while(s[n])n++; raw5(SYS_write,2,(long)s
 /* ---------------- shared control segment ---------------- */
 #define MAXTASK 512
 #define MAXSEM  512
-#define MAXQ    256
+#define MAXQ    96
 #define MAXREG  64
-#define QSLOTS  64        /* messages per queue */
-#define QWORDS  8         /* dwords per message  */
+#define QSLOTS  12         /* messages buffered per queue                        */
+#define QMSGCAP 16384      /* max bytes per message (kernel caps Q_send @ 0x8000) */
 #define NAMELEN 32
 
 struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
               volatile uint32_t events;              /* futex word (events) */
               volatile uint32_t started;             /* futex word (t_create<->t_start rendezvous) */
-              uint32_t ctx_dst, arg_dst, msgsize; }; /* delivery slots (process-local ptrs) */
+              uint32_t ctx_dst, arg_dst, msgsize;    /* delivery slots (process-local ptrs) */
+              volatile uint32_t as_pending;          /* async-signals raised but not yet read (TCB+0x1f0) */
+              volatile uint32_t as_mask; };          /* enabled async-signal mask          (TCB+0x1f4) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
+struct qmsg { uint32_t len; uint8_t data[QMSGCAP]; };   /* one variable-length message */
 struct queue{ int used; uint32_t id; char name[NAMELEN];
-              volatile uint32_t head, tail;          /* tail-head = count; futex on tail */
-              uint32_t buf[QSLOTS][QWORDS]; };
+              uint32_t depth, flags;                  /* from Q_create (advisory)         */
+              volatile uint32_t head, tail;           /* tail-head = count; futex on tail */
+              struct qmsg msg[QSLOTS]; };
 struct region{int used; uint32_t id; char name[20]; uint32_t size; };
 
 struct ctl {
@@ -129,6 +133,7 @@ static uint32_t task_self(void){
     if(s<0){ unlock(); return 0x101; }
     C->tasks[s].used=1; C->tasks[s].id=C->next_task++; C->tasks[s].tgid=tgid; C->tasks[s].tid=tid;
     C->tasks[s].events=0; C->tasks[s].name[0]=0;
+    C->tasks[s].as_pending=0; C->tasks[s].as_mask=0;
     my_task=C->tasks[s].id; unlock();
     LOG("task_self -> new id 0x%x (tgid %d tid %d)\n",my_task,tgid,tid);
     return my_task;
@@ -169,6 +174,76 @@ static int ev_send(uint32_t task,uint32_t bits){
     return 0;
 }
 
+/* ---------------- async signals (pSOS "asr") ----------------
+ * Per-task pending word (as_pending) + enabled mask (as_mask). As_send ORs bits
+ * into a target's pending; if any newly-raised bit is enabled (mask | forced),
+ * the kernel delivers SIGUSR1 (10) to the target's OS thread (+ sig 18 for the
+ * 0x400000 bit) so its ASR runs and calls As_read to drain. The forced-on bits
+ * (0x2c00000 for send/read, 0xc00000 for mask) are always enabled. ABI recovered
+ * from heros.ko {As_send,As_mask,As_read} + libheros {as_send,as_mask,as_catch}. */
+#define AS_FORCED       0x2c00000u   /* always-enabled bits (As_send / As_read)        */
+#define AS_FORCED_MASK  0x00c00000u  /* As_mask "newly-enabled & pending" trigger bits  */
+static int as_deliver=1;             /* HEROSCALL_AS_DELIVER=0 disables real signalling  */
+static int q_autocreate=1;           /* HEROSCALL_AUTO_QUEUE=0 disables black-hole queues */
+static uint32_t qread_maxwait=0;     /* HEROSCALL_QREAD_MAXWAIT=ms caps "forever" Q_read waits (debug) */
+
+/* raise SIGUSR1 (and optionally 18) on the task's OS thread to invoke its ASR */
+static void as_kick(int32_t tgid,int32_t tid,uint32_t trig){
+    if(!as_deliver||tid<=0) return;
+    raw5(SYS_tgkill,tgid,tid,10,0,0);                 /* SIGUSR1 = async-signal carrier */
+    if(trig&0x400000) raw5(SYS_tgkill,tgid,tid,18,0,0);
+}
+static int as_send(uint32_t target,uint32_t bits){
+    uint32_t tgt = (target==(uint32_t)-1) ? task_self() : target;
+    int s=task_slot(tgt); if(s<0){ LOG("As_send unknown task 0x%x\n",tgt); return -9; }
+    lock();
+    uint32_t newbits = ~C->tasks[s].as_pending & bits;
+    C->tasks[s].as_pending |= bits;
+    uint32_t msk=C->tasks[s].as_mask; int32_t tgid=C->tasks[s].tgid,tid=C->tasks[s].tid;
+    unlock();
+    uint32_t trig = (msk|AS_FORCED) & newbits;
+    LOG("As_send -> task 0x%x bits %08x (new %08x trig %08x)\n",tgt,bits,newbits,trig);
+    if(trig) as_kick(tgid,tid,trig);
+    return 0;
+}
+/* op: 0 = clear bits from mask, 1 = add bits to mask, 2 = set mask absolute.
+ * Writes the resulting/old mask back through valp (the i386 caller reads it). */
+static int as_mask_op(uint32_t *valp,uint32_t op){
+    uint32_t self=task_self(); int s=task_slot(self); if(s<0) return -22;
+    uint32_t in = valp?*valp:0, out, trig=0;
+    int32_t tgid,tid;
+    lock();
+    uint32_t msk=C->tasks[s].as_mask, pend=C->tasks[s].as_pending;
+    tgid=C->tasks[s].tgid; tid=C->tasks[s].tid;
+    if(op==1){                                        /* add bits */
+        if((~msk & in)==0) out=msk;                   /* all already set -> return old */
+        else { out=msk|in; trig=((~msk & in)|AS_FORCED_MASK)&pend; C->tasks[s].as_mask=out; }
+    } else if(op==2){                                 /* set absolute (as_enable) */
+        out=msk; C->tasks[s].as_mask=in; trig=(in|AS_FORCED_MASK)&pend;  /* return OLD */
+    } else {                                          /* op==0: clear bits */
+        out=~in & msk; C->tasks[s].as_mask=out;
+    }
+    unlock();
+    if(valp) *valp=out;
+    if(trig) as_kick(tgid,tid,trig);                  /* a now-enabled signal is already pending */
+    return 0;
+}
+/* As_read: caught = (req|forced) & pending; pending &= ~caught. req==0 means
+ * "all of mask". Writes caught to outp, the (resolved) req back to reqp. */
+static int as_read(uint32_t *reqp,uint32_t *outp){
+    uint32_t self=task_self(); int s=task_slot(self); if(s<0) return -22;
+    lock();
+    uint32_t req = reqp?*reqp:0;
+    if(req==0) req=C->tasks[s].as_mask;
+    uint32_t caught=(req|AS_FORCED)&C->tasks[s].as_pending;
+    C->tasks[s].as_pending &= ~caught;
+    unlock();
+    if(outp) *outp=caught;
+    if(reqp) *reqp=req;
+    LOG("As_read req %08x -> caught %08x\n",req,caught);
+    return 0;
+}
+
 /* ---------------- semaphores ---------------- */
 static uint32_t sem_make(const char*nm,int count){
     lock();
@@ -206,47 +281,81 @@ static int sem_release(uint32_t id){                        /* V / signal */
     return 0;
 }
 
-/* ---------------- queues / mailslots ---------------- */
-static uint32_t q_make(const char*nm){
-    lock();
-    if(nm&&nm[0]) for(int i=0;i<MAXQ;i++) if(C->queues[i].used&&!strncmp(C->queues[i].name,nm,NAMELEN-1)){
-        uint32_t id=C->queues[i].id; unlock(); return id; }
-    int s=-1; for(int i=0;i<MAXQ;i++) if(!C->queues[i].used){ s=i; break; }
-    if(s<0){ unlock(); return 0; }
-    C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
-    C->queues[s].name[0]=0; if(nm) strncpy(C->queues[s].name,nm,NAMELEN-1);
-    uint32_t id=C->queues[s].id; unlock(); return id;
-}
+/* ---------------- queues / mailslots ----------------
+ * Queues are STRING-NAMED (Q_create registers a name, Q_ident finds it; shared
+ * across processes via the segment). Messages are variable-length byte blobs
+ * (the serialised GMessage), not fixed dword cells. ABI (heros.ko + libheros):
+ *   Q_create  p[0]=name ptr, p[2]=depth, p[3]=flags          -> queue id
+ *   Q_ident   p[0]=name ("queue" or "queue.process")          -> queue id / -0x13
+ *   Q_send    p[0]=msg ptr,  p[2]=size,  p[4]=queue id         -> 0/err
+ *   Q_read    p[0]=out buf,  p[2]=maxsize, p[7]=queue id, p[6]=timeout -> size  */
 static int q_slot(uint32_t id){ for(int i=0;i<MAXQ;i++) if(C->queues[i].used&&C->queues[i].id==id) return i; return -1; }
-static int q_send(uint32_t id,const uint32_t*msg){
-    int s=q_slot(id); if(s<0) return -7;
+/* copy a queue name, stripping any ".process" suffix; queues key on the base name */
+static void q_basename(char*dst,const char*nm){
+    int n=0; if(nm) while(nm[n]&&n<NAMELEN-1){ dst[n]=nm[n]; n++; } dst[n]=0;
+    char*dot=strrchr(dst,'.'); if(dot) *dot=0;
+}
+static int q_find_slot(const char*base){
+    for(int i=0;i<MAXQ;i++) if(C->queues[i].used&&!strncmp(C->queues[i].name,base,NAMELEN-1)) return i;
+    return -1;
+}
+static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
+    char base[NAMELEN]; q_basename(base,nm);
+    lock();
+    int s=q_find_slot(base);
+    if(s>=0){ uint32_t id=C->queues[s].id; unlock(); return id; }   /* idempotent on name */
+    s=-1; for(int i=0;i<MAXQ;i++) if(!C->queues[i].used){ s=i; break; }
+    if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
+    C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
+    C->queues[s].depth=depth; C->queues[s].flags=flags;
+    C->queues[s].name[0]=0; strncpy(C->queues[s].name,base,NAMELEN-1);
+    uint32_t id=C->queues[s].id; unlock();
+    LOG("Q_create \"%s\" depth %u flags %x -> 0x%x\n",base,depth,flags,id);
+    return id;
+}
+static uint32_t q_ident(const char*nm){
+    char base[NAMELEN]; q_basename(base,nm);
+    lock(); int s=q_find_slot(base); uint32_t id=(s>=0)?C->queues[s].id:0; unlock();
+    LOG("Q_ident \"%s\" -> 0x%x\n",base,id);
+    return id;                                            /* 0 => not found */
+}
+static int q_send(uint32_t id,const void*msg,uint32_t size){
+    int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x\n",id); return -9; }
+    if(size>QMSGCAP){ LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
     struct queue*q=&C->queues[s];
     lock();
     uint32_t used=q->tail-q->head;
-    if(used>=QSLOTS){ unlock(); return -0x35; }
+    if(used>=QSLOTS) q->head++;                           /* drop oldest to make room */
     uint32_t slot=q->tail%QSLOTS;
-    for(int k=0;k<QWORDS;k++) q->buf[slot][k]=msg?msg[k]:0;
+    q->msg[slot].len=size;
+    if(msg&&size) memcpy(q->msg[slot].data,msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
     unlock();
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);
+    LOG("Q_send -> queue 0x%x size %u (depth now %u)\n",id,size,used+1);
     return 0;
 }
-static int q_read(uint32_t id,uint32_t*out,uint32_t timeout){
-    int s=q_slot(id); if(s<0) return -7;
+static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout){
+    int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); return -9; }
+    if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap forever-waits */
     struct queue*q=&C->queues[s];
     for(;;){
         lock();
         if(q->tail!=q->head){
             uint32_t slot=q->head%QSLOTS;
-            if(out) for(int k=0;k<QWORDS;k++) out[k]=q->buf[slot][k];
+            uint32_t len=q->msg[slot].len; if(maxsize&&len>maxsize) len=maxsize;
+            if(buf&&len) memcpy(buf,q->msg[slot].data,len);
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
-            unlock(); return 0;
+            unlock();
+            LOG("Q_read <- queue 0x%x size %u\n",id,len);
+            return (int)len;                              /* message size in eax */
         }
         uint32_t t=q->tail; unlock();
-        if(timeout==0) return -0x35;
+        if(timeout==0) return -0x35;                      /* empty, no-wait */
         struct timespec ts,*tp=0;
         if(timeout!=0xffffffff){ ts.tv_sec=timeout/1000; ts.tv_nsec=(timeout%1000)*1000000L; tp=&ts; }
         futex(&q->tail,FUTEX_WAIT,t,tp);
+        if(timeout!=0xffffffff && q->tail==q->head) return -0x35;   /* timed out */
     }
 }
 
@@ -299,6 +408,10 @@ static void ensure_init(void){
     if(!__atomic_load_n(&g_inited,__ATOMIC_ACQUIRE)){
         const char *v=getenv("HEROSCALL_VERBOSE"); vrb=v&&v[0]=='1';
         const char *bt=getenv("HEROSCALL_BTRACE"); btrace_on=bt&&bt[0]=='1';
+        const char *ad=getenv("HEROSCALL_AS_DELIVER"); as_deliver=!(ad&&ad[0]=='0');
+        const char *aq=getenv("HEROSCALL_AUTO_QUEUE"); q_autocreate=!(aq&&aq[0]=='0');
+        const char *qw=getenv("HEROSCALL_QREAD_MAXWAIT"); qread_maxwait=0;
+        if(qw) for(const char*q=qw; *q>='0'&&*q<='9'; q++) qread_maxwait=qread_maxwait*10+(uint32_t)(*q-'0');
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -382,9 +495,10 @@ long syscall(long n,...){
 
     ensure_init();
     uint32_t cmd=(uint32_t)a; int lo=cmd&0xff; uint32_t *p=(uint32_t*)b;
-    if(vrb) fprintf(stderr,"[hc %02x %-11s] p=[%08x %08x %08x %08x] a2=%lx\n",
-        lo,hcname(lo),p?p[0]:0,p?p[1]:0,p?p[2]:0,p?p[3]:0,c);
-    if(vrb&&p&&(lo==0x00||lo==0x02)){ fprintf(stderr,"   FULL[%02x]:",lo);
+    if(vrb) fprintf(stderr,"[t%ld hc %02x %-11s] p=[%08x %08x %08x %08x] a2=%lx\n",
+        raw5(SYS_gettid,0,0,0,0,0),lo,hcname(lo),p?p[0]:0,p?p[1]:0,p?p[2]:0,p?p[3]:0,c);
+    if(vrb&&p&&(lo==0x00||lo==0x02||lo==0x0a||lo==0x0b||lo==0x0d||lo==0x0e)){
+        fprintf(stderr,"   FULL[%02x]:",lo);
         for(int i=0;i<14;i++) fprintf(stderr," %08x",p[i]); fprintf(stderr,"\n"); }
     switch(lo){
     case 0x00:{ /* T_create (task side, sub_D330): register + block until t_start delivers ctx.
@@ -431,6 +545,15 @@ long syscall(long n,...){
     case 0x11: /* Ev_receive(want@p[0], cond@p[1], timeout@p[2]) -> event word */
         if(p) return (long)(int32_t)ev_receive(p[0],p[1],p[2]);
         return 0;
+    case 0x12: /* As_send(target@p[0], bits@p[1]) */
+        if(p) return as_send(p[0],p[1]);
+        return -9;
+    case 0x13: /* As_mask(valptr@p[0], op@p[2]) — writes result back through *p[0] */
+        if(p) return as_mask_op((uint32_t*)(uintptr_t)p[0], p[2]);
+        return -22;
+    case 0x14: /* As_read(reqptr@p[0], outptr@p[2]) — drains caught async signals */
+        if(p) return as_read((uint32_t*)(uintptr_t)p[0],(uint32_t*)(uintptr_t)p[2]);
+        return -22;
     case 0x15: /* Sm_create -> sem id (p[2]=initial count, common pSOS layout) */
         if(p) return (long)sem_make(0, (int)p[2]>=0?(int)p[2]:0);
         return (long)sem_make(0,0);
@@ -443,17 +566,23 @@ long syscall(long n,...){
     case 0x19: /* Sm_release(id@p[0]) */
         if(p) return sem_release(p[0]);
         return -7;
-    case 0x0a: /* Q_create -> queue id */
-        return (long)q_make(0);
-    case 0x0b: /* Q_ident(name@p[0]) */
-        if(p&&p[0]) return (long)q_make((const char*)(uintptr_t)p[0]);
-        return -2;
-    case 0x0d: /* Q_send(id@p[0], msg@p[1..]) */
-        if(p) return q_send(p[0], p+1);
-        return -7;
-    case 0x0e: /* Q_read(id@p[0], outbuf@a2, timeout@p[2]) */
-        if(p) return q_read(p[0], (uint32_t*)(uintptr_t)c, p[2]);
-        return -7;
+    case 0x0a: /* Q_create(name@p[0], depth@p[2], flags@p[3]) -> queue id */
+        if(p&&p[0]) return (long)(int32_t)q_create((const char*)(uintptr_t)p[0], p[2], p[3]);
+        return (long)(int32_t)q_create("", 0, 0);
+    case 0x0b: /* Q_ident(name@p[0]) -> queue id (-0x13 if not found).
+                * Absent central services (QEvtServer, QueueHeLogger, …) are owned by
+                * peer processes not present standalone; auto-provide a black-hole queue
+                * so strict FMailslotQueue::Write sends succeed instead of asserting. */
+        if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]);
+            if(!id && q_autocreate) id=q_create((const char*)(uintptr_t)p[0],2,0);
+            return id?(long)id:-0x13; }
+        return -0x13;
+    case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4]) */
+        if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2]);
+        return -9;
+    case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], timeout@p[6], qid@p[7]) */
+        if(p) return q_read(p[7], (void*)(uintptr_t)p[0], p[2], p[6]);
+        return -9;
     case 0x1a:{ /* Tm_wkafter(ms@p[0]) — sleep, then return 0 */
         if(p&&p[0]){ struct timespec ts={p[0]/1000,(long)(p[0]%1000)*1000000L};
             raw5(SYS_nanosleep,(long)&ts,0,0,0,0); }
@@ -478,7 +607,8 @@ static const char* hcname(int lo){ switch(lo){
   case 0x07:return"T_getargs";case 0x08:return"T_setname";case 0x09:return"T_name";
   case 0x0a:return"Q_create";case 0x0b:return"Q_ident";case 0x0d:return"Q_send";
   case 0x0e:return"Q_read";case 0x10:return"Ev_send";case 0x11:return"Ev_receive";
-  case 0x13:return"As_mask";case 0x15:return"Sm_create";case 0x16:return"Sm_ident";
+  case 0x12:return"As_send";case 0x13:return"As_mask";case 0x14:return"As_read";
+  case 0x15:return"Sm_create";case 0x16:return"Sm_ident";
   case 0x18:return"Sm_request";case 0x19:return"Sm_release";case 0x1a:return"Tm_wkafter";
   case 0x21:return"M_create";case 0x22:return"M_ident";case 0x23:return"M_attach";
   case 0x24:return"M_detach";case 0x26:return"Sys_setenv";case 0x27:return"Sys_getenv";

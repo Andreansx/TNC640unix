@@ -213,6 +213,68 @@ all still stubbed) implemented, or deeper stack forensics.
 **Chain so far:** kernel-API init → blocking RTOS primitives → **task creation
 (done)** → async signals (next) → config read → the mailslot serve loop.
 
+## Async signals + the mailslot transport → ConfigServer boots its constellation
+
+The "async-signal-heavy stack-smash" turned out **not** to be the async layer at all.
+Implementing `As_*` left the crash unchanged (`HEROSCALL_AS_DELIVER` on/off identical).
+The fault-locator's "stack smashing detected" was a *secondary* abort: the real fault is
+an **uncaught C++ exception** — `FMailslotQueue::Write` (`fmailslotqueue.cpp:243`) asserts
+*"Bad Message Transport!"*, constructs an `FBackEndError`, throws, and `terminate()` runs.
+Root cause: the **queue ABI was wrong on every field**.
+
+**Async signals (done, verified).** ABI from `heros.ko` `{As_send 0x12, As_mask 0x13,
+As_read 0x14}` + libheros `{as_send, as_mask, as_catch, as_enable}`:
+- `As_send`  `p[0]=target` (`-1`=self), `p[1]=bits` — OR into the target's *pending* word;
+  if `(mask | 0x2c00000) & newbits`, deliver **SIGUSR1 (10)** to the target's thread via
+  `tgkill` (+ sig 18 for the `0x400000` bit) so its ASR runs.
+- `As_mask`  `p[0]=&val`, `p[2]=op` (`0`=clear, `1`=add, `2`=set ≡ `as_enable`); the
+  resulting/old mask is written **back through `*p[0]`** (the i386 caller reads it there).
+- `As_read`  `p[0]=&req` (`0`=all of mask), `p[2]=&out`; `caught=(req|0x2c00000)&pending`,
+  `pending&=~caught`. `as_catch(0)` flushes all pending via this.
+
+Each task carries `as_pending`/`as_mask` words in the shared segment. Verified end-to-end:
+`As_send task 0x100 bits 0x800000` → `As_read caught 0x800000`. `HEROSCALL_AS_DELIVER=0`
+disables real signalling.
+
+**Mailslot queues are string-named, messages are variable-length blobs.** The genuine
+ABI (`heros.ko` `Q_create/Q_ident/Q_send/Q_read_ex` + libheros `q_create/q_ident/q_send/
+q_read/q_receive`):
+
+| call | params | notes |
+|---|---|---|
+| `Q_create 0x0a` | `p[0]=name-str, p[2]=depth, p[3]=flags` → id | `strncpy_from_user(name, p[0], 0x11)` — keyed by **name** |
+| `Q_ident 0x0b`  | `p[0]=name` ("queue" or "queue.process") → id / `-0x13` | splits at last `.`, matches the queue name |
+| `Q_send 0x0d`   | `p[0]=msg ptr, p[2]=size (≤0x8000), p[4]=QID, p[6]=4/5` | message = serialised `GMessage` byte blob |
+| `Q_read 0x0e`   | `p[0]=out buf, p[2]=maxsize, p[6]=timeout, p[7]=QID` → size | |
+
+The old emulator treated `p[0]` as the queue id and the message as 8 inline dwords — so
+every `Q_send` targeted a bogus queue and `Write` asserted. `heros_rtos.c` now models
+queues as `struct qmsg{len; data[16384]}` slots (string-named, drop-oldest on full).
+
+**Auto black-hole queues (`HEROSCALL_AUTO_QUEUE=1`, default on).** `QueueHeLogger` and
+`QEvtServer` are owned by *peer processes* absent in a standalone run; `Q_ident` fails, and
+the control blindly uses the `-0x13` as a queue id → strict `Write` asserts. `Q_ident` now
+auto-creates a sink queue when a name isn't found, so fire-and-forget sends succeed.
+
+**Result — ConfigServer boots its full constellation, no crash.** Worker tasks
+`0x101–0x106` (threads under the one pid) create the genuine service queues:
+`CfgFileMan` (0x303), `EditThreadQue`/`EditThreadNotify` (0x304/5), `QSikInterface`
+(0x306), **`CfgServerQueue` depth 100 (0x307 — the config request queue IPO's
+`CfgMailslot` targets)**, `QDongleService` (0x309), `AppStartMaster` (0x30a), with
+inter-task `Ev_send`/`Ev_receive` throughout. The queue-ABI fix didn't just stop the
+crash — it let the config server stand up the exact request queue that blocker #5's
+client connects to.
+
+**Next blocker — the HeLogger registration handshake.** The main thread (task `0x100`)
+sends a register `GMessage` to `QueueHeLogger`, then loops `Q_read` on its temp reply
+queue (`0x301`) waiting for the logger to ACK — which no peer sends standalone, so it
+blocks (or, with the debug cap, spins). `HEROSCALL_QREAD_MAXWAIT=<ms>` caps "forever"
+`Q_read` waits to observe past it (default `0` = faithful block). To pass it: synthesise
+the logger ACK (decompile the HeLogger client's reply format) or run the real logger peer.
+The worker threads build the constellation regardless, so the **2-process config
+experiment** — run `ipo_progstation.elf` against this live `CfgServerQueue` — is now the
+natural next test. The verbose log is thread-tagged (`[t<tid> hc ..]`).
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
