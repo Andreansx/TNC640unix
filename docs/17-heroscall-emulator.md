@@ -321,7 +321,8 @@ task `0x100`, matching the receiver's `ev_receive` mask `0x01011000`. The emulat
 ctl). **Result: the serve loop wakes, `Q_read`s `CfgServerQueue`, reads IPO's 69-byte config
 request, processes it, and emits responses to `QEvtServer` (sizes up to 4380).**
 
-**Final gap — reply routing back to IPO.** The request carries IPO's reply-queue name as a
+**Final gap — reply routing back to IPO.** ⚠️ **[SUPERSEDED — this was a misdiagnosis; see
+"Correction (2026-06-22)" below.]** The request carries IPO's reply-queue name as a
 length-prefixed string (`"0-0000106CfgM"`), but ConfigServer replies to qid `0xffffffed` (`-0x13`,
 a failed resolution) and never `Q_ident`s that name. `FMailslotQueue::Open(astring)` *would*
 `q_ident` the name — so the server isn't taking the name from the body; it's using a numeric
@@ -331,6 +332,38 @@ returns it) that the emulator doesn't yet surface. Next: decompile the CfgServer
 `Q_read`. Once the reply lands on IPO's reply queue, IPO's blocking `Q_read` wakes via the futex
 `__wake_up` path and `CfgMailslot::GetData("NC")` returns — clearing blocker #5. Debug:
 `HEROSCALL_DUMPQ=1` hex-dumps queue payloads.
+
+## Correction (2026-06-22): the blocker is service-startup, not reply routing
+
+The "Final gap" section above is a **misdiagnosis**, corrected here after instrumenting the emulator
+and decoding the actual runtime (rather than reading more decompiles). **The GMessage transport,
+deserialize, type-dispatch, and client-name extraction all work.**
+
+Two diagnostics were added (commit `75c4c92`): `q_send` hex-dumps *failed* sends (`Q_FAIL`, under
+`HEROSCALL_DUMPQ`), and `Q_ident` logs empty/NULL-name lookups. Decoding the `0xffffffed` payloads to
+ASCII showed they are ConfigServer's own **trace logs**, one reading literally
+`#Trace Connect client=0-0000106CfgM, not yet connected, SIK reading in progress` — i.e. the server
+*received and parsed* IPO's connect and *knows* its reply-queue name. The empty/NULL-ident diagnostic
+**never fired**, so `0xffffffed` is not `q_ident(NULL)`; it is the server's internal
+**"not-yet-connected" sentinel** for clients deferred during startup. (`0x1700c0` is the CONNECT message
+type, dispatched by `CfgServer::DispatchMessage` → `OnConnectClient`; IPO's first message is a connect,
+and it aborts when the connect-ACK never arrives.)
+
+**The real blocker:** ConfigServer cannot finish startup standalone. Its decoded startup-state machine is
+`upCreated → upCfgReading → upCfgRead → SIK reading…` then a **dead stop**: the SIK thread `Q_ident`s
+`SikServer` (which the emulator auto-creates as a black hole — proving no peer owns it), `Q_send`s a SIK
+request there, and **blocks forever on `Q_read(QSikSync)`** for a reply. The SIK/license service
+(`TheSikInterface`, `hesikcom_rpc`) is a separate process that isn't running — there is no `SikServer`
+binary in `heros5/bin`. (A syntax error in `jhconfigfiles.cfg` drives config load to `HAS_FATAL`, but
+that is *tolerated* — startup proceeds.)
+
+`HEROSCALL_SYNC_TIMEOUT=ms` caps forever-`Q_read`s on `*Sync` handshake queues only (e.g. `QSikSync`),
+which deadlock precisely because their server peer is absent. With it, startup advances past SIK
+(`#Trace SIK: check finished, error=TRUE` → `#Notice Read cycle data now`), then hits the *next*
+missing-peer blocker (a loop creating ~1000 `HwsM…` queues that overflows `MAXQ=96`). A full config
+round-trip is thus a **chain of missing-service dependencies** — the path forward is to run the service
+**constellation** (AppStartMP spawning the SIK/Hws/event-server peers) or add per-service reply stubs,
+**not** any change to the message layer.
 
 ## Files
 
@@ -343,4 +376,6 @@ RTOS runtime, full constellation), **`run_2proc_config.sh`** (the IPO↔ConfigSe
 cross-process experiment). Build each `.c` as an i386 shared object
 (`gcc -m32 -shared -fPIC`). Runtime env flags: `HEROSCALL_VERBOSE` (thread-tagged
 trace), `HEROSCALL_AS_DELIVER`, `HEROSCALL_AUTO_QUEUE`, `HEROSCALL_SEM_INIT`,
-`HEROSCALL_QREAD_MAXWAIT`, `HEROSCALL_BTRACE` (fault locator).
+`HEROSCALL_QREAD_MAXWAIT`, `HEROSCALL_SYNC_TIMEOUT` (cap forever-reads on `*Sync` queues),
+`HEROSCALL_DUMPQ` (hex-dump queue payloads, incl. failed `Q_FAIL` sends), `HEROSCALL_BTRACE`
+(fault locator).

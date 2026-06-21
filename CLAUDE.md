@@ -223,7 +223,13 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
 - **#2 `heroscall` syscall 222 / `PciHardware::Exception`** — PASSED. `M_ident("IPO_SHARED_MEMORY")`
   + `M_attach` now serve a real zeroed region (`emulator/heroscall_emu.c`).
 - **#3 `FProcess` argv assert** — PASSED (correct argv).  **#4 empty `Sys_getenv`** — PASSED (real env).
-- **#5 config subsystem (`CfgMailslot` → config server)** — OPEN; needs the multi-process route (3.1/3.2).
+- **#5 config subsystem (`CfgMailslot` → config server)** — cross-process IPC + the serve loop WORK;
+  ConfigServer receives + parses IPO's connect (logs `client=0-0000106CfgM`). **CORRECTION (2026-06-22):
+  the earlier "reply-routing / envelope-sender deserialize bug" was a MISDIAGNOSIS — the message layer
+  is correct.** Real sub-blocker: ConfigServer **stalls in startup** waiting on absent service peers —
+  SIK reading blocks forever on `Q_read(QSikSync)` for a `SikServer` process that isn't running;
+  `0xffffffed` is the "not-yet-connected" sentinel. `HEROSCALL_SYNC_TIMEOUT` unblocks SIK, exposing the
+  next missing peer. Needs the **service constellation (3.2)**, not a message fix. See docs/17 §Correction.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
