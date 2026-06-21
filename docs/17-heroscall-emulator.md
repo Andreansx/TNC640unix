@@ -159,8 +159,40 @@ box has no gdb/strace — next step is a no-sudo gdb or an interposed sigaction 
 glibc `backtrace()`).
 
 This is the genuine "make it bootable" substrate, incrementally proven: kernel-API
-init (doc above) → blocking RTOS primitives (here) → async signals (next) → the
+init (doc above) → blocking RTOS primitives (here) → task creation (next) → the
 config server answering IPO's mailslot query.
+
+### Fault-locator + the task-creation handshake (current frontier)
+
+The box has no gdb/strace and glibc `backtrace()`/`dlsym` pull GLIBC_2.34 (control
+glibc is 2.31). So `heros_rtos.c` carries an **opt-in fault-locator**
+(`HEROSCALL_BTRACE=1`): it interposes `sigaction()`/`signal()`, forwards via raw
+`rt_sigaction` with its own restorer trampoline (no dlsym), and on a fatal signal
+prints the faulting **EIP + addr + /proc/self/maps** — EIP→lib+offset→function
+resolved offline against the (unstripped) `.so`s.
+
+It located ConfigServer's worker-thread SIGSEGV precisely: `libbackend.so`
+**`_run(uint,void*)`** dereferencing a **NULL task context** (`*(*ctx+0x84)`,
+addr=0x84). `_run` is the HeROS task entry. The creation path is:
+
+```
+FThread::EvalContextThread:
+  tid = t_create(name, stack, msgsize, flags, prio, _, _run)   // entry = _run
+  ctx = malloc(size); ctx[0]=FThread*; ctx[4]=name; ctx[32]=args
+  t_start(tid, size, ctx);   free(ctx)        // ctx delivered, then freed
+```
+
+Key: **HeROS tasks are libheros *pthreads*** — `t_create`→`t_create_ex` does
+`pthread_create`. The created pthread blocks, and **`t_start` delivers the context
+buffer to it**, which it then runs as `_run(size, ctx)`. `t_start` ABI (from the
+wrapper): `syscall(222, 0x12340002, {p[0]=size, p[2]=ctx, p[4]=tid})`. The stub
+`T_start` returns success without copying/delivering `ctx`, so the pthread runs
+`_run` with a dead/zero context → the NULL+0x84 fault.
+
+**Next:** implement the `T_create`/`T_start` rendezvous — `T_start` copies the
+`size`-byte context and hands it to the task pthread, which calls `_run(size,
+copy)`. Then continue the blocker chain (`FThread::Run`, config read, the mailslot
+serve loop).
 
 ## Files
 

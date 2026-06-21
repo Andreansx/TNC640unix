@@ -372,6 +372,8 @@ long syscall(long n,...){
     uint32_t cmd=(uint32_t)a; int lo=cmd&0xff; uint32_t *p=(uint32_t*)b;
     if(vrb) fprintf(stderr,"[hc %02x %-11s] p=[%08x %08x %08x %08x] a2=%lx\n",
         lo,hcname(lo),p?p[0]:0,p?p[1]:0,p?p[2]:0,p?p[3]:0,c);
+    if(vrb&&p&&(lo==0x00||lo==0x02)){ fprintf(stderr,"   FULL[%02x]:",lo);
+        for(int i=0;i<14;i++) fprintf(stderr," %08x",p[i]); fprintf(stderr,"\n"); }
     switch(lo){
     case 0x01:{ /* T_ident: name inline p[0..1] (0=self) */
         if(p&&(p[0]||p[1])){
