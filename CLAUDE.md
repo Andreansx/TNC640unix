@@ -784,8 +784,27 @@ to keep building the boot chain, or AppStartMP; hessrv itself needs the SIK (the
 - **heros-auth-daemon (S23, /usr/sbin/heros-auth-daemon) — candidate next.** RTOS-free, no SIK; token-based
   auth over a unix socket (/var/run/auth_daemon/auth-daemon-srv.sock), uses dbus (now up) + FUSE
   (/var/run/auth_daemon/fs_mount/) + sssd (hepampol_sssd.conf). FUSE/sssd may complicate it.
-NEXT: scout heros-auth-daemon's first blocker (it can use the now-running dbus), or attempt AppStartMP
-(integration test now that heuserver + dbus are up).
+- **heros-auth-daemon (S23) — LOADS + INITS under FEX, doesn't persist standalone** (emulator/run_authd_fex.sh).
+  Big win on the closure: its heavy deps (libQt5Core, libprotobuf, libfuse, libicu*, libstdc++, libpcre2-16)
+  all copy + run under FEX. It reads its config (`-c .../daemon.conf`, tolerates missing sections → defaults),
+  parses AD/LDAP/secrets, and `-d` logs "Daemonizing process" — then gracefully "Stopping daemon / Stopped
+  plugins / Updating all currently known secrets", binds NO socket. (`-v` = version 4.1.2, not verbose.) No
+  captured error → the daemonized child either doesn't survive FEX's double-fork or an init condition is unmet
+  — most likely the **FUSE token-filesystem mount** (`fuse_mountpoint /mnt/auth_daemon`; FUSE under FEX/qemu
+  is the tracker's known-hard area) or a missing serve peer. Deeper dig than the clean wins; deferred.
+
+BOOT-CHAIN SERVER SWEEP (this session) — heuserver methodology applied across the infra servers:
+| svc | order | result |
+|---|---|---|
+| dbus | S20 | **UP** — binds system bus socket, clean (standard daemon) |
+| heros-auth-daemon | S23 | loads+inits under FEX (Qt5/protobuf/FUSE closure works), stops standalone (FUSE/serve-cond) |
+| hessrv | S40 | device blocker SOLVED (memfd /dev/JHncmem), then **SIK/license boundary** |
+| mbus | S60 | **hardware-gated** (FTDI serial / I/O-sim) — skip |
+| heuserver | S77 | **FULLY SOLVED** — binds+serves+auth+fexunmask (the deep win) |
+Pattern: some servers solve cleanly (heuserver, dbus); others hit hard boundaries (SIK license, FTDI hardware,
+FUSE). NEXT options: (a) the FUSE-under-FEX problem (unblocks heros-auth-daemon + the encfs config store);
+(b) attempt AppStartMP now heuserver+dbus are up (integration test → next real constellation blocker);
+(c) more compute servers in the heuserver class (RTOS-free, self-contained).
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
