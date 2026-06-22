@@ -823,6 +823,20 @@ auth-daemon(S23), heuserver(S77). (2) the **ConfigServer encfs config store** (b
 jh_int` is an encfs mount; the "encfs fails under qemu / FUSE-unshare" sub-blocker is removed under FEX — the
 remaining config gates were productid/layer/SIK, not FUSE). NEXT (one-by-one): the config store under FEX, or
 AppStartMP (integration: heuserver+dbus+auth-daemon are now up).
+
+★★★ heros_rtos (the HeROS RTOS emulator) WORKS UNDER FEX (2026-06-22) — the UNIFICATION.
+`emulator/rtos_probe.c` (minimal heroscall ISSUER) under FEX + heros_rtos: `Sys_getenv(SYS) ret=0
+out="/tmp/s"` and `T_ident(self) -> tid=256`. So the RTOS emulator's core heroscall path runs under FEX —
+syscall(222) interposition, the /dev/shm control-segment init, Sys_getenv (env value), T_ident (task id).
+⇒ FEX runs BOTH halves of the control on ARM64: the SYSTEM SERVICES (where qemu-USER crashed with
+cpu_exec asserts — heuserver/dbus/auth-daemon, all now up under FEX) AND the RTOS COMPUTE processes
+(NCK/ConfigServer, via heros_rtos — previously only under qemu-i386). One translator for the whole control,
+faster + free of the qemu-user thread/signal limits. (heuserver crashed *with* heros_rtos only because it
+is RTOS-FREE and installs its own SIGUSR1 handler that collides with heros_rtos's async-signal carrier — a
+specific conflict, not a general failure; RTOS binaries that need heros_rtos work.) The heroscall-emulator
+track (ConfigServer/IPO → the config #6 frontier, run under qemu-i386 in run_2proc_arm64.sh) can now move
+to FEX. NEXT: run ConfigServer/IPO under FEX + heros_rtos (full RTOS: queues/events/sems/cross-proc futexes)
+to confirm the full compute track + reproduce the config frontier under FEX.
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
