@@ -637,3 +637,20 @@ can't be cleared without root. ⇒ heuserver is ONE clean step from binding: a F
 restores uid-501 so sudo/root works) lets heuserver complete + bind. All the hard parts are solved (run as
 user, fakeroot root-check, fresh-shm emulator, local writable rootfs, /etc writes); only the stuck-file VM
 artifact remains. NEXT: fresh VM -> heuserver binds -> heuseradmin -> AppStartMP -> constellation under FEX.
+
+### ★★★ heuserver SETUP COMPLETES under FEX on ARM64 — VM restart recovered the env (2026-06-22) ★★★
+The mid-session VM degradation (uid-501 unresolvable -> sudo broken; stuck root-owned /tmp + /dev/shm
+files) was cleared by `limactl restart tnc`: uid-501 resolves again, `sudo whoami`->root, /tmp + /dev/shm
+clean, /var/tmp/lr (local rootfs) preserved. With REAL root restored, heuserver runs its full setup AND
+its writes complete. Last blocker fixed: heuserver writes /tmp/__group.conf.new then rename()s it to
+/etc/security/group.conf; FEX maps guest /tmp to the HOST /tmp (tmpfs) while the rootfs /etc is ext4 ->
+rename()=EXDEV. **emulator/renamefix.c** (LD_PRELOAD) retries EXDEV as copy+unlink -> "Updated
+/etc/security/groups". heuserver now: parses NC/PLC/HEROS roles, provisions groups, creates /etc/netgroup,
+updates /etc/security/groups = its credential-DB setup DONE under FEX/ARM64.
+OPEN: heuserver EXITS after "Updated /etc/security/groups" (foreground one-shot; `-d` daemonizes but the
+double-fork doesn't survive FEX, and daemon()->0 didn't keep it up -> it genuinely returns after setup).
+Need to determine whether heuserver is a setup one-shot (its job = provision the DB, then exit 0, and a
+SEPARATE serving instance/socket comes later) or has a serve loop that aborts on a missing peer. NEXT:
+check heuserver exit code + its serve mechanism (socket/listen vs heros-queue) + the init.d invocation args.
+Recovery recipe (after any VM restart): rebuild preloads from emulator/*.c; FEX RootFS=/var/tmp/lr;
+run heuserver as `sudo env ... LD_PRELOAD=/lib/renamefix.so:/lib/herosapi_shim.so:/lib/heros_rtos.so`.
