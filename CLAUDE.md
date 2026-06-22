@@ -234,13 +234,19 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   synthetic **`UpdNewState`** (id 0x1f0320) deserializes + drives `OnUpdNewState` — the GMessage deserializer
   is **schema-driven**, so messages are built from the `.rodata` schema templates (gated `INJECT_UPD`).
   Run-up fixes retained (SIK/Hws stub, `Ev_receive`, `MAXQ`). See docs/17 §Update(2026-06-22).
-- **#6 config-data round-trip (NEW frontier, past the connect)** — IPO now reaches
+- **#6 config-data round-trip (NEW frontier, past the connect)** — IPO reaches
   `IpoController/IpoKonfig::CheckOptions()` and fails `-k=NC` ("Invalid Command Option -k", AFTER "Connected").
-  The "NC" channel group IS in the config (`tnc.cfg`/`GlobalSystemCfg.atr`) and ConfigServer responds
-  (28/24/30B), but IPO doesn't receive the channel-group data (case-independent). Likely: ConfigServer
-  doesn't fully serve IPO's `CfgGetData` because IPO isn't a registered client. Next: trace ConfigServer's
-  response to IPO's post-connect `0x304` GetData (real data vs error stub) → inject a GetData response like
-  the ACK, or register IPO.
+  ROOT CAUSE FOUND: **ConfigServer's channel-group DB is empty** — it reads the config INDEX
+  (`jhconfigfiles.cfg`, direct `-f=` path) but the listed files use **volume paths** (`SYS:\config\tnc.cfg`).
+  Those resolve via the HeROS **volume manager** (`libjhvolume` → `/etc/jhvolume`), which was MISSING →
+  the control spun retrying `open("/etc/jhvolume")=ENOENT` and never loaded `tnc.cfg` (which DOES define
+  "NC"). `emulator/setup_jhvolume.sh` now populates `/etc/jhvolume` (SYS→/tmp/s …). PARTIAL: the loop stops
+  and `jhvolume "SYS/config/tnc.cfg"` resolves to `/tmp/s/config/tnc.cfg` — but the **colon form**
+  `SYS:\config\tnc.cfg` the control actually uses does NOT resolve by string substitution; it needs the
+  volume manager's **FUSE mounts** (the documented FUSE-backend layer). Next: provide the volume FUSE
+  mounts (or make the colon-form `libjhvolume` API resolve), so ConfigServer loads `tnc.cfg` and serves
+  "NC". (Confirmed ConfigServer DOES answer IPO's `0x304` GetData — the round-trip works; the data is empty
+  only because the config files never loaded.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
