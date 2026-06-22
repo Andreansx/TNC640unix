@@ -253,10 +253,19 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   reads it, runs `OnUpdNewState` (`Q_ident "Nc"`), and `ReadConfigDataSet` FIRES — broadcasting real config
   to QEvtServer (a 4380-byte payload + 664/608/550/539B…). So the load path EXECUTES. BUT `tnc.cfg` is
   still never opened and IPO still fails — `ReadDataFiles` runs yet skips the channel-group file. Remaining
-  gate is INSIDE `ReadDataFiles` (layer/file-list iteration, or the file-API colon-form resolution
-  differing from the CLI), NOT the trigger. Next: RE `ReadDataFiles`/`ReadConfigDataSet` — what layer ids
-  it loads, whether it parses jhconfigfiles.cfg's jhDataFiles, why no openat reaches tnc.cfg. (Transport
-  confirmed: ConfigServer answers IPO's GetData.)
+  gate is INSIDE `ReadDataFiles`. Chain fully RE'd: jhconfigfiles.cfg IS read+parsed (strace: read=2736B
+  `CfgJhConfigDataFiles(...jhDataFiles:=[...]`); `ReadConfigDataSet`→`ReadConfigDataDir@0x2150a0`→
+  `SetupDirInfo@0x2a2a60` (registers via `CfgStore::DataFile`) + `ReadDataFiles`→loop `CntDataFiles`×
+  `PrepareFile@0x20d9a0`(`FSystemPathname::IsAFile` exists-check→`ReadHeader`, else `MissingFile`). ★ ROOT
+  CAUSE SURFACED: ConfigServer's stdout shows it expects the config at a HARDCODED **`/mnt/sys/config`** and
+  **encfs-mounts an ENCRYPTED subdir** there: `encdir: Create directory failed ... /mnt/sys/config/jh_int` +
+  `sh: encfs: not found` + `umount: /mnt/sys/config/jh_int`. So the config dir is an **encfs (encrypted
+  filesystem) mount** the control sets up at startup — standalone it fails (encfs not installed; /mnt/sys→
+  sysroot is READ-ONLY so encdir can't create jh_int; jh_int needs the OEM key). Tested /mnt/sys symlink +
+  SYS=/mnt/sys + volumes→/mnt/sys: tnc.cfg STILL not opened. This is the documented FUSE-backend layer, now
+  concrete. NEXT (substantial): writable `/mnt/sys/config` (tmpfs/copy) + install `encfs` + OEM key, OR stub
+  the `encdir` so the plaintext config loads. (Transport confirmed: ConfigServer answers IPO's GetData; the
+  connect, blocker #5, is solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
