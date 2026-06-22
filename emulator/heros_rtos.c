@@ -257,6 +257,14 @@ static int inject_upd=0;
  * and post it. IPO's OnCfgClientIsConnected@0x1a72d0 reads success, and on OK proceeds to
  * CfgMailslotQueue::Create→SyncMessage→AskIpoConditions→IpoSystemView1 (past the connect). */
 static int inject_ack=0;
+/* HEROSCALL_INJECT_REREAD=1: ConfigServer loads its config DATA files (tnc.cfg → the "NC" channel
+ * group etc.) only on a CfgRereadData message (id 0x170640 → CfgServer::OnRereadData@0x18f550 →
+ * RereadData → ReadDataFiles). The MMI/constellation normally sends it at startup; standalone nobody
+ * does, so the channel-group DB stays empty and IPO's -k=NC CheckOptions fails. We synthesize one and
+ * post it to CfgServerQueue once ConfigServer's run-up completes (in ConfigServer's process, where the
+ * HWS stub fires). Fields: clientId(GMsgString) id(0x63) copyDefaultData/silent/checkData/checkHome(bool). */
+static int inject_reread=0;
+static volatile int reread_injected=0;
 #define CFGQ_CAP 128
 #define CFGQ_MSG 1024
 static struct { uint32_t len; uint8_t data[CFGQ_MSG]; } cfgq_rec[CFGQ_CAP];
@@ -548,6 +556,29 @@ static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
     q_send(rqid,msg,size,0);                              /* v1: echo the request as the reply */
     LOG("HWS stub: replied %u bytes to \"%s\" (0x%x) [echo]\n",size,rname,rqid);
     __atomic_store_n(&runup_done,1,__ATOMIC_RELEASE);    /* run-up complete: stop recording, arm replay */
+    /* INJECT_REREAD: now that ConfigServer's run-up is done, post a synthetic UpdNewState onto
+     * CfgServerQueue. OnUpdNewState → CfgServer::ReadConfigDataSet → ReadDataFiles LOADS the config
+     * DATA files (tnc.cfg → "NC" channel group). (CfgRereadData/OnRereadData is write-back/refresh,
+     * NOT the initial load — ReadDataFiles' callers are ReadConfigDataSet, reached via OnUpdNewState.)
+     * Posting at run-up loads the config BEFORE IPO connects+queries. Needs /etc/jhvolume colon-form
+     * so the "SYS:\config\..." paths resolve. UpdNewState wire = the proven v2 schema (id 0x1f0320). */
+    if(inject_reread && !reread_injected){
+        int cs=q_find_slot("CfgServerQueue");
+        if(cs>=0){
+            reread_injected=1;
+            static const uint8_t upd[]={
+                0x20,0x03,0x1f,0x00,                                   /* header 0x1f0320 = UpdNewState */
+                0xe7,0x00,0x00,0x00, 0x02,0x00,0x00,0x00, 0x4e,0x63,   /* field0 GMsgString "Nc" (layer) */
+                0x63,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80, 0x0b,0x03,0x1f,0x80,
+                0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80,
+                0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80,
+                0xc6,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80                /* markers to match the ~12-field schema */
+            };
+            uint32_t qid=C->queues[cs].id;
+            q_send(qid,upd,(uint32_t)sizeof upd,0);
+            LOG("INJECT_REREAD: posted UpdNewState to CfgServerQueue (0x%x) -> ReadConfigDataSet loads config\n",qid);
+        }
+    }
 }
 /* INJECT_ACK: IPO sent CfgConnectClient(0x1700c0). Parse its reply-queue name (first GMsgString)
  * and post a synthetic CfgClientIsConnected(0x170100, success=OK) to it so IPO proceeds. */
@@ -642,6 +673,7 @@ static void ensure_init(void){
         const char *rt=getenv("HEROSCALL_REPLAY_TRIGGER"); replay_trigger=rt&&rt[0]=='1';
         const char *iu=getenv("HEROSCALL_INJECT_UPD"); inject_upd=iu&&iu[0]=='1';
         const char *ia=getenv("HEROSCALL_INJECT_ACK"); inject_ack=ia&&ia[0]=='1';
+        const char *ir=getenv("HEROSCALL_INJECT_REREAD"); inject_reread=ir&&ir[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }

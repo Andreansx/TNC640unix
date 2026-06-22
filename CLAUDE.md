@@ -247,9 +247,16 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   fails on the runtime-generated productid cache (`/mnt/sys/cache/nckern/productid/*.conf`, ENOENT — uses
   a hardcoded `/mnt/sys`, not `$SYS`). So the remaining gap is the config-LOAD mechanism (productid gate /
   binary cache / a deferred "activate configuration" trigger the absent MMI/constellation sends), NOT the
-  path layer. Next: RE ConfigServer's load path — likely the same missing-peer pattern, addressable by a
-  synthesized message like the ACK. (Confirmed ConfigServer DOES answer IPO's `0x304` GetData — transport
-  works; the DB is just empty.)
+  path layer. CONFIG-LOAD PATH FOUND: `ReadDataFiles@0x214540` (the file loader) ← `ReadConfigDataSet
+  @0x229d50` ← `OnUpdNewState` (NOT `OnRereadData`, which is write-back/refresh). `HEROSCALL_INJECT_REREAD`
+  posts a synthetic **UpdNewState** (id 0x1f0320) onto CfgServerQueue at run-up; verified ConfigServer
+  reads it, runs `OnUpdNewState` (`Q_ident "Nc"`), and `ReadConfigDataSet` FIRES — broadcasting real config
+  to QEvtServer (a 4380-byte payload + 664/608/550/539B…). So the load path EXECUTES. BUT `tnc.cfg` is
+  still never opened and IPO still fails — `ReadDataFiles` runs yet skips the channel-group file. Remaining
+  gate is INSIDE `ReadDataFiles` (layer/file-list iteration, or the file-API colon-form resolution
+  differing from the CLI), NOT the trigger. Next: RE `ReadDataFiles`/`ReadConfigDataSet` — what layer ids
+  it loads, whether it parses jhconfigfiles.cfg's jhDataFiles, why no openat reaches tnc.cfg. (Transport
+  confirmed: ConfigServer answers IPO's GetData.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
