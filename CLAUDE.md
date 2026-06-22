@@ -427,10 +427,21 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   assertion (cpu == current_cpu)`, and heuserver dies during user/group setup (adding root to groups
   vboxsf/oem/plce, reading /etc/sysconfig) BEFORE binding the socket (0 listen/bind). So the qemu-user limit
   is NOT flag-avoidable — the HeROS system daemons' thread/signal/credential model is fundamentally
-  incompatible with per-process qemu-user. DEFINITIVE: the userspace heros-emulator on ARM64 cannot boot the
-  system services → cannot reach the full constellation; the full control runs only via full-system
-  emulation. Track B is exhausted for the FULL boot; its proven deliverable is the per-process compute reach
-  (#5 connect + the config frontier) + the AppStartMP-launch demo.
+  incompatible with per-process qemu-user. (Earlier wording "the userspace heros-emulator cannot boot the
+  system services" was an OVER-CLAIM — see the FEX correction below; the limit is qemu-USER-specific.)
+  ★★★ CORRECTION — the boundary is qemu-USER-specific, NOT universal (2026-06-22): installed **FEX-Emu**
+  (`fex-emu-armv8.0`, PPA ppa:fex-emu/fex has a candidate for Ubuntu 26.04 resolute) — a DIFFERENT i386→ARM64
+  userspace translator that runs UNDER the heros-emulator (it replaces only the qemu translation layer, so
+  it's still "the heros emulator on arm64"). FEX runs heuserver with **ZERO `cpu_exec` assertions** — the
+  qemu-user crash is GONE. So my 5-way "hard limit" was qemu-user-specific; the HeROS system services are
+  NOT fundamentally un-runnable in userspace. CAVEAT: FEX's i386 (32-bit) support segfaults (exit 139) on the
+  BARE control rootfs — even a dynamic i386 busybox — because FEX needs a proper FEX-format RootFS, not the
+  raw $rootfs (config: /root/.fex-emu/Config.json `{"Config":{"RootFS":"<dir>"}}`; sudo→HOME=/root). NEXT
+  (the genuine open avenue): build a FEX RootFS = FEXRootFSFetcher base + the control's i386 libs overlaid
+  (reconcile glibc 2.31), then run heuserver→AppStartMP→the constellation under FEX + the heros-emulator
+  preload. Remaining blockers regardless of translator: writable credential env (/etc/security, /mnt/plc/etc/
+  shadow, the user/group DB) + the ~40 services + the Qt MMI HrMmi.elf. So: NOT exhausted — FEX is the
+  untested-but-promising path that clears the specific qemu-user crash.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
