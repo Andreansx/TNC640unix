@@ -422,6 +422,15 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   COMPUTE processes (NCK/ConfigServer) through RTOS/kernel init + connect + config frontier, and AppStartMP
   launching under X+WM — but the SYSTEM SERVICES + GUI boot are a full-system-emulation concern. This is the
   empirically-proven boundary between Track B (userspace) and the full-system route.
+  ★ WORKAROUND-TESTED (hard limit): retried heuserver with qemu `-one-insn-per-tb` (disables TB chaining —
+  the usual fix for that assertion) AND with /etc/security writable — SAME crash `cpu_exec_longjmp_cleanup:
+  assertion (cpu == current_cpu)`, and heuserver dies during user/group setup (adding root to groups
+  vboxsf/oem/plce, reading /etc/sysconfig) BEFORE binding the socket (0 listen/bind). So the qemu-user limit
+  is NOT flag-avoidable — the HeROS system daemons' thread/signal/credential model is fundamentally
+  incompatible with per-process qemu-user. DEFINITIVE: the userspace heros-emulator on ARM64 cannot boot the
+  system services → cannot reach the full constellation; the full control runs only via full-system
+  emulation. Track B is exhausted for the FULL boot; its proven deliverable is the per-process compute reach
+  (#5 connect + the config frontier) + the AppStartMP-launch demo.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
