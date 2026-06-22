@@ -375,6 +375,18 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   needs. This CONFIRMS the config-data load needs the multi-process constellation's per-client/layer state,
   not a code-path tweak. Definitive: Track B's userspace emulator carries the control to the config frontier
   (connect + productid + stating) but the data load requires the full-system boot's state.
+  ★ CONSTELLATION PATH (the way to populate that state) — DEMONSTRATED under the emulator on ARM64: AppStartMP
+  (the process manager that writes the productid + spawns the constellation) blocked at "PLIB++ waiting for
+  X-Server" → provided **Xvfb** (`:99`, native ARM64) → passed; then "PLIB++ waiting for X-WindowManager" →
+  provided **openbox** (twm fails on missing fonts; openbox uses DISPLAY env not --display) → passed. With
+  X+WM, AppStartMP now SPAWNS the constellation — forks `heuseradmin` + children which fail
+  `Cannot connect to stream socket: Connection refused` (peer servers not up). So under qemu-i386+emulator+
+  Xvfb+openbox, AppStartMP runs and reaches the constellation-spawn stage, but the children need the FULL set
+  of HeROS servers wired up (heusrv/the message bus/the config server/the Qt MMI). The productid cache is
+  written only once that constellation comes up — so it's still absent. ⇒ the documented full-GUI-boot
+  constellation IS reachable as a path on ARM64 (X+WM provided) but completing it = bringing up every server
+  + the Qt MMI = the documented infeasible/legally-barred ceiling. NEXT (full-boot path): start the HeROS
+  service constellation (heusrv etc.) so AppStartMP's children wire up + the productid/layers populate.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
