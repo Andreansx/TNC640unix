@@ -305,7 +305,16 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   likely expected in a per-LAYER subdir structure and/or registration is gated on the absent productid
   cache (controlmark selects the layer/variant). NEXT (the actual gate): RE `SetupDirInfo`/`ReadConfigDataDir`
   for the layer/dir-structure + productid it needs to register the jhDataFiles. This is the registration
-  subsystem — not the encfs, not licensing. `emulator/setup_config_env.sh` holds the env. (Connect #5 solid.)
+  subsystem — not the encfs, not licensing. `emulator/setup_config_env.sh` holds the env. ★★ ULTIMATE GATE:
+  the registration is gated on the **productid** (control mark). `libProductId` reads
+  `/mnt/sys/cache/nckern/productid/*.conf`; ConfigServer does `ProductId::GetControlMark()` +
+  **`OptionLib::GetOptionTable(CfgControlMark, SikGeneration)`** — control-mark + **SIK** select the
+  option/config table driving the layer. The productid cache is written by **`AppStartMP.elf`**, which —
+  tried standalone — **hangs at "waiting for X-Server startup"**: it needs the full GUI boot. So blocker #6
+  ultimately requires the FULL BOOT (AppStartMP + X to generate the productid) and the SIK (the option
+  table) — the documented infeasible/legally-barred ceiling (Qt MMI / X / constellation / license). The
+  full-system qemu path works because the productid was generated at boot + the SIK from the dongle/demo at
+  flash. This is the honest endpoint of Track B (userspace emulation). (Connect, blocker #5, solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
