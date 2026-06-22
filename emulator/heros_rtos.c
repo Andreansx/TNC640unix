@@ -238,6 +238,15 @@ static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_e
 static int replay_trigger=0;
 static volatile int runup_done=0;        /* set when the HWS stub fires (= run-up complete) */
 static volatile int trigger_replayed=0;
+/* HEROSCALL_INJECT_UPD=1: after IPO's connect is read+registered, inject a synthetic UpdNewState
+ * GMessage (id 0x1f0320, dispatch je@0x236091→OnUpdNewState) onto CfgServerQueue, to make
+ * OnUpdNewState → ReadConfigDataSet + SendConnected flush IPO's pending ACK (impersonate the MMI).
+ * TESTED (v1 = header dword 0x001f0320 + one GMsgString "Nc"): the GMessage DESERIALIZER ABORTS
+ * ConfigServer on the malformed message — OnUpdNewState/SendConnected never run. So the id is right
+ * but the wire format must be BYTE-EXACT (a wrong field crashes, not no-ops). Constructing a valid
+ * UpdNewState requires full RE of the libgmsglib serialization (ReadMessageInternal @libgmsglib
+ * 0x503a0) + UpdNewState's exact fields. Gated OFF; left as a documented, evidence-backed attempt. */
+static int inject_upd=0;
 #define CFGQ_CAP 128
 #define CFGQ_MSG 1024
 static struct { uint32_t len; uint8_t data[CFGQ_MSG]; } cfgq_rec[CFGQ_CAP];
@@ -468,6 +477,22 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
                 int n=cfgq_n; if(n>CFGQ_CAP)n=CFGQ_CAP;
                 for(int i=0;i<n;i++) q_send(id,cfgq_rec[i].data,cfgq_rec[i].len,0);
             }
+            /* INJECT_UPD: impersonate the MMI — inject a synthetic UpdNewState (id 0x1f0320) onto
+             * CfgServerQueue after IPO's connect is read (FIFO: connect processed → registered pending
+             * → UpdNewState read → OnUpdNewState → SendConnected flushes IPO's ACK). v1 = header + a
+             * GMsgString layer field; iterate the format until OnUpdNewState reaches SendConnected. */
+            if(inject_upd && runup_done && !trigger_replayed
+               && len==69 && !strcmp(q->name,"CfgServerQueue")){
+                trigger_replayed=1;
+                static const uint8_t upd[] = {
+                    0x20,0x03,0x1f,0x00,            /* GMessage header dword 0x001f0320 = UpdNewState id */
+                    0xe7,0x00,0x00,0x00,            /* field 0: GMsgString tag */
+                    0x02,0x00,0x00,0x00,            /* length 2 */
+                    0x4e,0x63                       /* "Nc" (layer-name guess) */
+                };
+                LOG("INJECT_UPD: connect read -> injecting synthetic UpdNewState (%u bytes, id 0x1f0320)\n",(unsigned)sizeof upd);
+                q_send(id,upd,(uint32_t)sizeof upd,0);
+            }
             return (int)len;                              /* message size in eax */
         }
         uint32_t t=q->tail; unlock();
@@ -563,6 +588,7 @@ static void ensure_init(void){
         const char *hw=getenv("HEROSCALL_HWS_STUB"); hws_stub=hw&&hw[0]=='1';
         const char *tf=getenv("HEROSCALL_TIMERS"); timers_fire=tf&&tf[0]=='1';
         const char *rt=getenv("HEROSCALL_REPLAY_TRIGGER"); replay_trigger=rt&&rt[0]=='1';
+        const char *iu=getenv("HEROSCALL_INJECT_UPD"); inject_upd=iu&&iu[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
