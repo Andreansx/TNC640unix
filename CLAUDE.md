@@ -705,8 +705,20 @@ real-client step: heuserver logged `pid 0 / connection (null)` — its AF_INET p
 (newTicketFromSocket → /proc/net/tcp → pid → uid) didn't identify the python client; a real heros client
 auth will need that to resolve.) heuserver needs ONLY `renamefix.so` (+ harmless herosapi_shim).
 
-NEXT (the real client → the constellation): get the genuine client to talk to heuserver — `usr/bin/
-heuserconfig` (CLI, 50KB) or `usr/bin/heuseradmin` (GUI, 71KB) via `libheuseradmin.so.1`, then AppStartMP
+REAL CLIENT END-TO-END HANDSHAKE VALIDATED (emulator/heu_client.c + heu_client_test.sh). A minimal C
+client dlopen()s `libheuseradmin.so.1` (closure copied i386-correct into /var/tmp/lr: libglib-2.0/libpcre/
+libcap — `cp -aL` to deref symlinks, else the i386 loader falls back to a 64-bit lib) and calls
+**HEUTicketFromPid(getpid())**. RESULT: client logs `HEUTicketFromPid -> 0x1 (heuserver answered)`;
+heuserver logs **`Client /usr/bin/FEXInterpreter was denied HEUTicketFromPid`**. So the FULL chain works:
+real heros client code → connect 19093 → heuserver IDENTIFIES the peer (the python-probe `pid 0` is gone —
+heuserver resolved the connecting process via /proc/PID/exe) → applies AUTHORIZATION → returns a decision.
+"denied" is CORRECT (the client isn't a recognized privileged component).
+★ NEXT BLOCKER surfaced by this: under FEX, heuserver reads the peer's /proc/PID/exe = **`/usr/bin/
+FEXInterpreter`** (the translator), NOT the real i386 binary — so any exe-path-based authorization DENIES
+ALL FEX-run clients. The constellation's real clients (heuseradmin/HrMmi/...) would hit the same wall.
+NEXT: RE heuserver's HEUTicketFromPid authorization (what makes a peer "allowed" — exe path / uid / a
+registered-pid table) and decide how FEX clients present identity (heuserver see-through-FEX to the real
+binary via /proc/PID/cmdline[1], or an auth path that keys on uid not exe). THEN: AppStartMP
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
