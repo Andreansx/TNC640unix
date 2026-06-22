@@ -20,8 +20,8 @@ Windows. The picture below separates what is done, what is portable, and what st
 | VirtualBox | ✅ Linux / Intel macOS; ⚠️ ARM | Exists for Linux and Intel macOS. On ARM64 it only virtualizes **ARM** guests |
 | Shared folders / guest properties | ✅ yes | Standard VBox features — reproducible with `VBoxManage` on any host |
 | Keyboard input to the MMI | ✅ yes | The MMI reads X keyboard events; delivering them works on Linux (see below) |
-| Handwheel (TCP 19035) | ✅ protocol | Reimplementable once the wire format is captured |
-| **JHIO PLC-I/O extpack** | ❌ Windows-only, no source | The hard blocker for full machine behaviour — see below |
+| Handwheel (TCP 19035) | ✅ protocol RE'd | Server is `ipo.elf`; 33-byte frame decoded — see [18](18-handwheel-and-jhio-network.md) + `handwheel/` |
+| **JHIO PLC-I/O** | ✅ network path | The Windows HGCM extpack is one transport; the guest also serves the I/O block over **TCP 19009** (`libjhiosimnet`) — cross-platform, see [18](18-handwheel-and-jhio-network.md) |
 | **Qt control suite** (`tncvbcntl`/`keypad`/`handwheel`) | ❌ Windows binaries | Qt is portable, but only binaries exist; substitute natively (below) |
 | USB dongle licensing | ➖ optional | Not needed for demo mode; dongles pass through by VID:PID on any host |
 
@@ -89,16 +89,20 @@ HEIDENHAIN keyboard documentation.
 
 For full **machine operating modes** (power-on / control voltage / axis motion), the guest PLC
 expects an I/O peer every scan cycle. On Windows that is the JHIO extension pack feeding
-`iosim.dll`; there is no non-Windows build and no source (see
-[05](05-host-control-suite.md) and [06](06-bridge-and-io.md)). Two paths:
+`iosim.dll`. **Update:** the Windows HGCM extpack is only one transport — the guest *also* ships a
+**network transport** (`libjhiosimnet.so`, linked by `plc.elf`) that serves the same
+`_JHIOIntern*` block API over **TCP 19009**, fully decoded in
+[18-handwheel-and-jhio-network.md](18-handwheel-and-jhio-network.md). So the JHIO is **not**
+Windows-locked. Two paths:
 
 1. **Determine empirically what needs it.** Pure NC-program editing and toolpath simulation in
    Programming/Test mode may not require it; the operating modes likely do. Measure this before
    investing in a reimplementation.
-2. **Reimplement the host service** for VirtualBox-on-Linux. The interface is well understood:
-   the `_JHIOIntern*` block API, the per-PLC-cycle handshake
-   (`SignalPlcCycleDone`/`WaitForSimCycleDone`), and a memory-mapped file in the `IOsim` shared
-   folder; `jhiosimhostd.exe` + `iosim.dll`/`plcmap.dll` are the behavioural reference.
+2. **Reimplement a host TCP I/O-sim** that connects to `guest:19009` (`JHIOSIM_MODE=client`),
+   exchanges the 740-byte `JHIO_HEADER` + the `lDataSize` I/O block per cycle, and honors the
+   `SignalPlcCycleDone`/`WaitForSimCycleDone` handshake. The header layout + the machine I/O map
+   are documented in [18](18-handwheel-and-jhio-network.md); `iosim.dll`/`plcmap.dll` are the
+   behavioural reference for the I/O model (signal placement / "control-ready, no faults").
 
 ## A native launcher (replacing the Windows host suite)
 

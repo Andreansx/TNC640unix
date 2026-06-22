@@ -111,9 +111,11 @@ ExtPack-license.txt:  proprietary; redistribution "strongly prohibited"
     i.e. the host I/O sim runs in lockstep with the guest PLC cycle.
 
 So the data path is: **guest PLC ⇄ VBoxJHIO HGCM service ⇄ memory‑mapped file in `IOsim`
-shared folder ⇄ `iosim.dll` (machine I/O model)**. This is the only host component that is
-both essential to full machine behaviour *and* has no non‑Windows build *and* no source — the
-prime reverse‑engineering target for a port.
+shared folder ⇄ `iosim.dll` (machine I/O model)**. The `VBoxJHIO`/`iosim.dll` stack has no
+non‑Windows build and no source — but it is **not** the only transport: the guest itself ships
+**`libjhiosimnet.so`** (linked by `plc.elf`), which serves the *same* `_JHIOIntern*` block API
+over plain **TCP 19009**. A UNIX/macOS host reimplements a TCP I/O‑sim client, not the Windows
+HGCM extpack. See [18-handwheel-and-jhio-network.md](18-handwheel-and-jhio-network.md).
 
 ## `tncvbinst.dll` (754 KB)
 

@@ -178,6 +178,53 @@ Gotchas: do all patchelf NEEDED edits in ONE invocation (repeated calls corrupt 
 
 ---
 
+## OPTION A (TRACK A) — native host control suite on a hypervisor (the route to a USABLE control)
+Option A = run the **stock x86-64 HeROS5 guest** in a hypervisor (VirtualBox on an x86-64 Linux
+host; the real NC SW boots natively → NO i386 translation, NO config #6, the SIK/productid come
+from the real flashed install/demo) and reimplement the **Windows Qt host control suite** natively
+for UNIX/macOS. This is the more promising path to a *fully usable* control. State (docs 05/06/08/
+11/12/14, `keypad/`, `handwheel/`, `scripts/setup_vm.sh`, `tnc640`):
+- **DONE:** x86-64 Linux boots the control to the live MMI (demo mode, headless, VBox — doc 11);
+  native **launcher** (`tnc640`+`setup_vm.sh` = VBoxManage import/sharedfolders/guestprops/startvm);
+  native **keypad** (`keypad/`, PySide6, both layouts, full keymap, validated live via VBox
+  `putScancodes` — doc 12).
+- **★★ 2026-06-22 — BOTH remaining host-suite protocols REVERSE-ENGINEERED (doc 18):** the guest's
+  own portscan whitelist (`etc/sysconfig/portscan-whitelist.cfg`) names the listeners.
+  1. **Handwheel = TCP 19035, served by the NCK `ipo.elf`** (`HRSimServer.cpp`), NOT a separate
+     daemon. Decompiled `HrSimThread@0x54adb0` (Ghidra, `work/re/out/ipo_HRSimServer.decomp.c`):
+     **input frame = 33 bytes (`0x21`) = 8×int32 LE + 1 byte**; frame[0]=per-connection id the
+     server validates; the rest carry jog-delta/axis/2 overrides/key-bitmap (exact via
+     `HrSim410GetInput` = jog+keys, `HrSim520GetInput` = jog+2 ov+wider keys). Server polls an
+     eventfd + ≤5 clients; output = LED bitmap + HR520/550 `HRDISPLAYDATA` (4×20 + cursor + enable)
+     written per PLC cycle. Client `handwheel.exe` = Qt6/QML over QDataStream/QTcpSocket (server is
+     authoritative). Native codec: **`handwheel/hrproto.py`** (33-byte frame encode/decode +
+     self-test, the analogue of `keypad/tnckeymap.py`). OPEN (needs a LIVE capture, not doable on
+     the Mac — needs the running x86-64 guest): the connect handshake seeding `id` + the exact
+     f1..f8→{jog,axis,ov,keys} order. GUI = TODO (after live validation).
+  2. **★★★ JHIO PLC-I/O has a CROSS-PLATFORM NETWORK TRANSPORT — reframes the "deepest blocker".**
+     The docs (05/06/08) called JHIO Windows-only (the `VBoxJHIO` HGCM extpack + `iosim.dll`). But
+     the guest ships **`usr/lib/libjhiosimnet.so.1.0`** (linked by **`plc.elf`**) exposing the SAME
+     `_JHIOIntern*` block API over **TCP 19009**. `applaunch:set_jhiosim_env` sets
+     `JHIOSIM_GUEST_IF=<ethN>` + `JHIOSIM_SVR_PORT=19009` → **guest is the TCP server** on the
+     machine-net iface; a host I/O-sim connects as **client** (`JHIOSIM_MODE=1`, `JHIOSIM_SVR_IP`,
+     `JHIOSIM_SVR_PORT`). Decompiled (`work/re/out/libjhiosimnet.decomp.c`): per PLC cycle **send
+     740-byte (`0x2e4`) `JHIO_HEADER`** (djb2-hashed; version field@+8 = 100..400 = v1.0..4.0),
+     **exchange the I/O block** (`PutBlocks` diffs + change-hash; data at `lDataOffset`/`lDataSize`),
+     **recv host inputs**, lockstep via `SignalPlcCycleDone`/`WaitForSimCycleDone`. Full
+     `JHIO_HEADER` machine-I/O map decoded from `print_JHIO_HEADER` (Inputs/Outputs/BWDs/ADC-DAC per
+     terminal X45/X48/X148/X8_9/X150/X151/PL410/PL510/MOP/ES/X12/X13, SPLC safety I/O,
+     `lControlIsReady`, `lvirtualTNCLicense`, …) — see doc 18 §1.4. So a host I/O-sim is a TCP
+     client speaking a now-documented protocol, NOT a Windows wall (still needs a machine I/O model
+     = `iosim.dll`/`plcmap.dll` behaviour; demo programming may tolerate a minimal "ready/no-fault").
+- **Tooling note (this session):** Ghidra headless default heap is **2G** → OOM on the 8.2 MB
+  `ipo_progstation.elf`; override with `GHIDRA_HEADLESS_MAXMEM=20G`. Name-filtered post-script
+  `work/re/scripts/DecompileFiltered.java` (env `GHIDRA_DECOMP_FILTER`) decompiles only a function
+  cluster from a huge binary; runner `work/re/scripts/decompile_optionA.sh`. `analyzeHeadless`
+  requires the project dir to pre-exist.
+- **NEXT (Track A):** stand up the guest on an x86-64 Linux host → live-capture 19035 (finalize the
+  handwheel field order + id handshake) → native handwheel GUI; prototype a TCP I/O-sim client to
+  `guest:19009` and measure what demo/programming modes actually need from it.
+
 ## TRANSLATION PORT ROADMAP (current focus — option B: run unmodified i386 control on native ARM64)
 
 Status: i386 userspace translation **works** on the M2 (NCK interpolator loads its full 100-lib

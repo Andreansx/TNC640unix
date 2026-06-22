@@ -83,10 +83,12 @@ keyboard that `echo`s the right tokens into `/tmp/__heuinput` over SSH/guest‑c
 ## 5. Handwheel — TCP 19035 (host handwheel → guest)
 
 `handwheel.exe` opens a `QTcpSocket` to **port 19035** on the guest (over the host‑only
-network). A handwheel server inside the guest (part of the NC software) consumes jog pulses,
-the selected axis, and feed/override. A Linux substitute would speak the same TCP protocol; the
-wire format is not yet reverse‑engineered (a packet capture against the real product would
-nail it down).
+network). The handwheel server is in the **NCK interpolator `ipo.elf`** (`HRSimServer.cpp`); it
+consumes jog pulses, the selected axis, and feed/override. **The wire format is now reverse‑
+engineered** from the server: a **33‑byte input frame** (8×int32 LE + 1 byte) per client (up to
+5), and an LED‑bitmap + HR 520/550 display reply — see
+[18-handwheel-and-jhio-network.md](18-handwheel-and-jhio-network.md) and the native
+`handwheel/` codec.
 
 ## 6. JHIO — PLC I/O simulation (the realtime channel)
 
@@ -105,9 +107,15 @@ guest PLC  ──HGCM calls──►  VBoxJHIO host service (extpack)
    sync:  guest SignalPlcCycleDone ⇄ host WaitForSimCycleDone   (lockstep per scan cycle)
 ```
 
-- **Transport options:** VirtualBox uses the **JHIO extension pack** (`VBoxJHIO` HGCM
-  service); VMware (no extpack) appears to use the standalone **`jhiosimhostd.exe`** polling
-  the shared file. Both ultimately drive `iosim.dll`.
+- **Transport options:** (1) VirtualBox uses the **JHIO extension pack** (`VBoxJHIO` HGCM
+  service); (2) VMware uses the standalone **`jhiosimhostd.exe`** polling the shared file; (3) **a
+  network transport built into the guest** — `usr/lib/libjhiosimnet.so.1.0` (linked by `plc.elf`)
+  serves the *same* `_JHIOIntern*` block API over **TCP 19009** (guest = server on the machine‑net
+  eth interface; host connects as client). This third path is **fully cross‑platform** and is the
+  recommended route for a UNIX/macOS host — it needs no Windows extpack. Decoded in
+  [18-handwheel-and-jhio-network.md](18-handwheel-and-jhio-network.md) (config vars
+  `JHIOSIM_MODE/GUEST_IF/SVR_IP/SVR_PORT`, the 740‑byte `JHIO_HEADER`, the per‑cycle exchange).
+  All three ultimately drive a machine I/O model (`iosim.dll`+`plcmap.dll` on Windows).
 - **Why it matters:** without a working I/O sim the guest PLC may not reach the operational
   ("control ready") state — the machine model would look "not ready," errors could latch, and
   axis motion / M‑functions might be blocked. Whether *demo programming + simulation* tolerates
