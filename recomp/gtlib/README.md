@@ -11,6 +11,9 @@ Decompile → recompile → **byte-identical proof** for the single-level
 | `GTFIND_IsBohrung/IsFasRun/IsFreistich/IsEinstich/IsGewinde` | geotec tag (`@+0x54`) == const → clean bool |
 | `GTFIND_IsVariante` | tag == param2; **leaks** param2 into the return register (`sete al`) |
 | `GTFIND_IsFigurRucksack` | `1<<tag` bitmask vs `0xd2800`; **leaks** `1<<tag` into the return register (`setne al`) |
+| `GTFIND_IsYEbene/IsMantel` | plan_at type-code classifiers (arg is the code, no struct) |
+| `GTFIND_IsPkt/IsTanZiel/IsDefTanZiel` | `IsVariante(p,1)` gate + a bit of geotec `+0x5c`/`+0x58`/`+0xc` |
+| `GTFIND_IsUeberlagerung` | composite of `IsFasRun`/`IsFreistich`/`IsEinstich`/`IsBohrung` |
 
 These are C++ symbols (typed `geotec*` params) so each is bound by its exact
 mangled name (`_Z16GTFIND_IsBohrungP6geotec`, …) via an `__asm__` label on both

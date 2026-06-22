@@ -20,6 +20,11 @@ extern unsigned IsVariante(const void *, int)  __asm__("_Z17GTFIND_IsVarianteP6g
 extern unsigned IsFigurRucksack(const void *)  __asm__("_Z22GTFIND_IsFigurRucksackP6geotec");
 extern bool     IsYEbene(unsigned)             __asm__("_Z15GTFIND_IsYEbene7plan_at");
 extern unsigned IsMantel(unsigned)             __asm__("_Z15GTFIND_IsMantel7plan_at");
+/* gated multi-field classifiers (all single-level leaves) */
+extern unsigned IsPkt(const void *)            __asm__("_Z12GTFIND_IsPktP6geotec");
+extern unsigned IsTanZiel(const void *)        __asm__("_Z16GTFIND_IsTanZielP6geotec");
+extern unsigned IsDefTanZiel(const void *)     __asm__("_Z19GTFIND_IsDefTanZielP6geotec");
+extern bool     IsUeberlagerung(const void *)  __asm__("_Z22GTFIND_IsUeberlagerungP6geotec");
 
 static char ob[8192]; static int op;
 static void put(char c){ ob[op++]=c; }
@@ -76,6 +81,36 @@ int main(void){
     puts_("== IsYEbene / IsMantel (plan_at) ==\n");
     for (unsigned p = 0; p <= 0x20; p++) {
         puts_("p="); dec(p); puts_(" Y="); dec(IsYEbene(p)); puts_(" M="); hex(IsMantel(p),8); put('\n');
+    }
+    flush();
+
+    /* gated multi-field classifiers: IsVariante(p,1) tag gate @+0x54, then a bit of
+     * +0x5c (Pkt bit4 / TanZiel bit12), +0x58 (DefTanZiel bit12), +0xc (TanZiel !=0 gate). */
+    puts_("== null ptr (gated) ==\n");
+    puts_("Pk="); hex(IsPkt(0),8); puts_(" TZ="); hex(IsTanZiel(0),8);
+    puts_(" DTZ="); hex(IsDefTanZiel(0),8); puts_(" Ue="); dec(IsUeberlagerung(0)); put('\n');
+    puts_("== Pkt / TanZiel / DefTanZiel / Ueberlagerung sweep ==\n");
+    {
+        static const uint32_t fv[] = {0u,0x10u,0x1000u,0x1010u,0x800u,0xfffu,0xfffff000u,0xffffffffu};
+        static const int32_t  cv[] = {0, 1, -1};
+        for (int tag = -1; tag <= 0x16; tag++) {
+            for (int i = 0; i < 8; i++) {
+                for (int j = 0; j < 3; j++) {
+                    memset(node, 0x5A, sizeof node);
+                    memcpy(node + 0x54, &tag,   4);    /* IsVariante gate (tag==1) */
+                    memcpy(node + 0x5c, &fv[i], 4);    /* Pkt bit4 / TanZiel bit12 */
+                    memcpy(node + 0x58, &fv[i], 4);    /* DefTanZiel bit12 */
+                    memcpy(node + 0x0c, &cv[j], 4);    /* TanZiel *(p+0xc)!=0 gate */
+                    puts_("t="); dec(tag); puts_(" f="); hex(fv[i],8); puts_(" c="); dec(cv[j]);
+                    puts_(" Pk="); hex(IsPkt(node),8);
+                    puts_(" TZ="); hex(IsTanZiel(node),8);
+                    puts_(" DTZ="); hex(IsDefTanZiel(node),8);
+                    puts_(" Ue="); dec(IsUeberlagerung(node));
+                    put('\n');
+                    if (op > 7000) flush();
+                }
+            }
+        }
     }
     flush();
     return 0;

@@ -58,6 +58,50 @@ unsigned gtf_isfigurrucksack(const void *p)
     return (u & 0xFFFFFF00u) | ((u & 0xd2800u) ? 1u : 0u);
 }
 
+/* ---- gated multi-field classifiers (all single-level leaves; gate on IsVariante(p,1),
+ *      then read a bit of another geotec field). The *(p+4) pointer-chasing TanStart/
+ *      DefTanStart siblings are EXCLUDED by the byte-identical bar (32-bit stored ptr). ---- */
+
+/* IsVariante(p,1) && ((*(uint*)(p+0x5c) >> 4) & 1) */
+unsigned gtf_ispkt(const void *p) __asm__("_Z12GTFIND_IsPktP6geotec");
+unsigned gtf_ispkt(const void *p)
+{
+    unsigned u = gtf_isvariante(p, 1);
+    if ((char)u != 0) u = (*(const uint32_t *)((const char *)p + 0x5c) >> 4) & 1u;
+    return u;
+}
+
+/* IsVariante(p,1) && *(int*)(p+0xc)!=0 && ((*(uint*)(p+0x5c) >> 0xc) & 1) */
+unsigned gtf_istanziel(const void *p) __asm__("_Z16GTFIND_IsTanZielP6geotec");
+unsigned gtf_istanziel(const void *p)
+{
+    unsigned u = gtf_isvariante(p, 1);
+    if ((char)u != 0) {
+        u = 0u;
+        if (*(const int32_t *)((const char *)p + 0xc) != 0)
+            u = (*(const uint32_t *)((const char *)p + 0x5c) >> 0xc) & 1u;
+    }
+    return u;
+}
+
+/* IsVariante(p,1) && ((*(uint*)(p+0x58) >> 0xc) & 1) */
+unsigned gtf_isdeftanziel(const void *p) __asm__("_Z19GTFIND_IsDefTanZielP6geotec");
+unsigned gtf_isdeftanziel(const void *p)
+{
+    unsigned u = gtf_isvariante(p, 1);
+    if ((char)u != 0) u = (*(const uint32_t *)((const char *)p + 0x58) >> 0xc) & 1u;
+    return u;
+}
+
+/* !IsFasRun && !IsFreistich && !IsEinstich ? IsBohrung : true */
+bool gtf_isueberlagerung(const void *p) __asm__("_Z22GTFIND_IsUeberlagerungP6geotec");
+bool gtf_isueberlagerung(const void *p)
+{
+    if (!gtf_isfasrun(p) && !gtf_isfreistich(p) && !gtf_iseinstich(p))
+        return gtf_isbohrung(p);
+    return true;
+}
+
 /* ---- plane-type (plan_at) classifiers: the arg IS the type code (no struct) ---- */
 
 /* p in {4,5} (p<6 && p>3) or {0xd,0xe} ((p-0xd)<2). `seta al` -> verify as bool. */
