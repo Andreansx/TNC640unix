@@ -38,12 +38,16 @@ CFGPID=$!
 # during startup. The HWS stub reply is the last run-up step; after it, ConfigServer
 # settles into the CfgServerQueue dispatch loop. (Real systems start clients after the
 # server is up — AppStartMP ordering.)
+# Wait for ConfigServer's run-up to finish before connecting IPO (its dispatch loop only serves
+# after run-up). NB: early-connect does NOT help — the dispatch processes connects only post-run-up,
+# i.e. AFTER the one-time SIK-flow SendConnected flush; so IPO is registered too late to be ACKed
+# regardless of when it connects. The connect-ACK needs a STEADY-STATE flush trigger = the absent
+# MMI's UpdNewState (a host-side peer). See docs/17.
 i=0; while [ $i -lt 300 ]; do
   grep -q 'HWS stub: replied' /tmp/cfgsrv.log 2>/dev/null && break
-  grep -q 'Q_create "CfgServerQueue"' /tmp/cfgsrv.log 2>/dev/null && READY=cfgq
   sleep 0.5; i=$((i+1))
 done
-sleep 5   # let ConfigServer settle into the steady-state dispatch loop
+sleep 5
 echo "ConfigServer queues:"; grep -E 'Q_create "(CfgServerQueue|CfgFileMan)"' /tmp/cfgsrv.log 2>/dev/null | sed 's/.*rtos] //' || true
 echo "ConfigServer run-up done (HWS stub fired): $(grep -c 'HWS stub: replied' /tmp/cfgsrv.log 2>/dev/null)"
 
