@@ -33,13 +33,19 @@ sudo chmod -R a+r /mnt/sys/cache
 GUARD_BEFORE=$(md5sum /etc/passwd | awk '{print $1}')
 sudo rm -f /tmp/cfgenc_pop.log /tmp/cfgenc_cfg.log /tmp/cfgenc_ipo.log /tmp/cfgenc_strace.log
 
-echo "=== [A] populate _jh_int via control encfs under the confirmed PW ==="
+echo "=== [A] (re)create _jh_int as a FRESH encfs under the confirmed PW, then populate ==="
 sudo fusermount -u /mnt/sys/config/jh_int 2>/dev/null
+# Reset: a fresh store created with --standard -S so the volume key is encrypted with EXACTLY PW
+# (encDir later reads this .encfs6.xml O_RDONLY and mounts with PW). Without --standard the password
+# handling is ambiguous (first stdin line consumed as the config-mode answer -> wrong key).
+sudo rm -rf /mnt/sys/config/_jh_int /mnt/sys/config/jh_int
+sudo mkdir -p /mnt/sys/config/_jh_int /mnt/sys/config/jh_int
+sudo chmod 777 /mnt/sys/config/_jh_int /mnt/sys/config/jh_int
 sudo PATH="$R/usr/bin:$R/usr/sbin:$PATH" bash -c '
   R=/var/tmp/lr; CFG="'"$CFG"'"; PW="'"$PW"'"
-  printf "%s\n" "$PW" | FEXInterpreter "$R/usr/bin/encfs" -S /mnt/sys/config/_jh_int /mnt/sys/config/jh_int >/tmp/cfgenc_pop.log 2>&1 &
-  sleep 5
-  if mount | grep -q "/mnt/sys/config/jh_int"; then echo "  ENCFS MOUNTED"; else echo "  ENCFS MOUNT FAILED:"; tail -4 /tmp/cfgenc_pop.log; fi
+  printf "%s\n" "$PW" | FEXInterpreter "$R/usr/bin/encfs" --standard -S /mnt/sys/config/_jh_int /mnt/sys/config/jh_int >/tmp/cfgenc_pop.log 2>&1 &
+  sleep 6
+  if mount | grep -q "/mnt/sys/config/jh_int"; then echo "  ENCFS MOUNTED (fresh, PW=encDir password)"; else echo "  ENCFS MOUNT FAILED:"; tail -6 /tmp/cfgenc_pop.log; fi
   cp -aL "$CFG"/config/*.cfg "$CFG"/config/*.atr /mnt/sys/config/jh_int/ 2>/dev/null
   cp -aL "$CFG"/config/layout /mnt/sys/config/jh_int/layout 2>/dev/null
   sync; sleep 1

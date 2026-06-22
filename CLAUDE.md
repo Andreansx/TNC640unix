@@ -458,6 +458,25 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   exception-`.cold`-garbled (unusable); the layer-creator must be found via runtime trace. NEXT (the real, still-open
   gate): who inserts into `dataCollection`'s layer Rb_tree (`_M_insert_unique<Lyr::LayerNr>`@0x1509e0) — likely a
   config-init/per-client step the standalone ConfigServer never reaches, i.e. the constellation per-client state.
+  ★★★ CONFIG #6 — CONCLUSIVE CHARACTERIZATION (2026-06-23): this session removed THREE sub-blockers and
+  isolated the gate. (1) **encfs password CONFIRMED at runtime = `Yomxn8YJyvrbNli62Rpl`** (`emulator/
+  trace_encfs.sh` straced encDir's `-S` stdin write; fixed/deterministic, NOT the dongle). (2) **the encfs
+  config store CAN be populated + MOUNTED under FEX**: `emulator/run_cfg_encfs_test.sh` creates a fresh
+  `_jh_int` with `encfs --standard -S`+that password, encrypts the real config (65 .cfg/.atr + layout) in,
+  and ConfigServer's `encDir` **mounts the populated store** (`encdir: mounted ... started`, no `error
+  encfs:1` — that earlier ELFCLASS64 was the `/etc`-bind→`LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu` leak
+  of the 64-bit host libfuse into the i386 guest; run WITHOUT binding /etc + create `/dev/shm/_heusrv_shm`
+  or ConfigServer segfaults in run-up). The residual `error encfs:127` is encDir's encfs spawn inside its
+  OWN `unshare(CLONE_NEWNS)` not finding fusermount — a FEX+unshare+FUSE detail, NOT the gate. (3)
+  **controlmark=16** builds GetOptionTableTnc640 (see the control-mark map above). ★ DECISIVE: even with a
+  populated jh_int + controlmark=16 (`trace_cfgload.sh`), ConfigServer descends into `jh_int/layout`
+  (O_DIRECTORY) but **opens ZERO data .cfg/.atr** → IPO still `-k=NC`. ⇒ the gate is NOT file-presence, NOT
+  the option table, NOT the encfs — it is the **DataStore per-client layer REGISTRATION** (ReadConfigDataDir
+  prologue `_Rb_tree<astring,Client>::find` on the client map → empty layer file-array → ReadDir false →
+  loop skipped), populated only by the running constellation's clients (the chicken-and-egg). So Track B
+  carries ConfigServer through RTOS run-up + connect(INJECT_ACK) + productid(cm=16) + a POPULATED+MOUNTED
+  encfs store — to the per-client layer-registration gate, which needs the constellation. The three former
+  sub-blockers (password / store-population / option-table) are SOLVED; this is the precise honest endpoint.
   ★ PROGRESS: with the productid confs provided, ConfigServer NOW **stats 53 config files** in
   `/mnt/sys/config/jh_int` (`newfstatat` OK on `tnc.cfg`/`ChannelCfg.atr`/`GlobalSystemCfg.atr`/…) — so the
   productid genuinely unblocks the IsAFile/SetupDirInfo stating path (it WAS necessary). BUT they're STAT-ed,
