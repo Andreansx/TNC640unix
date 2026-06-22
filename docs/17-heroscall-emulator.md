@@ -423,6 +423,37 @@ qemu-i386** — then the same `HwsMailslot` peer-wait. lima ops note: `pkill -x`
 self-matches "qemu-i386"); detach long runs with `nohup … & ` and poll (a file-redirected long
 limactl command idle-drops the SSH).
 
+## Update (2026-06-22 b): the `HwsMailslot` scan was a WRONG not-found code; run-up now completes
+
+The `HwsM<task>N<ctr>` "scan" was **not** a peer-wait — it was `FMailslotQueue::TemporaryQueuename`
+(libbackend @0x21dd0) minting a fresh temp reply-mailslot: it formats a candidate name, `q_ident`s it,
+and stops when q_ident returns **exactly `0xffffffff` (-1)** = "name free":
+`loop: fmt "HwsM<task>N<ctr>"; q_ident; cmp $0xffffffff,%eax; jne loop`. The emulator returned `-0x13`
+for not-found, so every candidate looked *taken* → the scan never terminated. **`-1` is the real heros
+not-found convention** (most consumers sign-test it, but `TemporaryQueuename` and others exact-compare
+`==0xffffffff`). Fix: `q_ident` not-found → `-1` (commit e05feb0). Effect on ARM64: the HwsM scan
+vanishes (0 idents), `cfgsrv.log` 80MB→38KB, **the HWS run-up COMPLETES, the worker pool reaches the
+idle `Ev_receive(0x1000)` serve state, and ConfigServer stops punting client ACKs to `0xffffffed`
+(hundreds → 0).**
+
+**The remaining run-up blocker, fully localized to ONE request/reply.** After the temp mailslot is
+created, `HwsMailslotQueue::Create` does `FMailslotQueue::Open(QHWServer)` + `SyncMessage(req,reply)`:
+- `Q_ident "QHWServer"` (the hardware-server queue; absent → auto black-hole),
+- `Q_send size 83 -> QHWServer` — an HWS **`GetData`** request: GMessage **id 132 (0x84)**, a
+  `GMsgString` reply-to = the temp mailslot name **`"HwsM00000100N000"`**, flags `1`/`0x7fffffff`, and
+  a 35-byte token string ending in `"GetData"`,
+- `Q_read [HwsM00000100N000, timeout 0xffffffff]` — **blocks forever for the reply**.
+
+Capping that read (timeout) does NOT degrade gracefully — `SyncMessage` just **re-reads the reply queue
+every interval forever** (it polls; the run-up requires an actual reply, and only proceeds when
+`HWSSrvConnected` becomes true). So the next step is a real **QHWServer reply stub** in the emulator:
+intercept the `Q_send` to the queue named `QHWServer`, parse the reply-to name + query out of the
+request, and post a well-formed HWS reply (an `HwsSrvValue`/`HWSSrvConnected` GMessage carrying a
+server handle) to the reply mailslot so `SyncMessage` returns connected. That needs the reply GMessage
+layout (RE `HwsMailslotQueue::SyncMessage`/`ReadMessageSync` + `HWSSrvConnected` parsing) — a focused
+next chunk. This is the LAST identified run-up blocker before ConfigServer reaches its steady-state
+CfgServerQueue dispatch (and can answer IPO's connect).
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`

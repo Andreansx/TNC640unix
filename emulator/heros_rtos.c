@@ -413,6 +413,9 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
     int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); return -9; }
     if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap ALL forever-waits */
     if(timeout==0xffffffff && sync_timeout && strstr(C->queues[s].name,"Sync")){ /* cap only *Sync handshakes */
+        /* NB: capping the HwsM* HWS reply mailslots does NOT help — the run-up's SyncMessage
+         * re-reads the reply queue after each timeout (polls forever), it does not degrade on a
+         * missing HW server. It needs a REAL reply injected (QHWServer stub). See docs/17. */
         timeout=sync_timeout; LOG("Q_read \"%s\" forever-wait capped to %ums (no server peer)\n",C->queues[s].name,sync_timeout); }
     struct queue*q=&C->queues[s];
     for(;;){
