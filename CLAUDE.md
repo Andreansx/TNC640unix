@@ -596,3 +596,27 @@ Under FEX the testing is noisy (the preload loads inconsistently; foreground exi
 segfaulting in the daemon/fork path) — so the next step is a clean, fully-writable same-fs credential env +
 stable preload so heuserver self-initializes and binds. This is more tractable than a permission-model build
 but still gated by the FEX env plumbing. Path stays: heuserver self-init+bind -> AppStartMP -> constellation.
+
+### ★★★ heuserver RUNS its full credential setup under FEX (2026-06-22) — root-check + emulator solved ★★★
+Got heuserver from "no output / silent exit" to running its COMPLETE credential provisioning observably on
+ARM64, via three fixes:
+  1. **Run as the UNPRIVILEGED user, not sudo.** FEX runs the control's i386 binaries fine as my user, but
+     NOT under sudo — the lima VM's uid-501 host-mapping is unresolvable (`sudo: user 'current user' not
+     found`), which breaks sudo + permission-dependent paths. (Static/dynamic i386 verified working as my
+     user; sudo runs silently fail.)
+  2. **emulator/fakeroot.c** (new LD_PRELOAD, loaded FIRST): geteuid/getuid->0 so heuserver passes its
+     `Only root can run heuserver!` check; chown/chmod/setgroups->0 (no-op the privileged ops). Build:
+     i686-linux-gnu-gcc -shared -fPIC -O2 -o fakeroot.so emulator/fakeroot.c.
+  3. **Fresh /dev/shm names in heros_rtos.c** (sed heros_rtos_ctl->hrctlU501, heros_reg_->hregU501_) so the
+     unprivileged user creates its own control segment (the old one was a root-owned 403MB 0600 leftover,
+     EACCES; sudo couldn't remove it). [rtos] control segment created -> the emulator now inits.
+With this + a FEX overlay rootfs, heuserver runs FULLY: parses the NC/PLC/HEROS legacy roles, provisions
+function-users (addgroup/adduser via busybox symlinks), creates /etc/netgroup, sets file perms, GENERATES
+/etc/sysconfig/heuseradmin/heuseradmin.cfg. This is the FURTHEST heuserver has reached — its actual setup.
+REMAINING (one blocker): file WRITES fail (changeOemPasswd /etc/passwd.new, the keyfile temp, /tmp/
+__group.conf.new, /etc/security/groups) = "Permission denied", because the overlay/virtiofs writes are
+gated by the SAME unresolvable-uid-501 degradation (my-user-owned overlay upper still denies writes; the
+virtiofs lowerdir $R is owned by the unresolvable uid 501, so overlayfs permission checks fail). This is a
+VM-infrastructure degradation, NOT the emulator: a FRESH VM (where uid 501 resolves -> real root/sudo works,
+or the rootfs isn't a virtiofs mount) lets the writes succeed and heuserver bind. NEXT: fresh VM/environment
+-> heuserver self-init+bind -> heuseradmin connects -> AppStartMP -> the constellation, all under FEX.
