@@ -620,3 +620,20 @@ virtiofs lowerdir $R is owned by the unresolvable uid 501, so overlayfs permissi
 VM-infrastructure degradation, NOT the emulator: a FRESH VM (where uid 501 resolves -> real root/sudo works,
 or the rootfs isn't a virtiofs mount) lets the writes succeed and heuserver bind. NEXT: fresh VM/environment
 -> heuserver self-init+bind -> heuseradmin connects -> AppStartMP -> the constellation, all under FEX.
+
+### heuserver bind: blocked by VM-degradation stuck files (2026-06-22) — local writable rootfs WORKS for /etc
+Built a LOCAL my-user-owned rootfs (no overlay/virtiofs/sudo) to make heuserver's writes succeed:
+closure-trace heuserver's NEEDED libs (libheusercfg/libjhvolume/libpam/libglib-2.0/libcrypto/libhenetstat
++ transitive, ~25 libs) from work/target/rootfs into /var/tmp/lr/lib (ext4, 90G free; /tmp is tmpfs/RAM
+so use /var/tmp), + busybox + the modern i386 glibc on top + the preloads + busybox helper symlinks +
+writable /etc. FEX RootFS=/var/tmp/lr. RESULT: heuserver runs its FULL setup and **/etc writes now succeed**
+("Create new /etc/netgroup" works) -- the local writable rootfs solved the overlay-permission wall.
+REMAINING (one VM artifact): heuserver hardcodes /tmp/__group.conf.new; **FEX maps the guest /tmp to the
+HOST /tmp** (verified: a pre-placed /var/tmp/lr/tmp/__group.conf.new is ignored), and host
+/tmp/__group.conf.new is a STUCK root-owned file (1969B, from an earlier WORKING-sudo run at 09:47) that my
+user cannot remove (sticky /tmp + sudo broken + userns blocked: uid_map EPERM). Same for the 403MB root-owned
+/dev/shm/heros_rtos_ctl. These leftover-root files (from before the uid-501 drift) block the my-user runs and
+can't be cleared without root. ⇒ heuserver is ONE clean step from binding: a FRESH VM (clears /tmp + /dev/shm,
+restores uid-501 so sudo/root works) lets heuserver complete + bind. All the hard parts are solved (run as
+user, fakeroot root-check, fresh-shm emulator, local writable rootfs, /etc writes); only the stuck-file VM
+artifact remains. NEXT: fresh VM -> heuserver binds -> heuseradmin -> AppStartMP -> constellation under FEX.
