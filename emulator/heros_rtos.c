@@ -122,25 +122,32 @@ static void ctl_init(void){
     }
 }
 
-/* ---------------- tasks ---------------- */
-static __thread uint32_t my_task=0;       /* cached task id for this thread */
+/* ---------------- tasks ----------------
+ * No `__thread` cache: TLS pulls a GLIBC_ABI_GNU_TLS verneed that the control's
+ * glibc 2.31 lacks (the .so then won't load under qemu-i386 on ARM64). task_self()
+ * finds-or-creates the task entry idempotently, so re-resolving per call is correct;
+ * a non-TLS per-tid cache below keeps it cheap without the TLS ABI dependency. */
 static int task_slot(uint32_t id){ for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&C->tasks[i].id==id) return i; return -1; }
 
+/* process-local (not shared) tid->id cache; benign races only (a miss just rescans) */
+static struct { int32_t tid; uint32_t id; } tcache[128];
 static uint32_t task_self(void){
-    if(my_task) return my_task;
-    int32_t tgid=(int32_t)raw5(SYS_getpid,0,0,0,0,0);
     int32_t tid =(int32_t)raw5(SYS_gettid,0,0,0,0,0);
+    unsigned h=((unsigned)tid)&127;
+    if(tcache[h].id && tcache[h].tid==tid) return tcache[h].id;
+    int32_t tgid=(int32_t)raw5(SYS_getpid,0,0,0,0,0);
     lock();
     for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&C->tasks[i].tgid==tgid&&C->tasks[i].tid==tid){
-        my_task=C->tasks[i].id; unlock(); return my_task; }
+        uint32_t id=C->tasks[i].id; unlock(); tcache[h].tid=tid; tcache[h].id=id; return id; }
     int s=-1; for(int i=0;i<MAXTASK;i++) if(!C->tasks[i].used){ s=i; break; }
     if(s<0){ unlock(); return 0x101; }
     C->tasks[s].used=1; C->tasks[s].id=C->next_task++; C->tasks[s].tgid=tgid; C->tasks[s].tid=tid;
     C->tasks[s].events=0; C->tasks[s].name[0]=0;
     C->tasks[s].as_pending=0; C->tasks[s].as_mask=0;
-    my_task=C->tasks[s].id; unlock();
-    LOG("task_self -> new id 0x%x (tgid %d tid %d)\n",my_task,tgid,tid);
-    return my_task;
+    uint32_t id=C->tasks[s].id; unlock();
+    tcache[h].tid=tid; tcache[h].id=id;
+    LOG("task_self -> new id 0x%x (tgid %d tid %d)\n",id,tgid,tid);
+    return id;
 }
 static uint32_t task_by_name(const char*nm){
     lock();
