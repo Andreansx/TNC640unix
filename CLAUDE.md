@@ -387,6 +387,19 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   constellation IS reachable as a path on ARM64 (X+WM provided) but completing it = bringing up every server
   + the Qt MMI = the documented infeasible/legally-barred ceiling. NEXT (full-boot path): start the HeROS
   service constellation (heusrv etc.) so AppStartMP's children wire up + the productid/layers populate.
+  ★★★ COMPLETE SCOPE (batch/TNC640heros.txt = AppStartMP's constellation definition): the full control is
+  **30 subsystems / 92 processes** — winmgr, SkManager, prom, evtserver, observer, hwserver, **ConfigServer**,
+  dnc, SqlServer, flserver, HotPlugServer, sif, HelpServer, DialogServer, SharedMemServer, TaskServer,
+  Workset, ifsDiagnosis, calcprocess, ConfigEditor, TableUpdtr, QsTncKeyboard/touchkeys, graphics,
+  ChannelManager, Fred, ContourGraphics, TableEdit, texteditor, Pgm_Mgt, plcdiagnose, simipo/simplc/geochain,
+  StatPosDisplay, TaskRunner, startup, **HrMmi.elf** (the main Qt MMI), **ipo.elf**/**ipo_progstation.elf**
+  (the NCK), ipo_export, … So "fully run the control" = boot ALL 92 processes (each its own qemu-i386 +
+  heroscall-emulator instance) wired together, culminating in the Qt MMI HrMmi.elf. That IS the documented
+  full-system/GUI boot — feasible only up to the Qt MMI (the infeasible/legally-barred ceiling). Track B
+  (userspace emulator) is proven to carry the INDIVIDUAL processes (NCK, ConfigServer) through RTOS/kernel
+  init + connect + the config frontier, and the orchestrator AppStartMP RUNS on ARM64 (Xvfb+openbox) and
+  spawns the constellation — but booting all 92 + the Qt MMI is the full-system path, not an incremental
+  emulator step. This is the genuine, mapped endpoint of Track B.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
