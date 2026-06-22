@@ -127,3 +127,33 @@ int ioctl(int fd, unsigned long req, ...) {
     }
     return (int)syscall(SYS_ioctl, fd, req, arg);
 }
+
+/* select() timeout CAP for the libbackend EVHandler dispatcher.
+ * With /dev/events as a blocking pipe, EVHandlerWaitForIOEvent's select() blocks FOREVER (NULL timeout)
+ * when no fd is ready -> the framework STARTUP TIMERS (FModule::CreateTimer ~12s/~54s, serviced inside the
+ * event loop, NOT via heros Tm_) never fire and the boot stalls before spawning the constellation. Cap the
+ * timeout (HEROSCALL_SELECT_CAP_MS, e.g. 50) ONLY for selects that include a faked /dev/events fd, so the
+ * dispatcher wakes periodically, services the pending timers/messages, and proceeds — without the busy-spin
+ * (the always-ready memfd) OR the forever-block (the bare pipe). This is the practical "inject the periodic
+ * GUI tick" the boot's event loop expects from the kernel /dev/events driver. */
+#include <sys/select.h>
+#ifndef SYS__newselect
+#define SYS__newselect 142   /* i386 */
+#endif
+static long sel_cap_ms = -2;  /* -2 uninit, -1 disabled */
+int select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *to) {
+    if (sel_cap_ms == -2) { const char *s = getenv("HEROSCALL_SELECT_CAP_MS"); sel_cap_ms = s ? atol(s) : -1; }
+    struct timeval cap;
+    if (sel_cap_ms >= 0 && r) {
+        int hit = 0;
+        for (int i = 0; i < fake_n; i++)
+            if (fake_fds[i] >= 0 && fake_fds[i] < nfds && FD_ISSET(fake_fds[i], r)) { hit = 1; break; }
+        if (hit) {
+            long cur = to ? (to->tv_sec * 1000L + to->tv_usec / 1000L) : -1;
+            if (!to || cur > sel_cap_ms) {
+                cap.tv_sec = sel_cap_ms / 1000; cap.tv_usec = (sel_cap_ms % 1000) * 1000; to = &cap;
+            }
+        }
+    }
+    return (int)syscall(SYS__newselect, nfds, r, w, e, to);
+}

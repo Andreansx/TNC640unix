@@ -167,10 +167,20 @@ static void mono_now(struct timespec *ts){ ts->tv_sec=0; ts->tv_nsec=0; raw5(265
  * timeout=0) — so it must sleep the FULL timeout across spurious futex wakeups /
  * EINTR (the As_send→SIGUSR1 path interrupts futex). Returning after a single
  * disturbed futex turned a 100s wait into a busy-spin (422MB log of one caller). */
+/* HEROSCALL_EV_UNBLOCK_MS=N: DIRECT EVENT-INJECTION probe. A thread that would block FOREVER
+ * (timeout=0xffffffff) with no event pending is instead woken after N ms and handed back its full
+ * `want` mask as a SYNTHETIC event — i.e. "pretend the awaited event(s) fired". Tests whether
+ * AppStartMP's pre-spawn block (task 0x106 Ev_receive(0x01019007, forever)) is a missing-event gate
+ * (then it proceeds to spawn) or a missing-DATA gate (then it wakes, finds empty queues, re-blocks =
+ * the config-data #6 frontier). Gated off by default. */
+static int ev_unblock_ms=-2;
 static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
+    int synthetic=0;
+    if(ev_unblock_ms==-2){ const char*e=getenv("HEROSCALL_EV_UNBLOCK_MS"); ev_unblock_ms=e?atoi(e):-1; }
+    if(timeout==0xffffffff && ev_unblock_ms>0){ timeout=(uint32_t)ev_unblock_ms; synthetic=1; }
     struct timespec deadline; int have_dl=0;
     if(timeout && timeout!=0xffffffff){
         mono_now(&deadline);
@@ -191,7 +201,10 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
         if(have_dl){                                          /* compute the remaining slice */
             struct timespec now; mono_now(&now);
             long rem=(deadline.tv_sec-now.tv_sec)*1000L+(deadline.tv_nsec-now.tv_nsec)/1000000L;
-            if(rem<=0) return __atomic_load_n(ev,__ATOMIC_ACQUIRE)&want;   /* genuinely timed out */
+            if(rem<=0){                                       /* genuinely timed out */
+                if(synthetic){ LOG("EV_UNBLOCK: synth want %08x -> task 0x%x\n",want,self); return want; }
+                return __atomic_load_n(ev,__ATOMIC_ACQUIRE)&want;
+            }
             rel.tv_sec=rem/1000; rel.tv_nsec=(rem%1000)*1000000L; tp=&rel;
         }
         futex(ev,FUTEX_WAIT,cur,tp);                          /* forever (tp=0) or remaining slice */

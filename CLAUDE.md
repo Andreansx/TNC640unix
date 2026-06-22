@@ -899,6 +899,28 @@ next experiment, like INJECT_ACK was for config). ★ HARNESS NOTE: do NOT pipe 
 tracer) and holds the pipe open → the script deadlocks (cost me a 33-min hang). Use a `> file` redirect +
 explicit `pkill -KILL -x FEXInterpreter` to reap the detached process.
 
+★★★ AppStartMP PRE-SPAWN GATE pinned + EVENT-INJECTION drives the boot sequencer (2026-06-22). After the X
+connect + logo bring-up, AppStartMP's main thread (**heros task 0x106 = AppStartMaster**) reads its initial
+messages (queue 0x306, relayed to the `logo` queue 0x313) — the senders to 0x306 are the **config layer**
+(`notify -> task 0x100` = ConfigServer) — then blocks in **heros `Ev_receive(0x01019007, timeout=0xffffffff)`**
+before spawning the constellation (**execve = 0**, no subsystem launched). Two injection experiments
+(`emulator/run_appstart_fex.sh` knobs, both gated OFF by default):
+  • **`HEROSCALL_SELECT_CAP_MS` (herosapi_shim select() cap)** — NO effect (log identical, 310 lines). The
+    gate is a heros EVENT-wait, NOT a `select()`/framework-timer wait, so capping the dispatcher select is
+    the wrong lever. (The startup `FModule::CreateTimer` ~12s/~54s are serviced elsewhere, not this block.)
+  • **`HEROSCALL_EV_UNBLOCK_MS` (heros_rtos: force a forever event-wait to return its `want` after N ms)** —
+    DROVE the boot: the forced event made `FThread::DispatchEvents -> FWaitableList::NotifyAll ->
+    FWaitableEvent::Notify -> FModule::DispatchMessage` deliver an **`FmEvent` to the `AppStart::Monitor`
+    sequencer module** (the boot driver). So the boot IS event-drivable past X/logo. BUT returning the FULL
+    want-mask over-notified an unarmed `FWaitableInput` -> fatal assert **`0 < mask` (fwaitable.cpp:248)** in
+    `FWaitableInput::Unmask`. ⇒ precise SINGLE-event injection (the exact awaited waitable bit) is required;
+    blind bit-guessing is fatal (the assert aborts), so the next step is RE'ing `AppStart::Monitor`'s exact
+    awaited waitable. The real subsystem SET still comes from the config-data round-trip (**#6**, the empty
+    DataStore layers / productid / SIK), the SAME deep frontier as IPO — so the busy-spin fix carried
+    AppStartMP all the way to the shared config-data gate (X + logo + config-connect en route), and the
+    constellation spawn needs BOTH the precise boot-sequencer event AND the config data. Gated probes left in
+    place (`herosapi_shim.c` select-cap, `heros_rtos.c` ev-unblock) for the next iteration.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and

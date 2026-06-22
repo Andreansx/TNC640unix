@@ -146,7 +146,16 @@ rm -f /tmp/a_strace.log
 # DETACHES (tracee survives a dead tracer) and keeps the pipe write-end open, so "| head" hangs forever.
 # A redirect lets timeout return; the explicit pkill below reaps the detached FEX. (Spin is gone now, so
 # the log is small — no head cap needed.)
-timeout -s KILL 45 /usr/bin/strace -f -qq -e trace=openat,connect,_newselect,select,pselect6,poll,ppoll -o /tmp/a_strace.log \
+# HEROS_EVENTS_PIPE=1: /dev/events = blocking pipe (kills the busy-spin) -> AppStartMP connects to X +
+# spawns the LogoModule thread, then cleanly blocks on Ev_receive(0x01019007) before the constellation spawn.
+# Experimental knobs (default OFF; see herosapi_shim.c / heros_rtos.c):
+#   HEROSCALL_SELECT_CAP_MS=N  caps the dispatcher select() (no effect on this gate — the block is a heros
+#                              event-wait, not select).
+#   HEROSCALL_EV_UNBLOCK_MS=N  forces forever event-waits to return after N ms (direct event injection).
+#                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
+#                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
+#                              single awaited waitable bit (RE the Monitor's waitable to use safely).
+timeout -s KILL 60 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
@@ -180,8 +189,11 @@ echo "--- last 8 distinct strace syscalls (where it ends up) ---"
 tail -40 /tmp/a_strace.log 2>/dev/null | grep -aoE "^[0-9]+ +[a-z_]+\(" | sed -E "s/^[0-9]+ +//" | sort | uniq -c | sort -rn | head -8
 echo "--- X / WindowManager wait passed? ---"
 grep -iE "X-Server|X-Window|waiting for|PLIB" /tmp/a_clean.log | head -8
-echo "--- constellation spawn + heuseradmin connect outcome ---"
-grep -iE "heuseradmin|stream socket|connection refused|connected|spawn|FmLoadProcess|FmLoadSubsystem|fork|launch" /tmp/a_clean.log | head -15
+echo "--- ★ CONSTELLATION SPAWN: did AppStartMP execve any subsystem process? ---"
+echo "    execve in strace: $(grep -ac execve /tmp/a_strace.log 2>/dev/null)"
+grep -aE "execve\(" /tmp/a_strace.log 2>/dev/null | grep -avE "AppStartMP\.elf" | sed -E "s/.*execve\(//; s/, \[.*//" | sort -u | head -20
+echo "--- spawn/subsystem text + heuseradmin connect outcome ---"
+grep -iE "heuseradmin|stream socket|connection refused|connected|spawn|FmLoadProcess|FmLoadSubsystem|Subsystem: |fork|launch|PCreate" /tmp/a_clean.log | head -15
 echo "--- next blocker / errors ---"
 grep -iE "error|cannot|failed|refused|abort|assert|not found|denied|timeout" /tmp/a_clean.log | grep -viE "sigchild|debug" | head -15
 echo "--- AppStartMP own output (non-trace) ---"
