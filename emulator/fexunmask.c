@@ -61,6 +61,14 @@ static long unmask(const char*path,char*buf,size_t len){
     if(strstr(a0,"FEXInterpreter")){ if(a1[0]) real=a1; }   /* prefix form: real = argv[1] */
     else if(a0[0]=='/') real=a0;                            /* rewritten form: real = argv[0] */
     if(!real||!real[0]) return -1;
+    /* Strip the FEX rootfs prefix so heuserver sees the GUEST (HeROS) path its patterns expect
+     * (e.g. /var/tmp/lr/mnt/sys/heros5/bin/X.elf -> /mnt/sys/heros5/bin/X.elf). */
+    const char*rootfs=getenv("FEXUNMASK_ROOTFS");
+    if(rootfs && rootfs[0]){
+        size_t pl=strlen(rootfs);
+        if(pl>0 && rootfs[pl-1]=='/') pl--;                 /* ignore trailing slash */
+        if(!strncmp(real,rootfs,pl) && real[pl]=='/') real+=pl;
+    }
     size_t rl=strlen(real); if(rl>len) rl=len;
     memcpy(buf,real,rl);
     if(dbg)fprintf(stderr,"[fexunmask] %s : FEX -> real \"%.*s\"\n",path,(int)rl,real);

@@ -54,7 +54,11 @@ $CC -O2 "$REPO/emulator/heu_client.c" -o /tmp/heu_client -ldl 2>&1 | head -8
 # privilege pattern */testheuseradmin -> a GRANT (demo of positive auth via fexunmask);
 # anything else -> denied (not a recognized heros binary).
 CLIENT_NAME="${CLIENT_NAME:-testheuseradmin}"
-[ -f /tmp/heu_client ] && { sudo cp /tmp/heu_client "$R/tmp/$CLIENT_NAME"; echo "  built + staged as $CLIENT_NAME: $(file /tmp/heu_client | cut -d, -f1-2)"; } || { echo "  BUILD FAILED"; exit 1; }
+# CLIENT_REL: rootfs-relative path to stage+run the client at. Default tmp/$CLIENT_NAME.
+# Set e.g. mnt/sys/heros5/bin/ipotest.elf to match the hardcoded pattern /mnt/sys/heros5/bin*/*.elf
+# (tests whether REAL constellation binaries get authorized without the -t test hook).
+CLIENT_REL="${CLIENT_REL:-tmp/$CLIENT_NAME}"
+[ -f /tmp/heu_client ] && { sudo mkdir -p "$R/$(dirname "$CLIENT_REL")"; sudo cp /tmp/heu_client "$R/$CLIENT_REL"; echo "  built + staged at /$CLIENT_REL: $(file /tmp/heu_client | cut -d, -f1-2)"; } || { echo "  BUILD FAILED"; exit 1; }
 
 echo "=== [3] start heuserver (foreground, contained, bg) ==="
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
@@ -62,8 +66,8 @@ sudo rm -f /dev/shm/_heusrv_shm /tmp/heuserve.log
 sudo unshare -m bash -c "
   ulimit -c 0; mount --make-rprivate /; mount --bind $R/etc /etc
   mkdir -p /etc/sysconfig/heuseradmin /etc/security; : > /etc/netgroup; cd /
-  env LANG=C LC_ALL=C HEU_UNMASK_DBG=${HEU_UNMASK_DBG:-1} LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu LD_PRELOAD=$PRE \
-    FEXInterpreter $R/usr/sbin/heuserver
+  env LANG=C LC_ALL=C HEU_UNMASK_DBG=${HEU_UNMASK_DBG:-1} FEXUNMASK_ROOTFS=$R LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu LD_PRELOAD=$PRE \
+    FEXInterpreter $R/usr/sbin/heuserver ${HEU_T:+-t $HEU_T}
 " >/tmp/heuserve.log 2>&1 &
 HSPID=$!
 sleep 6
@@ -74,7 +78,7 @@ sudo rm -f /tmp/heuclient.log
 sudo unshare -m bash -c "
   ulimit -c 0; mount --make-rprivate /; mount --bind $R/etc /etc; cd /
   timeout -s KILL 15 env LANG=C LC_ALL=C LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu \
-    FEX_RootFS=$R FEXInterpreter $R/tmp/$CLIENT_NAME
+    FEX_RootFS=$R FEXInterpreter $R/$CLIENT_REL
   echo CLIENT_EXIT=\$?
 " >/tmp/heuclient.log 2>&1
 echo "--- client output ---"; grep -vE "cannot be preloaded" /tmp/heuclient.log | tail -12

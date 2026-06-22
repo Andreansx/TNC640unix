@@ -726,13 +726,23 @@ AUTH model fully RE'd: **HEUTicketFromPid needs priv bit 0x20** (heuserver @0x18
 exe path against heuserver's pattern table (PTR_s___testheuseradmin_00027040); fnmatch flags 0x12 =
 FNM_CASEFOLD|FNM_NOESCAPE (NO FNM_PATHNAME, so `*` spans `/`). Patterns (heuserver .rodata): `*/testheuseradmin`,
 `/mnt/sys/heros5/bin*/*.elf`, `/usr/bin/heulaunch`, `/usr/bin/heoemuseradmin`, `…/ConfigServer*.elf`, etc.
-A `testheuseradmin`-named client is still denied in the MINIMAL run → the pattern TABLE is unpopulated
-(patterns load from the auth config, empty here) and/or `*/testheuseradmin` doesn't grant 0x20. So a GRANT
-needs heuserver's privilege CONFIG populated (the [Permissions]/rights tables) + a client matching a
-0x20-granting pattern. In the real constellation the config IS present, so real clients (run from
-/mnt/sys/heros5/bin/*.elf, matching the pattern) would be authorized — fexunmask makes that evaluable.
-NEXT: populate heuserver's privilege config (what loads PTR_s___testheuseradmin / which pattern grants 0x20)
-to demonstrate a GRANT, then run a real heros client from a privileged path. THEN: AppStartMP
+★★ AUTHORIZATION FULLY SOLVED + GRANT DEMONSTRATED (no test hook). The priv-pattern table is STATIC in
+heuserver .data @ELF 0x17040 (Ghidra 0x27040, base 0x10000): an array of {patternPtr(R_386_RELATIVE→.rodata),
+privBits} pairs, NULL-terminated. Decoded it (objcopy .rodata + the reloc table). The FIRST entry
+`*/testheuseradmin` has priv 0 by default, **set by the `-t <bits>` CLI flag** (main getopt 't'→FUN_00019b50→
+DAT_00027044) — a TEST hook. Patterns granting **bit 0x20** (HEUTicketFromPid): **`/usr/bin/heulaunch`**
+(priv 0x24) and **`/mnt/sys/heros5/bin*/Guppy*.elf`** (priv 0x120). The general `/mnt/sys/heros5/bin*/*.elf`
+grants a LOWER priv (NOT 0x20) — correct (querying an arbitrary pid's ticket is sensitive, reserved for
+heulaunch/Guppy). DEMONSTRATED grants 2 ways: (1) test hook — client named `testheuseradmin` + `heuserver
+-t 32` → real ticket 0x4bfe648b (not the 0x1 deny sentinel); (2) **REAL pattern, no hook** — client staged
+at `/usr/bin/heulaunch` → `HEUTicketFromPid -> 0x8aacd84f`, NO denial. fexunmask now also STRIPS the FEX
+rootfs prefix (env FEXUNMASK_ROOTFS=/var/tmp/lr) so heuserver sees the GUEST/HeROS path (/usr/bin/heulaunch,
+not /var/tmp/lr/usr/bin/heulaunch) its patterns expect. ⇒ heuserver authorizes FEX clients by their REAL
+binary path; real constellation binaries (run from their real paths) get their proper privileges
+AUTOMATICALLY, no config/hook needed. heuserver auth subsystem = SOLVED. Knobs in heu_client_test.sh:
+UNMASK / CLIENT_REL / HEU_T / CLIENT_NAME.
+NEXT (toward the constellation): run an actual heros client binary (heuseradmin/heuserconfig) or the
+orchestrator AppStartMP
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
