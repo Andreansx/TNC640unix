@@ -1,5 +1,19 @@
 # TNC640unix — project tracker
 
+> ## ★★★ GOAL REACHED (2026-06-23) — the real TNC 640 MMI LIVE + drivable ON THE MAC
+> When the FEX-native userspace path hit the config #6 ceiling (the DataStore per-client layer registration
+> needs the running constellation — see below; 3 sub-blockers SOLVED en route: controlmark=16→Tnc640 table,
+> encfs password `Yomxn8YJyvrbNli62Rpl`, encfs config store populated+mounted under FEX), the user authorized
+> the **full-system route on `yeen`** (x86_64 ThinkPad, passwordless sudo). The real control boots to the
+> **operational MMI** (Manual operation: live X/Y/Z/A/C+spindle readout, tool table, touch probe, presets) in
+> VirtualBox there, **surfaced LIVE to the Mac** via SSH-tunneled guest VNC (`ssh -fNL 5910:127.0.0.1:5900
+> yeen` + `open vnc://127.0.0.1:5910`) and **driven from the Mac with the native-keypad VBox scancodes**
+> (`keyboardputscancode`: F1/OK=`3b bb` dismisses the Shareware demo dialog→Programming; **CE=`53 d3`** clears
+> "Power interrupted"→initialize→Manual operation). Set `/HEIDENHAIN/IOSIM/Network off` for stability. Full
+> recipe in memory `project-mmi-live-on-mac-via-yeen`. The PURE-ARM64-native (FEX) MMI is still open — finish
+> it by HARVESTING this yeen boot's runtime config/layer state (arch-independent data) into the FEX-native
+> ConfigServer to break config #6.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
