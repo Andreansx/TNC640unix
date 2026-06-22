@@ -241,11 +241,12 @@ static volatile int trigger_replayed=0;
 /* HEROSCALL_INJECT_UPD=1: after IPO's connect is read+registered, inject a synthetic UpdNewState
  * GMessage (id 0x1f0320, dispatch je@0x236091→OnUpdNewState) onto CfgServerQueue, to make
  * OnUpdNewState → ReadConfigDataSet + SendConnected flush IPO's pending ACK (impersonate the MMI).
- * TESTED (v1 = header dword 0x001f0320 + one GMsgString "Nc"): the GMessage DESERIALIZER ABORTS
- * ConfigServer on the malformed message — OnUpdNewState/SendConnected never run. So the id is right
- * but the wire format must be BYTE-EXACT (a wrong field crashes, not no-ops). Constructing a valid
- * UpdNewState requires full RE of the libgmsglib serialization (ReadMessageInternal @libgmsglib
- * 0x503a0) + UpdNewState's exact fields. Gated OFF; left as a documented, evidence-backed attempt. */
+ * v1 (header + 1 GMsgString) CRASHED the schema-driven deserializer (too few fields → read past).
+ * v2 (header + 1 GMsgString "Nc" + 11 markers to match UpdNewState's ~12-field schema, types from
+ * .rodata@0x232040) WORKS: ConfigServer deserializes it, OnUpdNewState runs — extracts "Nc" and does
+ * ReadConfigDataSet (541B QEvtServer config broadcast) → SendConnected. So the MMI-impersonation
+ * trigger is SOLVED. Remaining gap (separate): IPO isn't a REGISTERED pending client, so SendConnected
+ * has nothing to flush to IPO (the GetClient-NULL / OnConnectClient registration issue). */
 static int inject_upd=0;
 #define CFGQ_CAP 128
 #define CFGQ_MSG 1024
@@ -484,11 +485,24 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             if(inject_upd && runup_done && !trigger_replayed
                && len==69 && !strcmp(q->name,"CfgServerQueue")){
                 trigger_replayed=1;
+                /* v2: header(0x001f0320) + 1 real GMsgString(layer "Nc") + markers so the field COUNT
+                 * matches UpdNewState's schema (~12 fields; .rodata@0x232040 types e7,63,e7,nested,c6×5)
+                 * — avoids the deserializer reading PAST the buffer (the v1 crash). Marker dwords
+                 * 0x800000XX use UpdNewState's schema field-type low-bytes (63,e7,c6…). */
                 static const uint8_t upd[] = {
-                    0x20,0x03,0x1f,0x00,            /* GMessage header dword 0x001f0320 = UpdNewState id */
-                    0xe7,0x00,0x00,0x00,            /* field 0: GMsgString tag */
-                    0x02,0x00,0x00,0x00,            /* length 2 */
-                    0x4e,0x63                       /* "Nc" (layer-name guess) */
+                    0x20,0x03,0x1f,0x00,                                   /* header 0x001f0320 */
+                    0xe7,0x00,0x00,0x00, 0x02,0x00,0x00,0x00, 0x4e,0x63,   /* field0 GMsgString "Nc" (layer) */
+                    0x63,0x00,0x00,0x80,                                   /* field1 marker type 0x63 */
+                    0xe7,0x00,0x00,0x80,                                   /* field2 marker GMsgString (empty) */
+                    0x0b,0x03,0x1f,0x80,                                   /* field3 marker nested 0x1f030b */
+                    0xc6,0x00,0x00,0x80,                                   /* field4 marker 0xc6 */
+                    0xc6,0x00,0x00,0x80,                                   /* field5 */
+                    0xc6,0x00,0x00,0x80,                                   /* field6 */
+                    0xc6,0x00,0x00,0x80,                                   /* field7 */
+                    0xc6,0x00,0x00,0x80,                                   /* field8 */
+                    0xe7,0x00,0x00,0x80,                                   /* field9 pad marker */
+                    0xc6,0x00,0x00,0x80,                                   /* field10 pad marker */
+                    0xe7,0x00,0x00,0x80                                    /* field11 pad marker */
                 };
                 LOG("INJECT_UPD: connect read -> injecting synthetic UpdNewState (%u bytes, id 0x1f0320)\n",(unsigned)sizeof upd);
                 q_send(id,upd,(uint32_t)sizeof upd,0);
