@@ -287,10 +287,17 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   `_jh_int` and stop the O_TRUNC re-init. FINAL: the store is **SIK-KEYED** — `encDir::start` ← 
   `ServerHelper::DecryptConfig@0x2a14b0`; crypto = `sik_encrypt`/`TEOS_DoEncryptRSA` (the SIK/license).
   `DecryptConfig` READS the already-encrypted config from jh_int (→ `CfgStore::HashObj`); it does NOT
-  migrate plaintext. So the config must be PRE-ENCRYPTED into `_jh_int` with the SIK key (the
-  jhupdate/installer step). So blocker #6 ties to the LICENSING subsystem (SIK) + install/flash + FUSE —
-  a multi-component, license-dependent frontier. `emulator/setup_config_env.sh` holds the env (encfs +
-  /mnt/sys + colon-form volumes); run ConfigServer as root for the mount. (Connect, blocker #5, solid.)
+  migrate plaintext. ★ CORRECTION (NOT license-barred): the encfs invocation is `echo
+  "Yomxn8YJyvrbNli62Rpl" | encfs -S _jh_int jh_int` — the password is a FIXED, DETERMINISTIC string (not
+  the dongle). encfs round-trips fine; the encryption is just data-at-rest with a known key. Clean test:
+  ConfigServer creates an EMPTY encfs (0 files in _jh_int) and does NOT migrate the plaintext; the volume
+  key is random per-create so pre-populating can't align. So the config must be written THROUGH ConfigServer
+  via **`CfgWriteData`** (`CfgServer::OnWriteData@0x225510`) — the jhupdate/installer mechanism: it encrypts
+  each entity into its current store, then serves it. NEXT (tractable, the real step): reimplement the
+  config INSTALL — construct `CfgWriteData` for the config (minimally the "NC" channel group) and send it to
+  ConfigServer running as ROOT (encDir's unshare needs CAP_SYS_ADMIN; /dev/fuse present). Substantial
+  GMessage construction (like INJECT_ACK but the full config schema), but engineering — NOT a legal ceiling.
+  `emulator/setup_config_env.sh` holds the env. (Connect, blocker #5, solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
