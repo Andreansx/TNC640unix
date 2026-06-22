@@ -835,8 +835,22 @@ faster + free of the qemu-user thread/signal limits. (heuserver crashed *with* h
 is RTOS-FREE and installs its own SIGUSR1 handler that collides with heros_rtos's async-signal carrier — a
 specific conflict, not a general failure; RTOS binaries that need heros_rtos work.) The heroscall-emulator
 track (ConfigServer/IPO → the config #6 frontier, run under qemu-i386 in run_2proc_arm64.sh) can now move
-to FEX. NEXT: run ConfigServer/IPO under FEX + heros_rtos (full RTOS: queues/events/sems/cross-proc futexes)
-to confirm the full compute track + reproduce the config frontier under FEX.
+to FEX. 
+★★★★ CONFIRMED — ConfigServer RUNS THE FULL RTOS + ITS CONSTELLATION UNDER FEX (2026-06-22). Copied
+ConfigServer's full closure (248 heros5/bin + 86 usr/lib libs, real files) into /var/tmp/lr. ONE glibc
+bridge needed: **`arena_exclusive@GLIBC_2.0`** — a HEIDENHAIN-custom WEAK malloc-arena symbol their patched
+control glibc-2.31 defines but the modern glibc (FEX needs it; bare 2.31 segfaults under FEX) lacks. A
+versioned no-op stub (`emulator/arena_stub.c` + `arena.map`, `int arena_exclusive(void){return 0;}` exported
+@GLIBC_2.0, LD_PRELOAD'd first) bridges it. RESULT: ConfigServer under FEX+heros_rtos does the FULL RTOS —
+`[rtos] control segment created`, T_ident, all Sys_getenv, **Q_create CfgServerQueue(depth100,0x304) +
+CfgFileMan/QSikInterface/AppStartMaster/QEvtServer**, **T_create/T_start task-creation rendezvous** (5 tasks
+0x100-0x105), M_ident/M_attach IPO_SHARED_MEMORY, Q_send (size 647) — IDENTICAL to the qemu-i386 run-up.
+⇒ THE UNIFICATION IS COMPLETE: the WHOLE control runs under FEX on ARM64 — system services (heuserver/dbus/
+auth-daemon) AND the RTOS compute constellation (ConfigServer + tasks/queues), one translator, faster + free
+of the qemu-user thread/signal limits. `emulator/run_2proc_arm64.sh` (qemu-i386) ports to FEX by: copy the
+closure into the FEX rootfs, LD_PRELOAD `arena_stub.so:herosapi_shim.so:heros_rtos.so`, same env. NEXT: a
+longer FEX run to reach the HWS stub / SIK / the config #6 frontier (same documented ceiling, now under FEX),
+or the 2-proc ConfigServer+IPO connect under FEX (cross-process futexes).
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
