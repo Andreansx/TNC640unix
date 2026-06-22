@@ -367,6 +367,14 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   (encfs→productid→layer→per-client). Solid wins: #5 connect + productid synth + config-file stating + gate
   pinned. The full-system qemu path (real boot populates clients/layers/productid) is the route to a FULLY
   running control. Track B reached the config-subsystem frontier.
+  ★ EMPIRICAL CONFIRMATION (binary-patch test): NOP'd the gate branch `0x215285 je 0x215588` in a copy of
+  libConfigSystem.so (LD_PRELOAD, same soname) to FORCE the registration loop to run past ReadDir-false.
+  Result: STILL 0 data files opened, IPO still fails -k=NC, no crash. ⇒ the gate is NOT the single branch —
+  forced past it, the loop STILL can't register/load because the underlying per-client/layer state (the
+  DataStore layer's file-array) is empty. Bypassing the branch doesn't conjure the populated layer the loop
+  needs. This CONFIRMS the config-data load needs the multi-process constellation's per-client/layer state,
+  not a code-path tweak. Definitive: Track B's userspace emulator carries the control to the config frontier
+  (connect + productid + stating) but the data load requires the full-system boot's state.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
