@@ -851,6 +851,30 @@ of the qemu-user thread/signal limits. `emulator/run_2proc_arm64.sh` (qemu-i386)
 closure into the FEX rootfs, LD_PRELOAD `arena_stub.so:herosapi_shim.so:heros_rtos.so`, same env. NEXT: a
 longer FEX run to reach the HWS stub / SIK / the config #6 frontier (same documented ceiling, now under FEX),
 or the 2-proc ConfigServer+IPO connect under FEX (cross-process futexes).
+★★★★★ 2-PROCESS ConfigServer+IPO CONNECT WORKS UNDER FEX (2026-06-22) — cross-process futexes/queues PROVEN,
+the last technical piece of the multi-process constellation under one translator. `emulator/run_2proc_fex.sh`
+(the qemu-i386 `run_2proc_arm64.sh` ported to FEX). Result reproduces the documented qemu-i386 blocker-#6
+frontier EXACTLY, with TWO independent FEXInterpreter processes sharing one `/dev/shm` RTOS namespace:
+  • **ConfigServer** (bg) full run-up under FEX = **byte-for-byte the qemu-i386 baseline**: main task **0x100**,
+    HWS stub fired (3.5s), 5 tasks (T_create/T_start rendezvous), 21 Q_create incl. **CfgServerQueue 0x304**
+    (depth 100), 56 M_attach, M_attach IPO_SHARED_MEMORY. (Verified by a side-by-side qemu-i386 ConfigServer
+    smoke run in the same VM: main 0x100 / HWS 1 / Q_create 21 / M_attach 56 / CfgServerQueue 0x304 — IDENTICAL.)
+  • **IPO** (fg) attaches the SAME namespace and the CROSS-PROCESS IPC works: `M_attach "IPO_SHARED_MEMORY"`
+    (the region ConfigServer created), `Q_ident "CfgServerQueue" -> 0x304`, **`Q_send -> 0x304` (IPO→ConfigServer,
+    cross-process)**, then **`Q_read <- 0x30e`** = IPO reads the synthesized `CfgClientIsConnected(success=OK)`
+    ACK from its reply queue (the semantic "Connected" — INJECT_ACK, blocker #5), then **multiple config
+    request/reply round-trips** (`Q_send 0x304` ↔ `Q_read 0x30d/0x30e`, sizes 57/28/33/24/30), then
+    **`Invalid Command Option -k`** = the config-data frontier (#6) — the EXACT documented qemu-i386 endpoint.
+⇒ FEX correctly translates futex()/Q_send/Q_read on SHARED /dev/shm across two independent i386 processes.
+The whole multi-process RTOS model (the constellation's IPC substrate) is proven under FEX. THREE CRITICAL
+REPRO NOTES baked into the script: (1) the control segment is created under `sudo unshare`, so it is
+ROOT-owned — clean `/dev/shm/heros_rtos_ctl`+`heros_reg_*` with **sudo** before each run, else a stale counter
+makes ConfigServer's main task ≠ 0x100 and its hardcoded-0x100 run-up (AppStartMaster owner) breaks (no HWS
+stub, no CfgServerQueue). (2) IPO's closure is BIGGER than ConfigServer's (graphics: needs i386 `libEGL.so.1`
++5 libs) — copy IPO's full closure with **`cp -aL`** (a dangling symlink makes the i386 loader fall back to the
+host 64-bit lib → "wrong ELF class: ELFCLASS64"). (3) both procs run in ONE mount-ns (shared /dev/shm + /tmp)
+with rootfs `/etc` bound over `/etc` (the FEX /etc-leak guard; md5 of real /etc/passwd verified unchanged).
+Beyond `-k=NC` is the same documented config #6 / 92-proc / Qt-MMI ceiling — now reachable under one translator.
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
