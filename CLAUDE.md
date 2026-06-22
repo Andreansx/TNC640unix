@@ -771,6 +771,21 @@ FUNDAMENTALLY different gate than heuserver (which was self-contained/RTOS-free)
 unlike heuserver. The herosapi_shim memfd/__open_2 upgrades are reusable for other HeROS-device-mapping
 servers. NEXT: pick an infra server that is NOT license-gated (mbus message bus, dbus, heros-auth-daemon)
 to keep building the boot chain, or AppStartMP; hessrv itself needs the SIK (the licensing boundary).
+
+★ MORE INFRA SERVERS SCOUTED (boot-chain progress):
+- **dbus (S20, /usr/bin/dbus-daemon --system) — UP under FEX** (emulator/run_dbus_fex.sh). RTOS-free,
+  no license. Binds `/run/dbus/system_bus_socket` on the FIRST try (closure libdbus-1/libexpat; needs a
+  machine-id + the system.conf, both provided). Contained: mount-ns + a PRIVATE tmpfs on /run so it never
+  touches the VM's own dbus (verified VM dbus untouched). It "just works" — standard daemon, no
+  HeROS-specific blocker. Foundational system bus = checked off.
+- **mbus (S60) = `mbussrv` — HARDWARE-GATED, skip.** init.d does `modprobe ftdi_sio` + needs
+  /etc/mbus/server.xml: it's the machine FTDI USB-SERIAL bus (real serial hardware / the I/O-sim). Not
+  runnable standalone.
+- **heros-auth-daemon (S23, /usr/sbin/heros-auth-daemon) — candidate next.** RTOS-free, no SIK; token-based
+  auth over a unix socket (/var/run/auth_daemon/auth-daemon-srv.sock), uses dbus (now up) + FUSE
+  (/var/run/auth_daemon/fs_mount/) + sssd (hepampol_sssd.conf). FUSE/sssd may complicate it.
+NEXT: scout heros-auth-daemon's first blocker (it can use the now-running dbus), or attempt AppStartMP
+(integration test now that heuserver + dbus are up).
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
