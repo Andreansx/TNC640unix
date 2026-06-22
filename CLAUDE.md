@@ -336,6 +336,19 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   config-init step. Chain pinned end-to-end: ReadConfigDataSet→ReadConfigDataDir→ReadDir→PathName→
   RetrieveLayer(EMPTY)→IsAFile=false→loop skipped. NEXT: find `DataStore::AddLayer`'s caller + what populates
   the layer. (Method: base stable per identical-setup → `-d in_asm -dfilter` traces are viable.)
+  ★ PROGRESS: with the productid confs provided, ConfigServer NOW **stats 53 config files** in
+  `/mnt/sys/config/jh_int` (`newfstatat` OK on `tnc.cfg`/`ChannelCfg.atr`/`GlobalSystemCfg.atr`/…) — so the
+  productid genuinely unblocks the IsAFile/SetupDirInfo stating path (it WAS necessary). BUT they're STAT-ed,
+  never OPENED (0 `openat` on data files), IPO still fails `-k=NC`. New clue: strace shows UNRESOLVED path
+  VARIABLES `%SYS%/config/layout/{uniquenumbers,measureunittable}.xml`, `%OEM%/config/version.cfg`,
+  `%OEM%/_mpupdate/plce.zip` stat-ed LITERALLY (=ENOENT) — `ConfigHelper::ReplacePath` is NOT substituting
+  `%SYS%`/`%OEM%` (distinct from the `SYS:\…` volume form which DOES resolve to jh_int). cwd symlinks
+  `"%SYS%"`→/mnt/sys didn't take (needs ReplacePath subst, not a literal dir). Two remaining gates: (1) the
+  `%SYS%`/`%OEM%` ReplacePath substitution (layout/oem loads fail→likely abort), (2) data files stat-ed but
+  not OPENED (ReadDataFiles→ReadHeader gated, perhaps by the %VAR% abort). The 53 stats (SetupDirInfo path)
+  vs runtime-trace "ReadDir returns false" (ReadConfigDataDir path) = multiple code paths. NEXT: RE
+  `ConfigHelper::ReplacePath` — where it sources `%SYS%`/`%OEM%`. Productid DONE; config-file stating WORKS;
+  the load is one-two gates away (%VAR% subst + the open).
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
