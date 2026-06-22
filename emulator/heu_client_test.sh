@@ -6,7 +6,9 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$REPO/work/target/rootfs"          # source rootfs (host mount) with libheuseradmin + closure
 R=/var/tmp/lr
+UNMASK="${UNMASK:-1}"     # 1 = preload fexunmask.so into heuserver (unmask FEX client identity)
 PRE=/lib/herosapi_shim.so:/lib/renamefix.so
+[ "$UNMASK" = 1 ] && PRE=$PRE:/lib/fexunmask.so
 CC=i686-linux-gnu-gcc
 
 echo "=== [1] ensure libheuseradmin + its closure are in the FEX rootfs $R ==="
@@ -41,10 +43,18 @@ done
 sudo ln -sf libheuseradmin.so.1.17.4.929 "$R/usr/lib/libheuseradmin.so.1" 2>/dev/null
 sudo ln -sf libheuseradmin.so.1.17.4.929 "$R/usr/lib/libheuseradmin.so" 2>/dev/null
 
+echo "=== [1b] build fexunmask.so (unmask FEX client identity for heuserver) ==="
+$CC -shared -fPIC -O2 -o /tmp/fexunmask.so "$REPO/emulator/fexunmask.c" 2>&1 | head -4
+[ -f /tmp/fexunmask.so ] && sudo cp /tmp/fexunmask.so "$R/lib/fexunmask.so" && echo "  built fexunmask.so (UNMASK=$UNMASK)"
+
 echo "=== [2] build the client (i386, dlopen at runtime — no old-glibc linking) ==="
 rm -f /tmp/heu_client
 $CC -O2 "$REPO/emulator/heu_client.c" -o /tmp/heu_client -ldl 2>&1 | head -8
-[ -f /tmp/heu_client ] && { sudo cp /tmp/heu_client "$R/tmp/heu_client"; echo "  built + staged: $(file /tmp/heu_client | cut -d, -f1-2)"; } || { echo "  BUILD FAILED"; exit 1; }
+# CLIENT_NAME: stage the client under this name. "testheuseradmin" matches heuserver's
+# privilege pattern */testheuseradmin -> a GRANT (demo of positive auth via fexunmask);
+# anything else -> denied (not a recognized heros binary).
+CLIENT_NAME="${CLIENT_NAME:-testheuseradmin}"
+[ -f /tmp/heu_client ] && { sudo cp /tmp/heu_client "$R/tmp/$CLIENT_NAME"; echo "  built + staged as $CLIENT_NAME: $(file /tmp/heu_client | cut -d, -f1-2)"; } || { echo "  BUILD FAILED"; exit 1; }
 
 echo "=== [3] start heuserver (foreground, contained, bg) ==="
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
@@ -52,7 +62,7 @@ sudo rm -f /dev/shm/_heusrv_shm /tmp/heuserve.log
 sudo unshare -m bash -c "
   ulimit -c 0; mount --make-rprivate /; mount --bind $R/etc /etc
   mkdir -p /etc/sysconfig/heuseradmin /etc/security; : > /etc/netgroup; cd /
-  env LANG=C LC_ALL=C LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu LD_PRELOAD=$PRE \
+  env LANG=C LC_ALL=C HEU_UNMASK_DBG=${HEU_UNMASK_DBG:-1} LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu LD_PRELOAD=$PRE \
     FEXInterpreter $R/usr/sbin/heuserver
 " >/tmp/heuserve.log 2>&1 &
 HSPID=$!
@@ -64,7 +74,7 @@ sudo rm -f /tmp/heuclient.log
 sudo unshare -m bash -c "
   ulimit -c 0; mount --make-rprivate /; mount --bind $R/etc /etc; cd /
   timeout -s KILL 15 env LANG=C LC_ALL=C LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu \
-    FEX_RootFS=$R FEXInterpreter $R/tmp/heu_client
+    FEX_RootFS=$R FEXInterpreter $R/tmp/$CLIENT_NAME
   echo CLIENT_EXIT=\$?
 " >/tmp/heuclient.log 2>&1
 echo "--- client output ---"; grep -vE "cannot be preloaded" /tmp/heuclient.log | tail -12

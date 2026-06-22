@@ -713,12 +713,26 @@ heuserver logs **`Client /usr/bin/FEXInterpreter was denied HEUTicketFromPid`**.
 real heros client code → connect 19093 → heuserver IDENTIFIES the peer (the python-probe `pid 0` is gone —
 heuserver resolved the connecting process via /proc/PID/exe) → applies AUTHORIZATION → returns a decision.
 "denied" is CORRECT (the client isn't a recognized privileged component).
-★ NEXT BLOCKER surfaced by this: under FEX, heuserver reads the peer's /proc/PID/exe = **`/usr/bin/
-FEXInterpreter`** (the translator), NOT the real i386 binary — so any exe-path-based authorization DENIES
-ALL FEX-run clients. The constellation's real clients (heuseradmin/HrMmi/...) would hit the same wall.
-NEXT: RE heuserver's HEUTicketFromPid authorization (what makes a peer "allowed" — exe path / uid / a
-registered-pid table) and decide how FEX clients present identity (heuserver see-through-FEX to the real
-binary via /proc/PID/cmdline[1], or an auth path that keys on uid not exe). THEN: AppStartMP
+★ FEX-MASKING BLOCKER SOLVED (emulator/fexunmask.c, an LD_PRELOAD for heuserver). Under FEX a client's
+/proc/PID/exe = **`/usr/bin/FEXInterpreter`** (the translator), so heuserver's exe-path authorization
+(`FUN_00019b70`: readlink /proc/PID/exe → `fnmatch` pattern table → priv bits) denied ALL FEX clients.
+fexunmask interposes readlink(): for /proc/PID/exe it reads /proc/PID/cmdline and returns the REAL binary.
+KEY (traced): **FEX rewrites cmdline argv[0] to the GUEST binary** (no "FEXInterpreter" prefix), so the
+shim uses argv[0] when it's a path (else argv[1]). PROVEN: heuserver now logs the real path
+(`Client /var/tmp/lr/tmp/testheuseradmin ...`) instead of FEXInterpreter. Add fexunmask.so to heuserver's
+LD_PRELOAD (herosapi_shim:renamefix:fexunmask). Build: i686-linux-gnu-gcc -shared -fPIC -O2.
+AUTH model fully RE'd: **HEUTicketFromPid needs priv bit 0x20** (heuserver @0x18210 line 6147:
+`if ((client.priv & 0x20)==0) → "denied HEUTicketFromPid"`). priv bits come from matching the (now-real)
+exe path against heuserver's pattern table (PTR_s___testheuseradmin_00027040); fnmatch flags 0x12 =
+FNM_CASEFOLD|FNM_NOESCAPE (NO FNM_PATHNAME, so `*` spans `/`). Patterns (heuserver .rodata): `*/testheuseradmin`,
+`/mnt/sys/heros5/bin*/*.elf`, `/usr/bin/heulaunch`, `/usr/bin/heoemuseradmin`, `…/ConfigServer*.elf`, etc.
+A `testheuseradmin`-named client is still denied in the MINIMAL run → the pattern TABLE is unpopulated
+(patterns load from the auth config, empty here) and/or `*/testheuseradmin` doesn't grant 0x20. So a GRANT
+needs heuserver's privilege CONFIG populated (the [Permissions]/rights tables) + a client matching a
+0x20-granting pattern. In the real constellation the config IS present, so real clients (run from
+/mnt/sys/heros5/bin/*.elf, matching the pattern) would be authorized — fexunmask makes that evaluable.
+NEXT: populate heuserver's privilege config (what loads PTR_s___testheuseradmin / which pattern grants 0x20)
+to demonstrate a GRANT, then run a real heros client from a privileged path. THEN: AppStartMP
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
