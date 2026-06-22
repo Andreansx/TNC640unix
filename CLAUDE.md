@@ -346,9 +346,18 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   `"%SYS%"`→/mnt/sys didn't take (needs ReplacePath subst, not a literal dir). Two remaining gates: (1) the
   `%SYS%`/`%OEM%` ReplacePath substitution (layout/oem loads fail→likely abort), (2) data files stat-ed but
   not OPENED (ReadDataFiles→ReadHeader gated, perhaps by the %VAR% abort). The 53 stats (SetupDirInfo path)
-  vs runtime-trace "ReadDir returns false" (ReadConfigDataDir path) = multiple code paths. NEXT: RE
-  `ConfigHelper::ReplacePath` — where it sources `%SYS%`/`%OEM%`. Productid DONE; config-file stating WORKS;
-  the load is one-two gates away (%VAR% subst + the open).
+  vs runtime-trace "ReadDir returns false" (ReadConfigDataDir path) = multiple code paths.
+  ★ RE'd `ConfigHelper::ReplacePath` (it's in **libbackend-server.so** @0x1a390, 1-arg / @0x1a430 3-arg):
+  it substitutes **`%oemPath%`/`%usrPath%`** (calls `FFallback::Apply(Volume,…)`/`FSystemPathname::sys()`/
+  `FUserToTicket::Ticket`) — NOT `%SYS%`/`%OEM%`. The strace `%OEM%/config/version.cfg` is a SEPARATE literal
+  template; those `%SYS%`/`%OEM%` paths are secondary config (layout XML, OEM version), substituted by a
+  different mechanism, and are NOT the channel config — so the `%VAR%` lead is a SIDE ISSUE, not the gate.
+  ⇒ The real blocker stands: the **load path** — ReadConfigDataDir's `ReadDir`→`PathName(0,layer)` returns an
+  invalid path (empty layer file-array OR LayerNr mismatch vs step-1 `DataFile`) → `IsAFile` false → loop
+  skipped → data files never OPENED. The productid unblocked SetupDirInfo's STATING (53 files) but a DIFFERENT
+  code path than the load. NEXT: trace step-1 `DataFile` LayerNr vs ReadDir's PathName LayerNr (the empty-array
+  cause); the layers exist but their file-array is empty for the load path. Productid DONE; stating WORKS; the
+  load is gated on the empty layer-file-array (not the %VAR%).
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
