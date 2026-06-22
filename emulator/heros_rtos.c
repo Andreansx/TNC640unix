@@ -221,6 +221,8 @@ static uint32_t sync_timeout=0;      /* HEROSCALL_SYNC_TIMEOUT=ms caps forever Q
                                       * isn't running (no external SikServer); legit fast replies still pass */
 static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for auto-created sems */
 static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue message payloads */
+static int hws_stub=0;               /* HEROSCALL_HWS_STUB=1: auto-reply to QHWServer GetData requests
+                                      * (the host-side IOsim has no i386 binary) — experimental */
 static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
     if(!qdump||!p) return; if(n>112)n=112;
     fprintf(stderr,"   %s[0x%x]:",tag,id);
@@ -440,6 +442,28 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
     }
 }
 
+/* ---------------- experimental HWS (hardware-server) stub ----------------
+ * The HWS run-up (HwsMailslotQueue::Create) sends an 83-byte "GetData" request to
+ * the queue "QHWServer" (the host-side IOsim, which has NO i386 binary) and blocks
+ * on SyncMessage reading its temp reply mailslot "HwsM<task>N<ctr>". The run-up
+ * proceeds only when the reply makes HWSSrvConnected.status(+0x20)==0 (disasm of
+ * Create @0x21384). With HEROSCALL_HWS_STUB=1 we synthesise a reply: extract the
+ * "HwsM…" reply-to name embedded in the request and post a reply to it.
+ * v1 = echo the request back (a valid GMessage) — an empirical probe of whether the
+ * deserializer/status path accepts any well-formed reply, or needs specific fields. */
+static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
+    if(!hws_stub||!msg||size<20) return;
+    int s=q_slot(target_qid); if(s<0||strcmp(C->queues[s].name,"QHWServer")) return;
+    const unsigned char*m=msg; int at=-1;
+    for(uint32_t i=0;i+16<=size;i++) if(m[i]=='H'&&m[i+1]=='w'&&m[i+2]=='s'&&m[i+3]=='M'){ at=(int)i; break; }
+    if(at<0){ LOG("HWS stub: no HwsM reply-to in request (%u bytes)\n",size); return; }
+    char rname[NAMELEN]; int n=0; for(;n<16&&at+n<(int)size;n++) rname[n]=(char)m[at+n]; rname[n]=0;
+    int rs=q_find_slot(rname); if(rs<0){ LOG("HWS stub: reply queue \"%s\" not found\n",rname); return; }
+    uint32_t rqid=C->queues[rs].id;
+    q_send(rqid,msg,size,0);                              /* v1: echo the request as the reply */
+    LOG("HWS stub: replied %u bytes to \"%s\" (0x%x) [echo]\n",size,rname,rqid);
+}
+
 /* ---------------- regions (named shared memory) ---------------- */
 #define REGION_BYTES (64u*1024u*1024u)
 static uint32_t reg_ident(const char*name){
@@ -498,6 +522,7 @@ static void ensure_init(void){
         const char *si=getenv("HEROSCALL_SEM_INIT"); if(si){ sem_autocount=0;
             for(const char*q=si; *q>='0'&&*q<='9'; q++) sem_autocount=sem_autocount*10+(*q-'0'); }
         const char *dq=getenv("HEROSCALL_DUMPQ"); qdump=dq&&dq[0]=='1';
+        const char *hw=getenv("HEROSCALL_HWS_STUB"); hws_stub=hw&&hw[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -668,9 +693,12 @@ long syscall(long n,...){
         if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-1; }
         LOG("Q_ident EMPTY/NULL name (p0=%08x) -> -1 (reply will black-hole)\n", p?p[0]:0);
         return -1;
-    case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */
-        if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
-        return -9;
+    case 0x0d:{ /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */
+        if(!p) return -9;
+        int r=q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
+        hws_autoreply(p[4], (const void*)(uintptr_t)p[0], p[2]);   /* HWS_STUB: synth QHWServer reply */
+        return r;
+    }
     case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], hdr/base@p[4], timeout@p[6], qid@p[7]).
                 * p[4]!=0 (q_receive) -> kernel writes a 12-byte sender header there. */
         if(p) return q_read(p[7], (void*)(uintptr_t)p[0], p[2], p[6], (uint32_t*)(uintptr_t)p[4]);

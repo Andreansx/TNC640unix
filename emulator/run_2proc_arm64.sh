@@ -24,7 +24,7 @@ head -c 1048576 /dev/zero > /dev/shm/_heusrv_shm; chmod 0644 /dev/shm/_heusrv_sh
 ENVS="-E SYS=/tmp/s -E OEM=/tmp/o -E USR=/tmp/s -E OEME=/tmp/o \
 -E EXECDIRH=/tmp/b -E EXECDIR=/tmp/b -E EXECBAT=/tmp/s/batch/heros5 \
 -E SYS_NAME=SYSTEM: -E OEM_NAME=PLC: -E OEME_NAME=PLCE: -E USR_NAME=TNC: \
--E HEROSCALL_VERBOSE=1 -E HEROSCALL_SEM_INIT=1 -E HEROSCALL_SYNC_TIMEOUT=2500 \
+-E HEROSCALL_VERBOSE=1 -E HEROSCALL_SEM_INIT=1 -E HEROSCALL_SYNC_TIMEOUT=2500 -E HEROSCALL_HWS_STUB=1 \
 -E LD_PRELOAD=$PRE -E LD_LIBRARY_PATH=/heros5/bin:/lib:/usr/lib"
 QEMU="qemu-i386 -L $R $ENVS $R/lib/ld-linux.so.2"
 
@@ -32,11 +32,20 @@ echo "### ConfigServer (background, creates the shared namespace + queues) ###"
 ( timeout -s KILL 150 $QEMU "$R/heros5/bin/ConfigServer.elf" -p=~/cfgserver cfgserver \
    -f=/tmp/s/config/jhconfigfiles.cfg -i=Nc 2>&1 | head -c 80000000 > /tmp/cfgsrv.log ) &
 CFGPID=$!
-i=0; while [ $i -lt 160 ]; do
-  grep -q 'Q_create "CfgServerQueue"' /tmp/cfgsrv.log 2>/dev/null && break
+# Wait until ConfigServer has FINISHED its run-up before connecting IPO — the dispatch
+# loop only binds/answers client connects once it reaches steady state. Connecting too
+# early (when CfgServerQueue merely exists) makes the connect get drained-without-reply
+# during startup. The HWS stub reply is the last run-up step; after it, ConfigServer
+# settles into the CfgServerQueue dispatch loop. (Real systems start clients after the
+# server is up — AppStartMP ordering.)
+i=0; while [ $i -lt 300 ]; do
+  grep -q 'HWS stub: replied' /tmp/cfgsrv.log 2>/dev/null && break
+  grep -q 'Q_create "CfgServerQueue"' /tmp/cfgsrv.log 2>/dev/null && READY=cfgq
   sleep 0.5; i=$((i+1))
 done
+sleep 5   # let ConfigServer settle into the steady-state dispatch loop
 echo "ConfigServer queues:"; grep -E 'Q_create "(CfgServerQueue|CfgFileMan)"' /tmp/cfgsrv.log 2>/dev/null | sed 's/.*rtos] //' || true
+echo "ConfigServer run-up done (HWS stub fired): $(grep -c 'HWS stub: replied' /tmp/cfgsrv.log 2>/dev/null)"
 
 echo "### IPO (foreground, attaches the SAME namespace; does NOT clear it) ###"
 timeout -s KILL 80 $QEMU "$R/heros5/bin/ipo_progstation.elf" -p=~/IPO IPO -k=NC -M > /tmp/ipo2.log 2>&1 || true
