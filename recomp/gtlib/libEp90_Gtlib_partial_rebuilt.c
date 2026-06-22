@@ -102,6 +102,40 @@ bool gtf_isueberlagerung(const void *p)
     return true;
 }
 
+/* IsVariante(p,1) && ((*(uint*)(p+0x5c) >> 6) & 1) */
+unsigned gtf_iscirc(const void *p) __asm__("_Z13GTFIND_IsCircP6geotec");
+unsigned gtf_iscirc(const void *p)
+{
+    unsigned u = gtf_isvariante(p, 1);
+    if ((char)u != 0) u = (*(const uint32_t *)((const char *)p + 0x5c) >> 6) & 1u;
+    return u;
+}
+
+/* IsVariante(p,1) && ((*(uint*)(p+0x58) >> 6) & 1) */
+unsigned gtf_isdefcir(const void *p) __asm__("_Z15GTFIND_IsDefCirP6geotec");
+unsigned gtf_isdefcir(const void *p)
+{
+    unsigned u = gtf_isvariante(p, 1);
+    if ((char)u != 0) u = (*(const uint32_t *)((const char *)p + 0x58) >> 6) & 1u;
+    return u;
+}
+
+/* IsCirc(p) && (*(double*)(p+0xb0) < 0.0)  — pure load+sign-compare (no arithmetic) */
+bool gtf_iscircw(const void *p) __asm__("_Z14GTFIND_IsCirCWP6geotec");
+bool gtf_iscircw(const void *p)
+{
+    if ((char)gtf_iscirc(p) == 0) return false;
+    return *(const double *)((const char *)p + 0xb0) < 0.0;
+}
+
+/* IsCirc(p) && (0.0 < *(double*)(p+0xb0)) */
+bool gtf_iscirccw(const void *p) __asm__("_Z15GTFIND_IsCirCCWP6geotec");
+bool gtf_iscirccw(const void *p)
+{
+    if ((char)gtf_iscirc(p) == 0) return false;
+    return 0.0 < *(const double *)((const char *)p + 0xb0);
+}
+
 /* ---- plane-type (plan_at) classifiers: the arg IS the type code (no struct) ---- */
 
 /* p in {4,5} (p<6 && p>3) or {0xd,0xe} ((p-0xd)<2). `seta al` -> verify as bool. */
