@@ -868,6 +868,37 @@ NEXT (the natural frontier, within the documented GUI ceiling): RE which event t
 a candidate for an INJECT-style `Ev_send(0x01011001)` (like INJECT_ACK was for config), OR delivering real input
 events through `/dev/events` (ioctl 0x4502). Deeper GUI RE, but the wall is pinned to the exact awaited event.
 
+★★★★ GUI EVENT PUMP RE'd + BUSY-SPIN FIXED → AppStartMP CONNECTS TO X + spawns the LogoModule thread
+(2026-06-22). The `Ev_receive(0x01011001)` pump is **libbackend.so's EVHandler dispatcher** (decompiled to
+`work/re/out/{AppStartMP.elf,libbackend.so}.decomp.c`): `handlesysevents@0x3d990` does
+`ev_receive((registered_waitables & ~disabled), 2, 0)` and `EVHandlerWaitForIOEvent@0x3db60` does
+`select()` on the registered fds. **`0x01011001` = OR of the registered "waitable" event-bits** (each timer/
+queue/the `/dev/events` sysevent fd gets a unique bit via `FWaitableList::GetUniqueEventId`); it is NOT a
+single magic event. `/dev/events` is the HeROS **sysevent readiness signaler** the dispatcher select()s on
+(`open("/dev/events")` → `EVHandlerRegisterFile(...,handlesysevents,...)` → `ioctl(fd,0x4502,&mask)` sets the
+enabled-sysevent mask; the kernel driver then makes the fd readable AND `ev_send`s the bit when a sysevent
+fires). ★ ROOT CAUSE of the busy-spin: `herosapi_shim` backed `/dev/events` with an **always-readable 4 MB
+memfd** → `select()` returned ready EVERY iteration → the dispatcher busy-spun `ev_receive(0x01011001,2,0)`
+(1.5M polls/45s) and NEVER blocked, starving the entire GUI/logo/X bring-up. ★ FIX (`emulator/herosapi_shim.c`,
+env-gated `HEROS_EVENTS_PIPE=1`): back `/dev/events` with a **blocking pipe** (read-end; write-end held open so
+it is not EOF-ready) → `select()` blocks until an event is injected. ★★ RESULT — the fix CASCADED into real
+boot progress: busy-spin GONE (0 polls; log 1.5M→310 lines), and AppStartMP now **spawns task 0x108 = the
+LogoModule thread** (`T_create 0x108 parent 0x106` → `T_start` → resumed), which creates the **`logo`** queue
+(0x313) + its CfgMailslot queues, idents `AppStartMaster`(0x306), and **CONNECTS TO X**:
+`connect(8, {AF_UNIX, "/tmp/.X11-unix/X99"}) = 0` (previously Xvfb had 0 client connections). It runs the
+AppStartMaster↔logo init exchange (5 Q_read 0x306 / 4 Q_send 0x313), then BLOCKS CLEANLY on
+**`Ev_receive(0x01019007, timeout=0xffffffff)`** (a real forever-wait, not a poll). So the always-readable
+`/dev/events` memfd was the genuine blocker of the whole logo/X layer. ★ NEW FRONTIER: AppStartMP connects to
+X + inits the logo, then blocks on `Ev_receive(0x01019007)` BEFORE spawning the constellation (**execve count
+= 0** — no subsystem launched yet). The next gate = the event that drives the logo→spawn transition (likely
+the X-render / window-manager handshake completion, the logo thread's "displayed" confirm back to
+AppStartMaster, or a HeROS sysevent). INJECTION HOOK now in place: `herosapi_shim` keeps the `/dev/events`
+pipe **write-end** (`events_wr_fd`) — a synthetic sysevent = write to wake `select()` + `ev_send` the bit (the
+next experiment, like INJECT_ACK was for config). ★ HARNESS NOTE: do NOT pipe FEX through `| head` under
+`timeout strace …` — when `timeout` SIGKILLs `strace`, FEXInterpreter DETACHES (a tracee survives a dead
+tracer) and holds the pipe open → the script deadlocks (cost me a 33-min hang). Use a `> file` redirect +
+explicit `pkill -KILL -x FEXInterpreter` to reap the detached process.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and

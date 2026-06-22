@@ -139,9 +139,17 @@ echo '### AppStartMP (fg, ~45s) — RTOS process-manager; spawns the constellati
 # so AppStartMP never connected). Capture the EXACT keymap/resource file paths NON-invasively via
 # host strace (proven to see FEX guest syscalls): openat/newfstatat/access -> /tmp/a_strace.log.
 rm -f /tmp/a_strace.log
-timeout -s KILL 45 /usr/bin/strace -f -qq -e trace=openat,newfstatat,access -o /tmp/a_strace.log \
-  env LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt 2>&1 | head -c 120000000 >/tmp/a_appstart.log
+# HEROS_EVENTS_PIPE=1: back /dev/events with a blocking pipe (not an always-ready memfd) so the libbackend
+# EVHandler dispatcher select()-blocks instead of busy-spinning on ev_receive(0x01011001) (1.5M polls).
+# Trace connect (X-socket attempt) + select (the block) + openat to see if AppStartMP then advances.
+# NOTE: write to the log via a REDIRECT, not "| head" — when timeout SIGKILLs strace, FEXInterpreter
+# DETACHES (tracee survives a dead tracer) and keeps the pipe write-end open, so "| head" hangs forever.
+# A redirect lets timeout return; the explicit pkill below reaps the detached FEX. (Spin is gone now, so
+# the log is small — no head cap needed.)
+timeout -s KILL 45 /usr/bin/strace -f -qq -e trace=openat,connect,_newselect,select,pselect6,poll,ppoll -o /tmp/a_strace.log \
+  env HEROS_EVENTS_PIPE=1 LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
+pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
 rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null
 pkill -KILL -x FEXInterpreter 2>/dev/null
@@ -161,9 +169,15 @@ echo "--- ConfigServer served AppStartMP's config query? (INJECT_ACK / Q_read of
 grep -E "INJECT_ACK|CfgServerQueue|0000101CfgM" /tmp/a_cfgsrv.log /tmp/a_clean.log 2>/dev/null | grep -iE "inject|read <-|0101cfgm" | head -6
 echo "--- PLIB++ keymap wall: cleared? (was: Unable to load the default keyboard map) ---"
 grep -iE "keymap|charmap|functionkey|keyboard map|character map|function key map|resource symbol" /tmp/a_clean.log | head -10
-echo "--- strace: EXACT keymap/charmap/resource paths AppStartMP opens (+ result/errno) ---"
-grep -aiE "keymap|charmap|functionkey|/resource/|us101|appstart.ini" /tmp/a_strace.log 2>/dev/null | grep -aiE "openat|newfstatat|access" | sort -u | head -30
-echo "    (ENOENT count on resource paths: $(grep -aiE 'keymap|charmap|/resource/|us101' /tmp/a_strace.log 2>/dev/null | grep -ac ENOENT))"
+echo "--- event pump: busy-spin gone? (Ev_receive(01011001) poll count — was 1.5M) ---"
+echo "    Ev_receive(01011001) polls: $(grep -ac 'Ev_receive ] p=\[01011001' /tmp/a_appstart.log 2>/dev/null)"
+echo "--- /dev/events backing (pipe vs memfd) ---"
+grep -aE "faking open\(\"/dev/events" /tmp/a_appstart.log 2>/dev/null | head -2
+echo "--- X-connect attempt? (connect to X11 socket) + select blocks ---"
+grep -aiE "connect\(.*X11|connect\(.*7000|connect\(.*99" /tmp/a_strace.log 2>/dev/null | head -5
+echo "    select/poll calls (the dispatcher block): $(grep -acE '_newselect|pselect6|[^a-z]select\(|poll\(' /tmp/a_strace.log 2>/dev/null)"
+echo "--- last 8 distinct strace syscalls (where it ends up) ---"
+tail -40 /tmp/a_strace.log 2>/dev/null | grep -aoE "^[0-9]+ +[a-z_]+\(" | sed -E "s/^[0-9]+ +//" | sort | uniq -c | sort -rn | head -8
 echo "--- X / WindowManager wait passed? ---"
 grep -iE "X-Server|X-Window|waiting for|PLIB" /tmp/a_clean.log | head -8
 echo "--- constellation spawn + heuseradmin connect outcome ---"
