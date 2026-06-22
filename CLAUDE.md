@@ -358,6 +358,15 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   code path than the load. NEXT: trace step-1 `DataFile` LayerNr vs ReadDir's PathName LayerNr (the empty-array
   cause); the layers exist but their file-array is empty for the load path. Productid DONE; stating WORKS; the
   load is gated on the empty layer-file-array (not the %VAR%).
+  ★ ReadConfigDataDir@0x2150a0 is PER-CLIENT: its prologue does `_Rb_tree<astring,Client>::find` on the CLIENT
+  MAP (key = member -0x10c8(esi)) BEFORE the layer/file work. So the empty layer-array is bound to per-client
+  config state that standalone ConfigServer (no MMI/AppStartMP constellation to populate clients+layers)
+  doesn't have. ⇒ HONEST: blocker #6 is the documented MULTI-COMPONENT config frontier — per-client config +
+  DataStore layers + registration + productid + encfs + channel load — pinned PRECISELY (empty layer
+  file-array in the per-client load path) but NOT completable incrementally; each gate reveals another
+  (encfs→productid→layer→per-client). Solid wins: #5 connect + productid synth + config-file stating + gate
+  pinned. The full-system qemu path (real boot populates clients/layers/productid) is the route to a FULLY
+  running control. Track B reached the config-subsystem frontier.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
