@@ -805,6 +805,20 @@ Pattern: some servers solve cleanly (heuserver, dbus); others hit hard boundarie
 FUSE). NEXT options: (a) the FUSE-under-FEX problem (unblocks heros-auth-daemon + the encfs config store);
 (b) attempt AppStartMP now heuserver+dbus are up (integration test → next real constellation blocker);
 (c) more compute servers in the heuserver class (RTOS-free, self-contained).
+
+★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
+`emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
+a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and
+round-trips it back through the decrypted view. `mount` shows `encfs on /tmp/dec type fuse.encfs`. So FEX
+correctly translates the whole FUSE protocol (i386 encfs forks fusermount → mount() syscall + passes the
+/dev/fuse fd via SCM_RIGHTS → encfs serves FUSE reqs over /dev/fuse) — qemu-user could NOT, FEX CAN.
+Recipe: control's i386 encfs+fusermount+closure (libfuse/libssl/librlog/...) in $R; mount-ns as root with
+/dev/fuse present; `printf pass | FEXInterpreter encfs --standard -S -f <src> <mnt>` (fusermount in PATH).
+⇒ UNBLOCKS: (1) **heros-auth-daemon**'s FUSE token-mount (re-test it — FUSE was the likely stop cause);
+(2) the **ConfigServer encfs config store** (blocker #6: `/mnt/sys/config/jh_int` is an encfs mount the
+control sets up at startup; the tracker's "encfs fails under qemu / FUSE/unshare" sub-blocker is now
+removed under FEX — the remaining config gates were productid/layer/SIK, not FUSE). NEXT (one-by-one):
+re-test heros-auth-daemon with FUSE working → then the config store under FEX.
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
