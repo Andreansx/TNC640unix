@@ -653,13 +653,18 @@ long syscall(long n,...){
     case 0x0a: /* Q_create(name@p[0], depth@p[2], flags@p[3]) -> queue id */
         if(p&&p[0]) return (long)(int32_t)q_create((const char*)(uintptr_t)p[0], p[2], p[3]);
         return (long)(int32_t)q_create("", 0, 0);
-    case 0x0b: /* Q_ident(name@p[0]) -> queue id (-0x13 if not found).
-                * q_ident() black-holes absent fire-and-forget sinks (QEvtServer, …) so
-                * strict FMailslotQueue::Write succeeds, but reports presence-probed names
-                * (QueueHeLogger) as not-found so the control degrades gracefully. */
-        if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-0x13; }
-        LOG("Q_ident EMPTY/NULL name (p0=%08x) -> -0x13 (reply will black-hole)\n", p?p[0]:0);
-        return -0x13;
+    case 0x0b: /* Q_ident(name@p[0]) -> queue id (-1 if not found).
+                * NOT-FOUND IS -1 (0xffffffff), the heros convention: most consumers
+                * sign-test the result, but some EXACT-compare `== 0xffffffff` — notably
+                * FMailslotQueue::TemporaryQueuename (libbackend @0x21eb6), which mints a
+                * fresh temp mailslot by scanning "HwsM<task>N<ctr>" until q_ident returns
+                * -1 (free). Returning -0x13 made every name look "taken" → infinite scan.
+                * q_ident() still black-holes absent fire-and-forget sinks (QEvtServer, …)
+                * so strict FMailslotQueue::Write succeeds, but reports presence-probed names
+                * (QueueHeLogger, HwsM* temp slots) as not-found. */
+        if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-1; }
+        LOG("Q_ident EMPTY/NULL name (p0=%08x) -> -1 (reply will black-hole)\n", p?p[0]:0);
+        return -1;
     case 0x0d: /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */
         if(p) return q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
         return -9;
