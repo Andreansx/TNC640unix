@@ -323,6 +323,19 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   wrong/empty `GetOptionTable` → wrong layer) and/or the per-LAYER DIR LAYOUT (ConfigServer descends into
   `jh_int/layout/`, so flat tnc.cfg isn't where `ConfigDataFile`/`DataStore::RetrieveLayer(LayerNr)` looks).
   So the productid is a DONE step; NEXT = the prog-station control-mark value + the per-layer config layout.
+  ★★★ DECISIVE (runtime trace): the qemu-user load base is STABLE per-setup (0x40a16000), so traced
+  `ReadConfigDataDir` with `-d in_asm -dfilter`. It runs `0x2150a0–0x215280` then JUMPS to `0x215504`,
+  SKIPPING the registration loop (`ReplacePath@0x215325`/`ConfigDataFile`/`DataFile@0x215373` never execute)
+  → `CntDataFiles=0`. The skip is `0x215283: test %al; je 0x215588` = **`CfgServer::ReadDir` returned FALSE**.
+  ReadDir@0x214140 → `PathName(0,LayerNr)@0x243380` → `FSystemPathname::IsAFile()` → `0x21421e je .cold`.
+  PathName → `DataStore::RetrieveLayer(LayerNr)@0x241db0` then reads layer +0x54(array)/+0x58(count). ⇒ THE
+  GATE: the **DataStore layer is EMPTY/MISSING**, so `PathName(0)` is invalid → `IsAFile` false → ReadDir
+  bails → the jhDataFiles loop is skipped — regardless of encfs/productid/file-presence. So the real fix is
+  the LAYER SETUP: the layers (SYSTEM/OEM/USR) must be created+populated in the DataStore (`DataStore::
+  AddLayer`) before `ReadConfigDataDir`; that depends on the control-mark→`GetOptionTable`→layers or a
+  config-init step. Chain pinned end-to-end: ReadConfigDataSet→ReadConfigDataDir→ReadDir→PathName→
+  RetrieveLayer(EMPTY)→IsAFile=false→loop skipped. NEXT: find `DataStore::AddLayer`'s caller + what populates
+  the layer. (Method: base stable per identical-setup → `-d in_asm -dfilter` traces are viable.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
