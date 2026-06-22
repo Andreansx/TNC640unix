@@ -99,11 +99,22 @@ guest returns nothing.) Decompiled from `send_request`/`read_response`/`fcn_id_t
   `"Send request to %s, cFcnId=%d (%s), parm1=%lu, parm2=%lu, parm3=%lu"`.
 - **Response (16 bytes, `0x10`)** — `read_response`: `[+4] cFcnId`, `[+8] rc` u32, `[+0xc] val`
   u32. Logged `"Received %s/IOsim response, cFcnId=%i, rc=%d, val=%i"`.
-- **`cFcnId` opcode range = 10..26** (`0x0a..0x1a`, 17 ops via the `fcn_id_to_str` jump table at
-  `.data 0x1ad2c`) — one per `_JHIOIntern*` call (Init / GetHeader / GetHeaderSize / GetBlock(Ex) /
-  PutBlock(Ex) / GetDataSize / GetBaseOffset / GetPointer / GetSimulationId / SetControlReady /
-  SignalPlcCycleDone / WaitForSimCycleDone / IsSimulationRunning / SetPLCRunMode / Lock/Unlock).
-  The exact opcode↔name map needs the jump-table disassembly (next step for a full client).
+- **Request magic:** `request[0:4]` must be **`"JHIO"` (0x4f49484a)** or the server logs `"Invalid
+  request. Wrong magic!"` and rejects. So a request = `"JHIO"` + `cFcnId`(u32) + parm1 + parm2 + parm3.
+- **`cFcnId` opcode map** (recovered verbatim from `fcn_id_to_str`):
+
+  | op | name | r/w | | op | name | r/w |
+  |---|---|---|---|---|---|---|
+  | 0x0a | `INTERN_INIT` | init | | 0x12 | `SET_CTRL_READY` | write |
+  | 0x0b | `SET_PLC_RUN_MODE` | write | | 0x13 | `GET_SIM_ID` | read |
+  | **0x0c** | **`GET_HEADER`** | read→740B | | 0x14 | `WAIT_SIM_CYCLE_DONE` | blocks |
+  | 0x0d | `GET_BLOCK` | read→block | | 0x15 | `SIG_PLC_CYCLE_DONE` | sync |
+  | 0x0e | `PUT_BLOCK` | write | | 0x18 | `GET_DATASIZE` | read |
+  | 0x0f | `GET_BASE_OFFSET` | read | | 0x19 | `GET_HEADERSIZE` | read→val=740 |
+  | 0x11 | `IS_SIM_RUNNING` | read | | 0x1a | `CLEAR_PUTBLOCKS` | write |
+
+  A host I/O-sim issues `GET_HEADER` (→ the 740-byte map), then per cycle `GET_BLOCK`/`PUT_BLOCK`
+  + `SIG_PLC_CYCLE_DONE`/`WAIT_SIM_CYCLE_DONE`, with `SET_CTRL_READY` to assert "control ready".
 - **Bulk transfers** ride on specific ops: a **GetHeader**-class reply is followed by the
   **740-byte (`0x2e4`) `JHIO_HEADER`** (`"Failed to send JHIO_HEADER, tx=%d/%d"`, djb2-hashed
   `"JHIO_HEADER hash=0x%x"`); **GetBlock/PutBlock** carry the `lDataSize` I/O data at `lDataOffset`

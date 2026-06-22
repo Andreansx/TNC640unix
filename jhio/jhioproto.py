@@ -81,10 +81,34 @@ RPC_REQ_LEN = 0x14
 RPC_RSP_LEN = 0x10
 CFCNID_MIN, CFCNID_MAX = 0x0a, 0x1a
 
+# cFcnId opcode map (recovered verbatim from fcn_id_to_str in libjhiosimnet).
+INTERN_INIT         = 0x0a
+SET_PLC_RUN_MODE    = 0x0b   # write
+GET_HEADER          = 0x0c   # read -> 740-byte JHIO_HEADER bulk
+GET_BLOCK           = 0x0d   # read -> I/O block bulk
+PUT_BLOCK           = 0x0e   # write
+GET_BASE_OFFSET     = 0x0f   # read
+IS_SIM_RUNNING      = 0x11   # read
+SET_CTRL_READY      = 0x12   # write (host -> "control voltage ready")
+GET_SIM_ID          = 0x13   # read
+WAIT_SIM_CYCLE_DONE = 0x14   # blocks
+SIG_PLC_CYCLE_DONE  = 0x15   # write/sync
+GET_DATASIZE        = 0x18   # read
+GET_HEADERSIZE      = 0x19   # read -> val == 740
+CLEAR_PUTBLOCKS     = 0x1a   # write
+OPCODE_NAME = {0x0a:"INTERN_INIT",0x0b:"SET_PLC_RUN_MODE",0x0c:"GET_HEADER",0x0d:"GET_BLOCK",
+               0x0e:"PUT_BLOCK",0x0f:"GET_BASE_OFFSET",0x11:"IS_SIM_RUNNING",0x12:"SET_CTRL_READY",
+               0x13:"GET_SIM_ID",0x14:"WAIT_SIM_CYCLE_DONE",0x15:"SIG_PLC_CYCLE_DONE",
+               0x18:"GET_DATASIZE",0x19:"GET_HEADERSIZE",0x1a:"CLEAR_PUTBLOCKS"}
+
+
+RPC_MAGIC = b"JHIO"   # request[0:4] == 0x4f49484a, validated by read_request
+
 
 def pack_request(cfcnid: int, parm1=0, parm2=0, parm3=0) -> bytes:
     b = bytearray(RPC_REQ_LEN)
-    b[4] = cfcnid & 0xFF
+    b[0:4] = RPC_MAGIC                       # magic (required; server rejects otherwise)
+    b[4:8] = (cfcnid & 0xFFFFFFFF).to_bytes(4, "little")   # cFcnId (low byte used)
     b[8:12] = (parm1 & 0xFFFFFFFF).to_bytes(4, "little")
     b[12:16] = (parm2 & 0xFFFFFFFF).to_bytes(4, "little")
     b[16:20] = (parm3 & 0xFFFFFFFF).to_bytes(4, "little")
