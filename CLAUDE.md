@@ -270,11 +270,22 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   (`CntDataFiles=0`) ⇒ `ReadDataFiles` skips every file. jhconfigfiles.cfg IS parsed (2736B) but
   `SetupDirInfo→CfgStore::DataFile` registers nothing for the layer; the 4380B config ConfigServer
   broadcasts comes from a CACHE (`/tmp/CBIOS_MAPPED_FILE_REV_200`), not the files. So the real gate is the
-  per-layer data-file REGISTRATION, very likely gated on the absent runtime productid cache
-  (`/mnt/sys/cache/nckern/productid/*.conf`, ENOENT — controlmark/ncstate select the config variant/layer).
-  NEXT: RE `SetupDirInfo@0x2a2a60`/`ReadConfigDataDir@0x2150a0` (why DataFile registers nothing for "Nc")
-  + provide/generate the productid cache. Blocker #6 = the multi-component config subsystem (productid +
-  cache + per-layer registration + FUSE), a documented frontier. (Connect, blocker #5, fully solid.)
+  per-layer data-file REGISTRATION. ★★ ABSOLUTE ROOT CAUSE (corrected — encfs is NOT a red herring): the
+  config DATA dir IS an **encfs-encrypted mount**. ConfigServer reads config from `/mnt/sys/config/jh_int`
+  (the encfs DECRYPTED view of the encrypted store `_jh_int`); strace shows it opens `jh_int`(O_DIRECTORY)
+  + `jh_int/layout`, NEVER the plaintext `/mnt/sys/config/*.cfg`. `encDir` is a C++ class in libConfigSystem
+  (encDir::start/stop/pathDecrypt) that at startup writes a FRESH `_jh_int/.encfs6.xml` (O_TRUNC) +
+  `unshare(CLONE_NEWNS)` + encfs-mounts `jh_int`. TWO sub-gates: (1) **unshare needs root** — as my user it
+  fails (`error unshare ret`/`error encfs`); ★ run ConfigServer as ROOT (sudo qemu-i386, `/dev/fuse`
+  present) and the encDir errors VANISH, the mount succeeds (`encdir: mounted`). (2) **the encrypted store
+  is EMPTY** — encDir makes a fresh encfs so `jh_int` is empty; my extraction has the PLAINTEXT config
+  (tnc.cfg @ /mnt/sys/config) but NOT the encrypted `_jh_int` (built at install/flash time), and ConfigServer
+  does NOT populate jh_int from plaintext → `jh_int` empty → `CntDataFiles=0` → tnc.cfg never read. The 4380B
+  config it broadcasts is from a cache (`/tmp/CBIOS_MAPPED_FILE`), not the files. NEXT (the real install
+  step): run ConfigServer as ROOT and make the encDir store contain the config — a config INSTALL that
+  writes the plaintext config through ConfigServer into jh_int (CfgWriteData), or pre-encrypt it into
+  `_jh_int` and stop the O_TRUNC re-init. This is the documented install/flash + FUSE-backend frontier.
+  `emulator/setup_config_env.sh` holds the env (encfs + /mnt/sys + colon-form volumes). (Connect #5 solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
