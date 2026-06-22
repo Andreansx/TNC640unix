@@ -816,6 +816,30 @@ fexunmask` (NO heros_rtos — segfaults heuserver). Real guest /etc/passwd md5 v
 heuserver-as-root corruption guard holds with all three running). The boot-chain system-service substrate
 that AppStartMP's constellation children connect to is now validated under one translator on ARM64.
 
+★★ AppStartMP (S85, the constellation launcher) SCOUTED UNDER FEX — gates mapped: config(#6) → PLIB++ GUI
+(2026-06-22, `emulator/run_appstart_fex.sh`). Ran AppStartMP under FEX against the 3-server foundation +
+ConfigServer + Xvfb(:99) + openbox, contained (real /etc/passwd md5 unchanged). KEY DISCOVERY:
+**AppStartMP is ITSELF a config CLIENT** — at startup (RTOS init → fork worker) it creates its own
+CfgMailslot (`0000101CfgM`/`0-0000101CfgM`), `Q_ident "CfgServerQueue"`, `Q_send` a config request, then
+`Q_read`-blocks for the reply. Run ALONE (no ConfigServer), CfgServerQueue auto-creates as a black hole →
+AppStartMP blocks forever, never reaching X/spawn. So AppStartMP's FIRST gate is the **config round-trip =
+blocker #6**, the SAME frontier as IPO; the constellation spawn is GATED behind it.
+With **ConfigServer added to the namespace** (it must start first = task 0x100; AppStartMP becomes 0x107),
+AppStartMP **CONNECTS to ConfigServer under FEX exactly like IPO**: `INJECT_ACK: posted
+CfgClientIsConnected(success=OK) to "0-0000107CfgM"`. It then PROCEEDS PAST config into its **PLIB++ GUI
+init** (PLib++ = HEIDENHAIN's X11 GUI toolkit, the boot-splash layer): `PLib++ Error: Unable to load the
+default keyboard map / character map / function key map` (missing PLIB++ keymap data files), and it never
+opens the X display (Xvfb logs 0 client connections). AppStartMP then busy-spins in its GUI event-dispatch
+loop (`Ev_receive(0x01011001, ANY, timeout=0)` polled 4.9M× in 45s) waiting for a GUI event that never
+comes, and does NOT fork heuseradmin / spawn the constellation. ⇒ AppStartMP's gates UNDER FEX are now
+pinned: **config(#6) [PASSED via ConfigServer+INJECT_ACK] → PLIB++ GUI boot [the wall]**. The constellation
+spawn (heuseradmin fork) is behind a working PLIB++ GUI = the documented full-GUI/Qt-MMI ceiling (keymap
+data + a live X render + the GUI toolkit). The heuserver/foundation work is READY for when the spawn fires,
+but the spawn is gated on the GUI layer, not on the now-up servers. This extends today's cross-process
+connect proof (IPO) to AppStartMP, and locates the remaining ceiling precisely at PLIB++ GUI init. (Minor:
+the GUI-not-ready poll is a busy Ev_receive(timeout 0) loop — run with HEROSCALL_VERBOSE=0 to avoid the
+multi-GB trace; not the real blocker.)
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and
