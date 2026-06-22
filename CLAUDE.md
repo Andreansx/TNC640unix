@@ -572,3 +572,14 @@ The migration to x86_64 (above) is **done and proven**. The host is a Ryzen Wind
 - Deferred (need disasm or are non-leaves): GTFIND_HasRuck (garbled bitmask), GeometryTools::
   is_value_inside_range (garbled FP), is_consistent family (call externals), SplittableValueRange::
   set_range/set_number_of_samples (cold paths). Build helper: `recomp/x86_64_native/build_arm64.sh`.
+
+### heuserver user-admin DB schema (decompiled 2026-06-22, the FEX-path next gate)
+Decompiled libheusercfg.so (work/re/out/libheusercfg.decomp.c, 8807 lines, Ghidra). heuserver's
+/etc/sysconfig/heuseradmin/heuseradmin.cfg is a GKeyFile permission model with sections:
+[Global] (Active/Anonymous/Domain), [Roles], [Permissions], [Rights], [LegacyRoles] (NC/PLC/HEROS),
+[FunctionUsers] (PWTYPEDEFAULT/PWTYPEOEM/PAMPYTHON/OEMPYTHON + per-user keys), [PlcModule9285],
+[Textdomain] (DIRNAME/DOMAIN). The role→permission→rights model + the function-user/password tables are
+the user-admin DB CONTENT (install-generated, internally coherent), so a syntactically-complete config
+still needs valid model content to pass heuserver's validation + then the writable credential env
+(/etc/group GIDs, /mnt/plc/etc/shadow, /etc/security). This is the decompiled artifact for constructing
+the DB; the FEX path (control binaries run on ARM64) makes building it the genuine next sub-project.
