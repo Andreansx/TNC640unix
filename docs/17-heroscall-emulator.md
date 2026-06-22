@@ -408,6 +408,21 @@ This is the live frontier. Next tractable sub-step: make one `HwsM` slot resolve
 inject a minimal/empty `HwsSrvValue` reply (and a SIK "available/empty" reply) so ConfigServer's
 startup-state machine advances to "connected" and binds IPO's real reply queue.
 
+## Runs on ARM64 (2026-06-22): the actual target, box-independent
+
+The whole stack runs on Apple Silicon — lima VM (`tnc`, aarch64) + **qemu-i386** user-mode
+translation — reproducing the full 2-process result (the x86_64 box was only ever a faster dev loop).
+`emulator/run_2proc_arm64.sh` is the qemu-i386 port of `run_2proc_config.sh`. Two gotchas it bakes in:
+(1) **build the `.so` without TLS** — `__thread` pulls a `GLIBC_ABI_GNU_TLS` verneed the control's
+glibc 2.31 lacks, so it won't load under qemu (`heros_rtos.c` now uses a non-TLS per-tid cache); build
+in-VM with `i686-linux-gnu-gcc -shared -fPIC -O2`. (2) **colon-separated `LD_PRELOAD`**
+(`a.so:b.so`) — a space-separated value word-splits through `qemu -E`. Combined sysroot =
+`work/target/rootfs` (glibc 2.31) + `heros5` graft. Result: IPO Q_sends its 69-byte connect; the
+separate-process ConfigServer wakes and `Q_read`s it — **cross-process shared futexes work under
+qemu-i386** — then the same `HwsMailslot` peer-wait. lima ops note: `pkill -x` (not `-f`, which
+self-matches "qemu-i386"); detach long runs with `nohup … & ` and poll (a file-redirected long
+limactl command idle-drops the SSH).
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
