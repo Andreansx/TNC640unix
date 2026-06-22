@@ -741,7 +741,16 @@ not /var/tmp/lr/usr/bin/heulaunch) its patterns expect. ⇒ heuserver authorizes
 binary path; real constellation binaries (run from their real paths) get their proper privileges
 AUTOMATICALLY, no config/hook needed. heuserver auth subsystem = SOLVED. Knobs in heu_client_test.sh:
 UNMASK / CLIENT_REL / HEU_T / CLIENT_NAME.
-NEXT (toward the constellation): run an actual heros client binary (heuseradmin/heuserconfig) or the
+★ BOOT ORDER MAPPED (etc/rc.d/rc5.d S-order) — heuserver's place + the road ahead:
+`S20dbus → S23heros-auth-daemon → S40hessrv/S41hessrv2 → S60mbus → S71hepwdeamon →
+**S77heuseradmin (=heuserver, NOW SOLVED)** → S78sshd → S79xstart (X server) → S81xfcestart →
+**S85applaunch → AppStartMP → the 92-proc constellation → HrMmi.elf (Qt MMI)**`. So the proven heuserver
+methodology (FEX + mount-ns /etc containment + the heros emulator + fexunmask for client auth) now applies
+to the OTHER infra servers. Tractable next targets (each a server like heuserver): **hessrv** (S40, the
+HeROS server), **mbus** (S60, the message bus), dbus/heros-auth-daemon/hepwdeamon — the prerequisites
+AppStartMP's constellation children connect to. Then S79 X + S85 applaunch→AppStartMP. The full set + Qt MMI
+remains the documented full-system ceiling, but heuserver proves individual services boot this way on ARM64.
+NEXT (toward the constellation): bring up the next infra server (hessrv or mbus) the same way, or run the
 orchestrator AppStartMP
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
