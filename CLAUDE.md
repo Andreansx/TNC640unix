@@ -284,8 +284,13 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   config it broadcasts is from a cache (`/tmp/CBIOS_MAPPED_FILE`), not the files. NEXT (the real install
   step): run ConfigServer as ROOT and make the encDir store contain the config — a config INSTALL that
   writes the plaintext config through ConfigServer into jh_int (CfgWriteData), or pre-encrypt it into
-  `_jh_int` and stop the O_TRUNC re-init. This is the documented install/flash + FUSE-backend frontier.
-  `emulator/setup_config_env.sh` holds the env (encfs + /mnt/sys + colon-form volumes). (Connect #5 solid.)
+  `_jh_int` and stop the O_TRUNC re-init. FINAL: the store is **SIK-KEYED** — `encDir::start` ← 
+  `ServerHelper::DecryptConfig@0x2a14b0`; crypto = `sik_encrypt`/`TEOS_DoEncryptRSA` (the SIK/license).
+  `DecryptConfig` READS the already-encrypted config from jh_int (→ `CfgStore::HashObj`); it does NOT
+  migrate plaintext. So the config must be PRE-ENCRYPTED into `_jh_int` with the SIK key (the
+  jhupdate/installer step). So blocker #6 ties to the LICENSING subsystem (SIK) + install/flash + FUSE —
+  a multi-component, license-dependent frontier. `emulator/setup_config_env.sh` holds the env (encfs +
+  /mnt/sys + colon-form volumes); run ConfigServer as root for the mount. (Connect, blocker #5, solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
