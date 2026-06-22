@@ -223,6 +223,9 @@ static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for 
 static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue message payloads */
 static int hws_stub=0;               /* HEROSCALL_HWS_STUB=1: auto-reply to QHWServer GetData requests
                                       * (the host-side IOsim has no i386 binary) — experimental */
+static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_evevery actually fire
+                                      * their event (else the pending-client-msg flush timer never
+                                      * fires → ConfigServer never sends connect-ACKs) */
 static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
     if(!qdump||!p) return; if(n>112)n=112;
     fprintf(stderr,"   %s[0x%x]:",tag,id);
@@ -523,6 +526,7 @@ static void ensure_init(void){
             for(const char*q=si; *q>='0'&&*q<='9'; q++) sem_autocount=sem_autocount*10+(*q-'0'); }
         const char *dq=getenv("HEROSCALL_DUMPQ"); qdump=dq&&dq[0]=='1';
         const char *hw=getenv("HEROSCALL_HWS_STUB"); hws_stub=hw&&hw[0]=='1';
+        const char *tf=getenv("HEROSCALL_TIMERS"); timers_fire=tf&&tf[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -708,6 +712,22 @@ long syscall(long n,...){
             raw5(SYS_nanosleep,(long)&ts,0,0,0,0); }
         return 0;
     }
+    case 0x1b:   /* Tm_evafter(delay_us@p[0], event_bits@p[1]) — fire event to CALLER after delay  */
+    case 0x1d:{  /* Tm_evevery(period_us@p[0], event_bits@p[1]) — periodic.  Kernel: Tm_create →
+                  * __usecs_to_jiffies(p[0]) on GET_TASK_CURRENT(), sends p[1] on expiry. Without
+                  * firing, the pending-client-msg flush timer never delivers → no connect-ACKs.
+                  * v1: fire IMMEDIATELY (delay ignored) — the dispatch re-arms only while
+                  * PostClientMsg::HasPendings(), so this drains pendings and converges (no busy
+                  * loop). Proper delayed/periodic firing via a timer thread = TODO. */
+        if(timers_fire && p){
+            uint32_t self=task_self(); ev_send(self, p[1]);
+            LOG("Tm_ev%s delay=%u us bits=%08x -> ev_send(0x%x) [immediate]\n",
+                lo==0x1b?"after":"every", p?p[0]:0, p?p[1]:0, self);
+            return 1;                       /* nonzero fake timer id */
+        }
+        return 0;
+    }
+    case 0x1f: return 0;   /* Tm_cancel(timer id) — no-op (our timers are one-shot immediate) */
     case 0x22: /* M_ident(name@p[0]) */
         if(p&&p[0]) return (long)(int32_t)reg_ident((const char*)(uintptr_t)p[0]);
         return -2;
@@ -730,6 +750,7 @@ static const char* hcname(int lo){ switch(lo){
   case 0x12:return"As_send";case 0x13:return"As_mask";case 0x14:return"As_read";
   case 0x15:return"Sm_create";case 0x16:return"Sm_ident";
   case 0x18:return"Sm_request";case 0x19:return"Sm_release";case 0x1a:return"Tm_wkafter";
+  case 0x1b:return"Tm_evafter";case 0x1d:return"Tm_evevery";case 0x1f:return"Tm_cancel";
   case 0x21:return"M_create";case 0x22:return"M_ident";case 0x23:return"M_attach";
   case 0x24:return"M_detach";case 0x26:return"Sys_setenv";case 0x27:return"Sys_getenv";
   case 0x29:return"P_ident";case 0x2a:return"P_childstat";case 0x2b:return"P_signal";
