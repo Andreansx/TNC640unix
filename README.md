@@ -42,6 +42,79 @@ dongle, no license needed (100 NC lines / 10 CAD elements).
 
 ---
 
+## How it boots on Apple Silicon (the ARM64 runtime model)
+
+> This is the design the ARM64 work is building toward. Parts of it are **proven running today** on
+> an M‑series Mac (the NCK interpolator, the config server, and the HeROS user/login service all
+> execute under it); the full process constellation + GUI is the remaining work. It is
+> fundamentally different from — and far lighter than — the original VirtualBox model.
+
+**There are two ways to run this control:**
+
+1. **Full‑system route (the heavy fallback).** Boot the genuine HeROS5 disk image under
+   `qemu-system-x86_64` / UTM — a *complete emulated x86 machine* running HEIDENHAIN's own kernel.
+   It works, but it simulates an entire computer continuously, so it is slow and power‑hungry. This
+   is the only route that needs the original `.vmdk`.
+
+2. **Native‑ish route ("Track B" — what this project is building).** Run the control's *original
+   i386 binaries directly* on the Apple‑Silicon CPU, with **no emulated machine and no booted
+   control OS**. This is the light path, and the surprising part is everything it does *not* need.
+
+### What Track B does NOT require
+
+- **No recompiling the control.** The original i386 binaries run *unchanged*; they are translated
+  i386 → ARM64 **at runtime** by [FEX‑Emu](https://github.com/FEX-Emu/FEX), a userspace JIT (like
+  Rosetta, but for 32‑bit Intel). The byte‑identical ARM64 recompiles in [`recomp/`](recomp/) are a
+  separate **verification** result — proof we understand the code — **not** how the control runs.
+- **No compiling a Linux kernel for ARM64.** We use the stock Ubuntu‑ARM64 kernel that already
+  ships in a lightweight Linux VM (`lima`, backed by Apple's hardware `vz` hypervisor — real
+  virtualization, not emulation).
+- **No HeROS kernel, no `heros.ko`, no boot.** HeROS is HEIDENHAIN's realtime OS; its custom kernel
+  API (the `heroscall` gateway, `syscall(222, …)`) is **faked in userspace** by our
+  [`emulator/`](emulator/) — a small `LD_PRELOAD` shim that answers the OS calls the control makes
+  and passes ordinary Linux calls straight through to the real kernel.
+- **No VirtualBox and no `.vmdk`.** Nothing is booted as a guest OS; the control's processes run as
+  ordinary (translated) Linux processes.
+
+### The runtime stack
+
+```
+macOS (Apple Silicon)
+└─ lima VM  — thin Linux ARM64, via Apple's vz hypervisor (hardware‑accelerated, NOT emulation)
+   ├─ FEX‑Emu                  — translates i386 → ARM64 instructions at runtime
+   ├─ heroscall emulator       — LD_PRELOAD shim: fakes the HeROS kernel API + a shared IPC namespace
+   ├─ the original i386 binaries — NCK, config server, the HeROS services, the Qt MMI (HrMmi.elf) …
+   ├─ X11 + a window manager   — the display substrate (Xvfb/X + openbox)
+   └─ the native keypad / steering panel
+```
+
+So there is still *one* VM in the picture — but it is **not** the HeROS guest. It is just a thin,
+hardware‑accelerated Linux host, because FEX and the i386 binaries need a Linux kernel underneath.
+It runs at native speed and, unlike a full‑system emulator, genuinely **idles** when the control is
+waiting for input — which is why it is far easier on battery than the UTM route.
+
+### How you launch it / how you see it
+
+A single launcher script takes the place of the original `tncvbcntl.exe`: it brings up the display,
+starts the shared IPC namespace, launches the control processes in dependency order, and opens the
+native keypad. The Qt MMI is surfaced to the Mac desktop **as an ordinary macOS window** (via X11
+forwarding to XQuartz, or VNC) — no full‑screen VirtualBox console.
+
+The keypad gets *simpler* than on Windows: it speaks the same input protocol (the `heuinput` FIFO
+and TCP port `19035`), but now as **local IPC** in one Linux namespace — the entire VirtualBox
+host↔guest bridge of the original product disappears.
+
+### Status of this path
+
+Proven on an M‑series Mac today: FEX + the heroscall emulator carry individual control processes
+(the NCK interpolator, the config server) through their RTOS/kernel init, and the HeROS user/login
+service (`heuserver`) completes its full credential setup. The remaining work is bringing up the
+rest of the ~90‑process constellation in dependency order and, at the very top, the Qt MMI. Current
+frontier and details: [`docs/16`](docs/16-arm64-decompilation-and-translation.md),
+[`docs/17`](docs/17-heroscall-emulator.md), and the project tracker (`CLAUDE.md`).
+
+---
+
 ## Legal / what is (and isn't) in this repo
 
 This repository contains only original documentation and analysis. It deliberately does
