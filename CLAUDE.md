@@ -806,6 +806,16 @@ FUSE). NEXT options: (a) the FUSE-under-FEX problem (unblocks heros-auth-daemon 
 (b) attempt AppStartMP now heuserver+dbus are up (integration test → next real constellation blocker);
 (c) more compute servers in the heuserver class (RTOS-free, self-contained).
 
+★ 3-SERVER FOUNDATION RUNS TOGETHER UNDER FEX (2026-06-22, `emulator/run_3servers_fex.sh`) — the
+documented AppStartMP prerequisite. dbus(S20) + heros-auth-daemon(S23) + heuserver(S77) brought up
+SIMULTANEOUSLY in ONE contained mount-ns, all sockets bound at once: dbus `system_bus_socket`,
+auth-daemon `auth-daemon-srv.sock` + 2 FUSE mounts (certs + fs_mount), heuserver `LISTEN 127.0.0.1:19093`
+(6/14/10 FEX threads respectively). They COEXIST (distinct sockets/resources, no conflict). Per-server
+preloads in one ns: dbus/auth-daemon = `herosapi_shim:renamefix`; heuserver = `herosapi_shim:renamefix:
+fexunmask` (NO heros_rtos — segfaults heuserver). Real guest /etc/passwd md5 verified UNCHANGED (the
+heuserver-as-root corruption guard holds with all three running). The boot-chain system-service substrate
+that AppStartMP's constellation children connect to is now validated under one translator on ARM64.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and
