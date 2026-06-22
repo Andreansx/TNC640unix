@@ -29,7 +29,7 @@ static int fake_fds[MAX_FAKE];
 static int fake_n = 0;
 
 static int is_heros_dev(const char *p) {
-    return p && (strstr(p, "herosapi") || strstr(p, "/dev/events"));
+    return p && (strstr(p, "herosapi") || strstr(p, "/dev/events") || strstr(p, "JHncmem"));
 }
 /* Optional: log interesting file opens (HEROSAPI_LOGOPEN=1) — config DB resolution. */
 static int logopen = -1;
@@ -45,10 +45,19 @@ static int is_fake(int fd) {
     return 0;
 }
 
-/* Back the fake device with a real, harmless fd so read/write/close behave. */
+/* Back the fake device with a real, sized, zeroed memfd so both read/write AND
+ * mmap(MAP_SHARED, size) succeed (e.g. hessrv mmaps /dev/JHncmem, the SIK device). */
+#ifndef SYS_memfd_create
+#define SYS_memfd_create 356   /* i386 */
+#endif
+#define FAKE_DEV_SIZE (4*1024*1024)   /* 4 MB zeroed region — generous for SIK/device maps */
 static int make_fake(const char *path) {
-    int fd = (int)syscall(SYS_openat, AT_FDCWD, "/dev/zero", O_RDWR, 0);
-    fprintf(stderr, "[herosapi_shim] faking open(\"%s\") -> fd %d\n", path, fd);
+    int fd = (int)syscall(SYS_memfd_create, "heros_fakedev", 0);
+    if (fd >= 0) {
+        if (syscall(SYS_ftruncate, fd, FAKE_DEV_SIZE) < 0) { /* fall back below */ syscall(SYS_close, fd); fd = -1; }
+    }
+    if (fd < 0) fd = (int)syscall(SYS_openat, AT_FDCWD, "/dev/zero", O_RDWR, 0);  /* fallback */
+    fprintf(stderr, "[herosapi_shim] faking open(\"%s\") -> fd %d (memfd %dMB)\n", path, fd, FAKE_DEV_SIZE>>20);
     remember(fd);
     return fd;
 }
@@ -67,6 +76,16 @@ int openat(int dfd, const char *path, int flags, ...) {
     if (is_heros_dev(path)) return make_fake(path);
     va_list ap; va_start(ap, flags); int m = va_arg(ap, int); va_end(ap);
     int fd = (int)syscall(SYS_openat, dfd, path, flags, m); logo(path, fd); return fd;
+}
+/* Fortified opens (_FORTIFY_SOURCE): non-variadic 2-arg form used when the compiler knows
+ * there is no mode arg. hessrv opens /dev/JHncmem via __open_2. */
+int __open_2(const char *path, int flags) {
+    if (is_heros_dev(path)) return make_fake(path);
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, flags, 0); logo(path, fd); return fd;
+}
+int __open64_2(const char *path, int flags) {
+    if (is_heros_dev(path)) return make_fake(path);
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, flags | O_LARGEFILE, 0); logo(path, fd); return fd;
 }
 
 /* Answer every ioctl on a faked device fd with success. */

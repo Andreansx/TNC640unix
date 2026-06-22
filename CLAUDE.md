@@ -757,8 +757,20 @@ procs `hessrv_getident/getproduct/getserialnumber/testlicensegetexpirationdate/p
 the proven recipe applies. Anticipated blockers: (1) `/dev/JHncmem` HeROS shm device (shim like
 herosapi_shim, or optional); (2) writable `/var/run/hessrv/` for the socket (mount-ns containment); (3) RPC
 registration needs rpcbind/portmapper up (or local); (4) crypto helper (hessrv_crypto_helper.c, --init-crypto).
-NEXT (toward the constellation): solve hessrv the same way (FEX + contained + /dev/JHncmem shim + rpcbind),
-then mbus, then applaunch→AppStartMP
+★ hessrv RUN — device blocker SOLVED, then hits the SIK/LICENSE boundary (emulator/run_hessrv_fex.sh).
+Closure copied (libcrypto/libtirpc). First blocker was `/dev/JHncmem` (the SIK shm device): "Could not
+open device file / map SIK device". FIX (reusable groundwork): upgraded `herosapi_shim.c` — (1) fake
+`/dev/JHncmem` (added to is_heros_dev), (2) back fakes with a **4 MB zeroed memfd** (not /dev/zero) so
+`mmap(MAP_SHARED,size)` works, (3) added **`__open_2`/`__open64_2`** (hessrv opens via the FORTIFIED
+`__open_2@GLIBC_2.7`, which the shim didn't override — same fortified-variant lesson as fexunmask's
+`__readlink`). Result: `faking open("/dev/JHncmem") -> fd 5 (memfd 4MB)`, device opens+maps. NEXT blocker
+is **`SIK: Authentification failed (iTNC)! / Could not init SIK`** — hessrv IS the LICENSE/SIK RPC server;
+with a zeroed memfd there is no SIK chip to challenge-response. This is the documented **SIK/licensing
+ceiling** (the dongle/demo-SIK; faking the SIK challenge-response = circumvention, legally barred) — a
+FUNDAMENTALLY different gate than heuserver (which was self-contained/RTOS-free). So hessrv is license-gated,
+unlike heuserver. The herosapi_shim memfd/__open_2 upgrades are reusable for other HeROS-device-mapping
+servers. NEXT: pick an infra server that is NOT license-gated (mbus message bus, dbus, heros-auth-daemon)
+to keep building the boot chain, or AppStartMP; hessrv itself needs the SIK (the licensing boundary).
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
