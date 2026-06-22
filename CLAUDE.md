@@ -442,6 +442,22 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   preload. Remaining blockers regardless of translator: writable credential env (/etc/security, /mnt/plc/etc/
   shadow, the user/group DB) + the ~40 services + the Qt MMI HrMmi.elf. So: NOT exhausted — FEX is the
   untested-but-promising path that clears the specific qemu-user crash.
+  ★★★ BREAKTHROUGH (FEX runs the control's i386 binaries — 2026-06-22): solved the FEX RootFS. FEX 32-bit
+  WORKS (a STATIC i386 binary printed + exit 0; a DYNAMIC i386 binary with modern glibc too). The control's
+  segfault was purely the **glibc-2.31 rootfs**: glibc is backward-compatible, so a MODERN i386 glibc runs
+  the 2.31-linked control binaries. Recipe: `dpkg --add-architecture i386 + apt install libc6:i386
+  libstdc++6:i386`, then an **overlayfs RootFS** = `lowerdir=<modern-glibc-/lib>:<control $rootfs>` (modern
+  glibc on TOP of the control tree). Result: the control's own i386 busybox runs under FEX
+  (`CONTROL_BUSYBOX_OK`). Then **heuserver under FEX + the heros-emulator preload: ZERO cpu_exec assertions
+  (qemu-user crash GONE), heros emulator loaded, and it runs ALL THE WAY THROUGH its credential setup** —
+  group adds, config read, shadow/group.conf handling — failing only on ENVIRONMENT (read-only /mnt/plc/etc,
+  absent credential DB + /etc/sysconfig/heuseradmin cfg, cross-device /etc/security rename EXDEV) + a late
+  segfault from the failed ops. ⇒ DEFINITIVELY: the HeROS system services ARE runnable on ARM64 via
+  **FEX + the heros emulator**; the qemu-user "hard limit" is fully refuted. The remaining work is HeROS
+  ENVIRONMENT setup (writable credential dirs + the user/group/shadow DB + the heuseradmin config + FEX path
+  mapping so /tmp & /etc/security share a fs), then heuserver→AppStartMP→constellation. Repro: overlay
+  rootfs at /tmp/fexroot; FEX config /root/.fex-emu/Config.json RootFS=/tmp/fexroot; preloads copied into
+  the rootfs /lib. NEXT: set up heuserver's credential environment so it binds its socket.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
