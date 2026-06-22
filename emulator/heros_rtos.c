@@ -248,6 +248,15 @@ static volatile int trigger_replayed=0;
  * trigger is SOLVED. Remaining gap (separate): IPO isn't a REGISTERED pending client, so SendConnected
  * has nothing to flush to IPO (the GetClient-NULL / OnConnectClient registration issue). */
 static int inject_upd=0;
+/* HEROSCALL_INJECT_ACK=1: directly synthesize IPO's connect-ACK and post it to IPO's reply queue,
+ * bypassing ConfigServer's SendConnected (which can't flush IPO — clients are registered only in
+ * CfgServer::Initialize@0x187b4a, never in OnConnectClient, so IPO is never in the client map).
+ * IPO sends CfgConnectClient(id 0x1700c0) carrying its reply-queue name as the first GMsgString,
+ * then blocks reading that queue. We parse the name, build CfgClientIsConnected(id 0x170100;
+ * fields clientId:GMsgString, id:0x63, success:CfgConnectResponse-enum 0x1700eb) with success=OK(0),
+ * and post it. IPO's OnCfgClientIsConnected@0x1a72d0 reads success, and on OK proceeds to
+ * CfgMailslotQueue::Create→SyncMessage→AskIpoConditions→IpoSystemView1 (past the connect). */
+static int inject_ack=0;
 #define CFGQ_CAP 128
 #define CFGQ_MSG 1024
 static struct { uint32_t len; uint8_t data[CFGQ_MSG]; } cfgq_rec[CFGQ_CAP];
@@ -540,6 +549,35 @@ static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
     LOG("HWS stub: replied %u bytes to \"%s\" (0x%x) [echo]\n",size,rname,rqid);
     __atomic_store_n(&runup_done,1,__ATOMIC_RELEASE);    /* run-up complete: stop recording, arm replay */
 }
+/* INJECT_ACK: IPO sent CfgConnectClient(0x1700c0). Parse its reply-queue name (first GMsgString)
+ * and post a synthetic CfgClientIsConnected(0x170100, success=OK) to it so IPO proceeds. */
+static void put32(unsigned char*b,uint32_t v){ b[0]=v; b[1]=v>>8; b[2]=v>>16; b[3]=v>>24; }
+static int ack_injected=0;
+static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size){
+    if(!inject_ack||ack_injected||!msg||size<16) return;
+    int ts=q_slot(target_qid); if(ts<0||strcmp(C->queues[ts].name,"CfgServerQueue")) return;
+    const unsigned char*m=msg;
+    uint32_t hdr=m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24);
+    if((hdr&0x7fffffff)!=0x1700c0) return;               /* not a CfgConnectClient */
+    uint32_t tag=m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24);
+    if(tag!=0xe7) return;                                 /* expect GMsgString reply-queue name */
+    uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
+    if(nlen==0||nlen>64||12+nlen>size) return;
+    char name[80]; memcpy(name,m+12,nlen); name[nlen]=0;
+    int rs=q_find_slot(name); if(rs<0){ LOG("INJECT_ACK: reply queue \"%s\" not found\n",name); return; }
+    uint32_t rqid=C->queues[rs].id;
+    /* CfgClientIsConnected: header + clientId(name) + id(marker) + success(enum=OK 0) = 3 fields */
+    unsigned char ack[160]; uint32_t p=0;
+    put32(ack+p,0x00170100); p+=4;                        /* header (CfgClientIsConnected id) */
+    put32(ack+p,0x000000e7); p+=4;                        /* field0 clientId: GMsgString tag (present) */
+    put32(ack+p,nlen); p+=4; memcpy(ack+p,name,nlen); p+=nlen;
+    put32(ack+p,0x80000063); p+=4;                        /* field1 id: marker (absent/default) */
+    put32(ack+p,0x001700eb); p+=4;                        /* field2 success: enum tag (present) */
+    put32(ack+p,0x00000000); p+=4;                        /* success value = OK(0) */
+    ack_injected=1;
+    q_send(rqid,ack,p,0);
+    LOG("INJECT_ACK: posted CfgClientIsConnected(success=OK) to \"%s\" (0x%x), %u bytes\n",name,rqid,p);
+}
 
 /* ---------------- regions (named shared memory) ---------------- */
 #define REGION_BYTES (64u*1024u*1024u)
@@ -603,6 +641,7 @@ static void ensure_init(void){
         const char *tf=getenv("HEROSCALL_TIMERS"); timers_fire=tf&&tf[0]=='1';
         const char *rt=getenv("HEROSCALL_REPLAY_TRIGGER"); replay_trigger=rt&&rt[0]=='1';
         const char *iu=getenv("HEROSCALL_INJECT_UPD"); inject_upd=iu&&iu[0]=='1';
+        const char *ia=getenv("HEROSCALL_INJECT_ACK"); inject_ack=ia&&ia[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -777,6 +816,7 @@ long syscall(long n,...){
         if(!p) return -9;
         int r=q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
         hws_autoreply(p[4], (const void*)(uintptr_t)p[0], p[2]);   /* HWS_STUB: synth QHWServer reply */
+        inject_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_ACK: synth IPO connect-ACK */
         return r;
     }
     case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], hdr/base@p[4], timeout@p[6], qid@p[7]).
