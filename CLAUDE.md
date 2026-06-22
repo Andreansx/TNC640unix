@@ -315,6 +315,14 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   table) — the documented infeasible/legally-barred ceiling (Qt MMI / X / constellation / license). The
   full-system qemu path works because the productid was generated at boot + the SIK from the dongle/demo at
   flash. This is the honest endpoint of Track B (userspace emulation). (Connect, blocker #5, solid.)
+  ★ UPDATE — productid is SYNTHESIZABLE without the full boot: `ProductId::Update`→`ProductInfo::Init@0x1600`
+  reads the confs with C++ **ifstream** (`operator>>(int&)` for controlmark.conf→+0x90, `_M_extract<bool>` for
+  the bool confs +0x94/+0x95/+0x96) — i.e. PLAIN ASCII (an int or 0/1 per file). Wrote them (controlmark=0,
+  progstationversion=1, virtualmachine=1, …): ConfigServer now READS all 5 (no more ENOENT). BUT registration
+  STILL 0 / IPO still fails: necessary-not-sufficient. Remaining gate = the control-mark VALUE (0 yields a
+  wrong/empty `GetOptionTable` → wrong layer) and/or the per-LAYER DIR LAYOUT (ConfigServer descends into
+  `jh_int/layout/`, so flat tnc.cfg isn't where `ConfigDataFile`/`DataStore::RetrieveLayer(LayerNr)` looks).
+  So the productid is a DONE step; NEXT = the prog-station control-mark value + the per-layer config layout.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
