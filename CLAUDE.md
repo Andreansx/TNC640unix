@@ -297,7 +297,15 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   config INSTALL — construct `CfgWriteData` for the config (minimally the "NC" channel group) and send it to
   ConfigServer running as ROOT (encDir's unshare needs CAP_SYS_ADMIN; /dev/fuse present). Substantial
   GMessage construction (like INJECT_ACK but the full config schema), but engineering — NOT a legal ceiling.
-  `emulator/setup_config_env.sh` holds the env. (Connect, blocker #5, solid.)
+  ★ 2nd CORRECTION: the encfs is a DETOUR. Decisive test (jh_int = PLAIN DIR with the 27 config files +
+  no-op encfs): ConfigServer ENUMERATES it (`getdents64` on jh_int + descends into `jh_int/layout`) yet
+  opens 0 data .cfg and IPO still fails -k=NC. So config presence+enumeration is NOT sufficient — the gate
+  is the per-layer data-file REGISTRATION (`SetupDirInfo@0x2a2a60`→`CfgStore::DataFile`; `CntDataFiles=0`),
+  INDEPENDENT of the encfs. ConfigServer reads `jh_int/layout/` (subdir-structured), so the data files are
+  likely expected in a per-LAYER subdir structure and/or registration is gated on the absent productid
+  cache (controlmark selects the layer/variant). NEXT (the actual gate): RE `SetupDirInfo`/`ReadConfigDataDir`
+  for the layer/dir-structure + productid it needs to register the jhDataFiles. This is the registration
+  subsystem — not the encfs, not licensing. `emulator/setup_config_env.sh` holds the env. (Connect #5 solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
