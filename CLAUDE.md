@@ -695,10 +695,19 @@ restore `/etc/passwd` from the clean `/etc/passwd-` backup (which had `andreansx
 andreansx.guest:/bin/bash`) → umount/detach → `limactl start tnc`. SSH + sudo restored, all work intact
 (`/var/tmp/lr`, FEX, toolchains). sudo grant was never lost (`/etc/sudoers.d/90-cloud-init-users`).
 
-NEXT (serving, the gate past bind): heuserver is bound but its SERVING path may still need RTOS — if a
-client request triggers a heroscall, heuserver would need heros_rtos without crashing (understand WHY
-heros_rtos segfaults it — syscall-intercept or /dev/shm-control conflict — and either fix it or confirm
-serving is RTOS-free). Then: `heuseradmin` connects to 19093 → AppStartMP → the constellation (still the
-documented full-system/GUI ceiling). ALWAYS run heuserver contained (mount-ns) — unguarded = re-corrupts
-the VM. Recovery recipe (after VM restart): rebuild preloads from emulator/*.c; FEX RootFS=/var/tmp/lr;
-`bash emulator/run_heuserver_fex.sh foreground` (contained, drops heros_rtos, md5-guards /etc).
+SERVING PATH VALIDATED + RTOS-FREE (confirmed). heuserver issues **ZERO heroscalls** (no syscall(222), no
+t_ident/q_create/ev_*/m_attach in its decompile) and doesn't even open /dev/herosapi — it is a PURE socket
+/credential server. So heros_rtos was never needed; it segfaults heuserver only because its syscall()/
+sigaction() interposition hijacks SIGUSR1 (which heuserver uses). `emulator/heu_serve_test.sh`: a TCP client
+CONNECTS to 19093, heuserver accepts it, reads the message, rejects a bad length (`Illegal data size …,
+closing`), closes gracefully, and KEEPS LISTENING — no crash, RTOS-free, /etc guard SAFE. (Detail for the
+real-client step: heuserver logged `pid 0 / connection (null)` — its AF_INET peer-uid extraction
+(newTicketFromSocket → /proc/net/tcp → pid → uid) didn't identify the python client; a real heros client
+auth will need that to resolve.) heuserver needs ONLY `renamefix.so` (+ harmless herosapi_shim).
+
+NEXT (the real client → the constellation): get the genuine client to talk to heuserver — `usr/bin/
+heuserconfig` (CLI, 50KB) or `usr/bin/heuseradmin` (GUI, 71KB) via `libheuseradmin.so.1`, then AppStartMP
+(`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
+refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
+heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
+rebuild preloads; FEX RootFS=/var/tmp/lr; `bash emulator/run_heuserver_fex.sh foreground`.
