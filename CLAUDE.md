@@ -750,8 +750,15 @@ to the OTHER infra servers. Tractable next targets (each a server like heuserver
 HeROS server), **mbus** (S60, the message bus), dbus/heros-auth-daemon/hepwdeamon — the prerequisites
 AppStartMP's constellation children connect to. Then S79 X + S85 applaunch→AppStartMP. The full set + Qt MMI
 remains the documented full-system ceiling, but heuserver proves individual services boot this way on ARM64.
-NEXT (toward the constellation): bring up the next infra server (hessrv or mbus) the same way, or run the
-orchestrator AppStartMP
+★ NEXT TARGET SCOUTED — hessrv (S40, /usr/sbin/hessrv): the HeROS identity/license/password RPC server.
+SunRPC service over a UNIX socket (`/var/run/hessrv/hessrv.sock`); `svc_register(HESSRVPROG,HESSRVVERS)`;
+procs `hessrv_getident/getproduct/getserialnumber/testlicensegetexpirationdate/pwplceget_2_svc`. Usage
+`hessrv [--init-crypto]`. **RTOS-FREE** (0 heros RTOS syms, no /dev/herosapi) — same class as heuserver, so
+the proven recipe applies. Anticipated blockers: (1) `/dev/JHncmem` HeROS shm device (shim like
+herosapi_shim, or optional); (2) writable `/var/run/hessrv/` for the socket (mount-ns containment); (3) RPC
+registration needs rpcbind/portmapper up (or local); (4) crypto helper (hessrv_crypto_helper.c, --init-crypto).
+NEXT (toward the constellation): solve hessrv the same way (FEX + contained + /dev/JHncmem shim + rpcbind),
+then mbus, then applaunch→AppStartMP
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
