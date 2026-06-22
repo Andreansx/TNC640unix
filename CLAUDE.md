@@ -654,3 +654,51 @@ SEPARATE serving instance/socket comes later) or has a serve loop that aborts on
 check heuserver exit code + its serve mechanism (socket/listen vs heros-queue) + the init.d invocation args.
 Recovery recipe (after any VM restart): rebuild preloads from emulator/*.c; FEX RootFS=/var/tmp/lr;
 run heuserver as `sudo env ... LD_PRELOAD=/lib/renamefix.so:/lib/herosapi_shim.so:/lib/heros_rtos.so`.
+(SUPERSEDED — see next section: drop heros_rtos.so + contain /etc; binds the socket.)
+
+### ★★★★ heuserver BINDS 127.0.0.1:19093 under FEX on ARM64 (2026-06-22) — the heuserver gate is CLEARED ★★★★
+Two fixes cracked the long-standing heuserver blocker; heuserver now runs its full credential setup,
+creates `/dev/shm/_heusrv_shm`, and **binds + listens on 127.0.0.1:19093** (the accept loop blocks =
+healthy server). `ss -ltnp` shows `LISTEN 127.0.0.1:19093 users:(("FEXInterpreter",...,fd=5))`.
+Reproduce: `emulator/run_heuserver_fex.sh foreground` (in VM tnc); helper `emulator/heu_diag.sh`.
+
+1. **DROP `heros_rtos.so` FROM heuserver's preloads.** The RTOS emulator (heroscall syscall(222),
+   needed by the i386 NCK/IPO) **SEGFAULTS heuserver** (exit 139, right after "Updated /etc/security/
+   groups", before the socket). heuserver needs ONLY `herosapi_shim.so` (fakes /dev/herosapi) +
+   `renamefix.so` (EXDEV /tmp→/etc copy+unlink). With heros_rtos: crash. Without it: reaches
+   `heuserver: Created stream socket` (printed only after bind+listen+fcntl all succeed → it IS bound).
+   So the prior "heuserver exits after setup" was this SEGFAULT, not a one-shot — heuserver IS a real
+   TCP server (decompiled main: getuid→getopt(-d)→`FUN_0001ae00` credential setup→`FUN_00014890` shm
+   `/_heusrv_shm`→socket(AF_INET) bind **127.0.0.1:19093** (sa_data 4a 95 7f 00 00 01) listen→
+   `if(!-d || daemon(0,1)==0)` poll/accept loop). init.d/heuseradmin runs `heuserver -d`; exit 0/2=OK,
+   3=fail (`FUN_00014890`/socket failed). libheuseradmin clients connect over this TCP socket on the MC.
+
+2. **CONTAIN heuserver's /etc writes — FEX LEAKS them to the REAL guest /etc.** ROOT CAUSE of the
+   recurring "VM degradation" found + PROVEN: FEX RootFS does **NOT** redirect absolute-path /etc
+   *writes* to the rootfs — a static i386 probe writing `/etc/__x` lands in the **REAL guest /etc**,
+   not `/var/tmp/lr/etc`. heuserver runs as root and rewrites /etc/passwd|group|shadow|security, so an
+   unguarded run **WIPES the lima user out of guest /etc/passwd** → sshd "Permission denied (publickey)"
+   → VM unreachable. FIX: run heuserver inside a mount namespace with the rootfs /etc bind-mounted over
+   /etc: `sudo unshare -m bash -c 'mount --make-rprivate /; mount --bind /var/tmp/lr/etc /etc; …
+   FEXInterpreter …/heuserver'`. Writes land in the contained rootfs etc; a md5 guard on real
+   /etc/passwd confirms it stays unchanged. (FEX is dynamic → also set
+   `LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu` so it finds its libs past the bound /etc.)
+
+**VM RECOVERY (this session): the guest /etc/passwd had ALREADY been corrupted** by a prior unguarded
+heuserver run (the real guest passwd was wholesale-replaced with the HeROS control passwd — sys/oem/plce
+/user, /bin/ash — and the lima `andreansx` user line removed; /etc/group + /etc/shadow still referenced
+it). sshd rejected the (correct) key because the user no longer existed. `limactl restart`/`stop;start`
+could NOT fix it (cloud-init re-provision blocked: lima regenerates cidata with a deterministic
+instance-id). **Recovered via OFFLINE DISK SURGERY**: a throwaway helper lima VM (`~/.lima/_fixer.yaml`,
+mounts `~/.lima/tnc` writable) → `losetup -fP ~/.lima/tnc/disk` → mount `loop0p1` (cloudimg-rootfs) →
+restore `/etc/passwd` from the clean `/etc/passwd-` backup (which had `andreansx:x:501:6017:...:/home/
+andreansx.guest:/bin/bash`) → umount/detach → `limactl start tnc`. SSH + sudo restored, all work intact
+(`/var/tmp/lr`, FEX, toolchains). sudo grant was never lost (`/etc/sudoers.d/90-cloud-init-users`).
+
+NEXT (serving, the gate past bind): heuserver is bound but its SERVING path may still need RTOS — if a
+client request triggers a heroscall, heuserver would need heros_rtos without crashing (understand WHY
+heros_rtos segfaults it — syscall-intercept or /dev/shm-control conflict — and either fix it or confirm
+serving is RTOS-free). Then: `heuseradmin` connects to 19093 → AppStartMP → the constellation (still the
+documented full-system/GUI ceiling). ALWAYS run heuserver contained (mount-ns) — unguarded = re-corrupts
+the VM. Recovery recipe (after VM restart): rebuild preloads from emulator/*.c; FEX RootFS=/var/tmp/lr;
+`bash emulator/run_heuserver_fex.sh foreground` (contained, drops heros_rtos, md5-guards /etc).
