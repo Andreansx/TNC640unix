@@ -240,13 +240,16 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   (`jhconfigfiles.cfg`, direct `-f=` path) but the listed files use **volume paths** (`SYS:\config\tnc.cfg`).
   Those resolve via the HeROS **volume manager** (`libjhvolume` → `/etc/jhvolume`), which was MISSING →
   the control spun retrying `open("/etc/jhvolume")=ENOENT` and never loaded `tnc.cfg` (which DOES define
-  "NC"). `emulator/setup_jhvolume.sh` now populates `/etc/jhvolume` (SYS→/tmp/s …). PARTIAL: the loop stops
-  and `jhvolume "SYS/config/tnc.cfg"` resolves to `/tmp/s/config/tnc.cfg` — but the **colon form**
-  `SYS:\config\tnc.cfg` the control actually uses does NOT resolve by string substitution; it needs the
-  volume manager's **FUSE mounts** (the documented FUSE-backend layer). Next: provide the volume FUSE
-  mounts (or make the colon-form `libjhvolume` API resolve), so ConfigServer loads `tnc.cfg` and serves
-  "NC". (Confirmed ConfigServer DOES answer IPO's `0x304` GetData — the round-trip works; the data is empty
-  only because the config files never loaded.)
+  "NC"). `emulator/setup_jhvolume.sh` populates `/etc/jhvolume`. **Volume resolution FIXED**: register the
+  names WITH the trailing colon (`jhvolume --set "SYS:" /tmp/s`, not `"SYS"`) — then `SYS:\config\tnc.cfg`
+  resolves to `/tmp/s/config/tnc.cfg` (the colon form the control uses). STILL not sufficient: `strace`
+  shows ConfigServer reads only the INDEX and **never opens `tnc.cfg`** even with resolution working, and
+  fails on the runtime-generated productid cache (`/mnt/sys/cache/nckern/productid/*.conf`, ENOENT — uses
+  a hardcoded `/mnt/sys`, not `$SYS`). So the remaining gap is the config-LOAD mechanism (productid gate /
+  binary cache / a deferred "activate configuration" trigger the absent MMI/constellation sends), NOT the
+  path layer. Next: RE ConfigServer's load path — likely the same missing-peer pattern, addressable by a
+  synthesized message like the ACK. (Confirmed ConfigServer DOES answer IPO's `0x304` GetData — transport
+  works; the DB is just empty.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce

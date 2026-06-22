@@ -9,13 +9,16 @@
 # never loads the channel-group config (tnc.cfg) → IPO's "NC" lookup returns -1 → IPO aborts
 # with "Invalid Command Option -k" (AFTER it has connected — see blocker #5, INJECT_ACK).
 #
-# STATUS: NECESSARY but NOT YET SUFFICIENT. With this DB present:
-#   jhvolume "SYS/config/tnc.cfg"   -> /tmp/s/config/tnc.cfg   (RESOLVES, slash form)
-#   jhvolume "SYS:\config\tnc.cfg"  -> SYS:/config/tnc.cfg      (does NOT resolve — colon form)
-# The control uses the colon form (VOLUME:\path). That convention resolves in the real system
-# via FUSE volume MOUNTS the volume manager sets up (the documented FUSE-backend layer), not by
-# plain string substitution. Remaining work: provide those mounts (or make libjhvolume's
-# colon-form API resolve), then ConfigServer can load tnc.cfg and serve the "NC" channel group.
+# KEY: register the volume names WITH the trailing colon ("SYS:", not "SYS"). The control uses the
+# colon form (VOLUME:\path); libjhvolume only resolves it when the registered name includes the colon:
+#   name "SYS"  -> jhvolume "SYS:\config\tnc.cfg" => SYS:/config/tnc.cfg   (NOT resolved)
+#   name "SYS:" -> jhvolume "SYS:\config\tnc.cfg" => /tmp/s/config/tnc.cfg (RESOLVED)  <-- correct
+#
+# STATUS: this makes the volume layer resolve correctly, but is still NOT sufficient on its own —
+# ConfigServer reads the config INDEX yet does not open the data files (tnc.cfg) even with resolution
+# working, and it fails on the runtime-generated productid cache (/mnt/sys/cache/nckern/productid/
+# *.conf, ENOENT). Remaining (blocker #6): the config-LOAD mechanism (productid gate / binary cache /
+# deferred load) — ConfigServer must actually read tnc.cfg into its channel-group DB.
 #
 # Run once in the lima VM (writes /etc/jhvolume, needs root): sh emulator/setup_jhvolume.sh
 set -e
@@ -24,11 +27,12 @@ JH="$R/usr/sbin/jhvolume"
 jhv(){ sudo qemu-i386 -L "$R" -E LD_LIBRARY_PATH=/heros5/bin:/lib:/usr/lib \
         "$R/lib/ld-linux.so.2" "$JH" "$@"; }
 sudo rm -f /etc/jhvolume
-jhv --set SYS    /tmp/s -a=sys  >/dev/null   # SYS partition  (config, binaries)  -> control sysroot
-jhv --set SYSTEM /tmp/s -a=sys  >/dev/null
-jhv --set PLC    /tmp/o -a=oem  >/dev/null   # OEM partition
-jhv --set PLCE   /tmp/o -a=oem  >/dev/null
-jhv --set OEM    /tmp/o -a=oem  >/dev/null
-jhv --set TNC    /tmp/s -a=user >/dev/null   # USR partition
+jhv --set "SYS:"    /tmp/s -a=sys  >/dev/null   # SYS partition (config, binaries) -> control sysroot
+jhv --set "SYSTEM:" /tmp/s -a=sys  >/dev/null
+jhv --set "PLC:"    /tmp/o -a=oem  >/dev/null   # OEM partition
+jhv --set "PLCE:"   /tmp/o -a=oem  >/dev/null
+jhv --set "OEM:"    /tmp/o -a=oem  >/dev/null
+jhv --set "TNC:"    /tmp/s -a=user >/dev/null   # USR partition
 echo "== /etc/jhvolume =="; sudo cat /etc/jhvolume
-echo "== --list =="; jhv --list
+echo "== resolve test (should print /tmp/s/config/tnc.cfg) =="
+jhv "SYS:\\config\\tnc.cfg"
