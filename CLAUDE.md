@@ -223,17 +223,24 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
 - **#2 `heroscall` syscall 222 / `PciHardware::Exception`** — PASSED. `M_ident("IPO_SHARED_MEMORY")`
   + `M_attach` now serve a real zeroed region (`emulator/heroscall_emu.c`).
 - **#3 `FProcess` argv assert** — PASSED (correct argv).  **#4 empty `Sys_getenv`** — PASSED (real env).
-- **#5 config subsystem (`CfgMailslot` → config server)** — cross-process IPC + serve loop WORK and are
-  PROVEN end-to-end (2026-06-22, commits 76fa233/34ee6f7): ConfigServer's dispatch thread `Q_read`s
-  IPO's 69-byte connect off `CfgServerQueue`. The "deserialize/reply-routing bug" was a MISDIAGNOSIS —
-  the message layer is correct. ConfigServer can't FINISH startup: during it, every client ACK is punted
-  to `Q_send qid 0xffffffed` (`-0x13` = "client not-yet-connected" sentinel), so IPO waits forever. Two
-  missing peers cause it: **SIK** (`Q_read(QSikSync)` forever — capped by `HEROSCALL_SYNC_TIMEOUT`) and
-  the **`HwsMailslot` hardware-message/I/O-sim server** (an outer retry loop re-scanning `HwsM<task>N<ctr>`
-  whose continuation is independent of the `Q_ident` result → it waits on the *peer*, not a return value).
-  Both peers have **no i386 binary** (host-side Qt suite + JHIO/`jhiosimhostd`; no `AppStartMP.elf`), so
-  the path is **stub the SIK + Hws service replies in the emulator** (option A), not "run a constellation".
-  Fixed en route: `Ev_receive` finite-timeout busy-spin, `MAXQ` 96→2048, runner kill-safety. See docs/17 §Update(2026-06-22).
+- **#5 config subsystem / IPO connect-ACK** — ★ **SOLVED 2026-06-22 (commits 92a98c5/6108aef): IPO
+  CONNECTS.** ConfigServer's `SendConnected` can NEVER flush IPO — clients are inserted into the client
+  Rb_tree only in `CfgServer::Initialize@0x187b4a`, never in `OnConnectClient` (which only `_Rb_tree::find`s),
+  so IPO is never registered (the SIK/Hws-stub "run-up" story was a layer below this). The fix bypasses
+  ConfigServer: **`HEROSCALL_INJECT_ACK`** synthesizes IPO's `CfgClientIsConnected`(id **0x170100**;
+  fields clientId/id/success; **success=OK**; schema decoded from `.rodata 0x230b80/0x230bc0`) and posts it
+  straight to IPO's reply queue. IPO reads it, prints **"Connected"**, and proceeds (`OnCfgClientIsConnected
+  @0x1a72d0` → `CfgMailslotQueue::Create` → `SyncMessage` → `AskIpoConditions`). Also proven en route:
+  synthetic **`UpdNewState`** (id 0x1f0320) deserializes + drives `OnUpdNewState` — the GMessage deserializer
+  is **schema-driven**, so messages are built from the `.rodata` schema templates (gated `INJECT_UPD`).
+  Run-up fixes retained (SIK/Hws stub, `Ev_receive`, `MAXQ`). See docs/17 §Update(2026-06-22).
+- **#6 config-data round-trip (NEW frontier, past the connect)** — IPO now reaches
+  `IpoController/IpoKonfig::CheckOptions()` and fails `-k=NC` ("Invalid Command Option -k", AFTER "Connected").
+  The "NC" channel group IS in the config (`tnc.cfg`/`GlobalSystemCfg.atr`) and ConfigServer responds
+  (28/24/30B), but IPO doesn't receive the channel-group data (case-independent). Likely: ConfigServer
+  doesn't fully serve IPO's `CfgGetData` because IPO isn't a registered client. Next: trace ConfigServer's
+  response to IPO's post-connect `0x304` GetData (real data vs error stub) → inject a GetData response like
+  the ACK, or register IPO.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
