@@ -24,6 +24,10 @@ head -c 1048576 /dev/zero > /dev/shm/_heusrv_shm; chmod 0644 /dev/shm/_heusrv_sh
 ENVS="-E SYS=/tmp/s -E OEM=/tmp/o -E USR=/tmp/s -E OEME=/tmp/o \
 -E EXECDIRH=/tmp/b -E EXECDIR=/tmp/b -E EXECBAT=/tmp/s/batch/heros5 \
 -E SYS_NAME=SYSTEM: -E OEM_NAME=PLC: -E OEME_NAME=PLCE: -E USR_NAME=TNC: \
+# NB: HEROSCALL_REPLAY_TRIGGER (capture+replay CfgServerQueue startup msgs) is OFF — it does NOT work:
+# the connect-ACK flow (SIK thread + in-process EditThread clients → SendConnected) is entirely
+# INTERNAL, so there's no capturable queue message (trigger or ACK) to echo. IPO (first EXTERNAL
+# client) needs the absent MMI's UpdNewState, which must be CONSTRUCTED. See docs/17.
 -E HEROSCALL_VERBOSE=1 -E HEROSCALL_SEM_INIT=1 -E HEROSCALL_SYNC_TIMEOUT=2500 -E HEROSCALL_HWS_STUB=1 -E HEROSCALL_TIMERS=1 \
 -E LD_PRELOAD=$PRE -E LD_LIBRARY_PATH=/heros5/bin:/lib:/usr/lib"
 QEMU="qemu-i386 -L $R $ENVS $R/lib/ld-linux.so.2"

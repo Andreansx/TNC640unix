@@ -226,6 +226,22 @@ static int hws_stub=0;               /* HEROSCALL_HWS_STUB=1: auto-reply to QHWS
 static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_evevery actually fire
                                       * their event (else the pending-client-msg flush timer never
                                       * fires → ConfigServer never sends connect-ACKs) */
+/* HEROSCALL_REPLAY_TRIGGER=1: capture+replay CfgServerQueue startup self-messages, hoping to
+ * re-fire CfgServer::SendConnected (the connect-ACK flush) for a post-startup client (IPO).
+ * RESULT: DOES NOT WORK — verified the captured CfgServerQueue msgs (the only 3: post-to-anon-q
+ * + QEvtServer register) are NOT the SendConnected trigger. The whole connect-ACK flow is
+ * INTERNAL: SendConnected is driven by the SIK thread's flow (capped QSikSync read →
+ * SikReadingFinished) and the startup clients are in-process EditThread sessions ACKed
+ * internally — none is a queue message. So there is nothing to capture/echo. IPO (first
+ * EXTERNAL client) needs the absent Qt MMI's UpdNewState, which must be CONSTRUCTED (no real
+ * one exists to echo). Kept gated-off as a documented dead-end + reusable record/replay scaffold. */
+static int replay_trigger=0;
+static volatile int runup_done=0;        /* set when the HWS stub fires (= run-up complete) */
+static volatile int trigger_replayed=0;
+#define CFGQ_CAP 128
+#define CFGQ_MSG 1024
+static struct { uint32_t len; uint8_t data[CFGQ_MSG]; } cfgq_rec[CFGQ_CAP];
+static volatile int cfgq_n=0;
 static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
     if(!qdump||!p) return; if(n>112)n=112;
     fprintf(stderr,"   %s[0x%x]:",tag,id);
@@ -412,6 +428,13 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
     LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
+    /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
+    if(replay_trigger && !runup_done && msg && size && size<=CFGQ_MSG
+       && !strcmp(C->queues[s].name,"CfgServerQueue")){
+        int k=__atomic_fetch_add(&cfgq_n,1,__ATOMIC_ACQ_REL);
+        if(k<CFGQ_CAP){ cfgq_rec[k].len=size; memcpy(cfgq_rec[k].data,msg,size); }
+        else __atomic_store_n(&cfgq_n,CFGQ_CAP,__ATOMIC_RELEASE);
+    }
     return 0;
 }
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
@@ -434,6 +457,17 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
             unlock();
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
+            /* REPLAY_TRIGGER: the first post-runup 69-byte read from CfgServerQueue is IPO's
+             * connect; it's now dequeued+about-to-be-registered-pending. Re-inject the recorded
+             * startup self-messages so a SIK handler re-runs SendConnected and flushes IPO's ACK.
+             * FIFO order guarantees the connect is processed before these are read. */
+            if(replay_trigger && runup_done && !trigger_replayed
+               && len==69 && !strcmp(q->name,"CfgServerQueue")){
+                trigger_replayed=1;
+                LOG("REPLAY: connect read -> re-injecting %d startup msgs to flush ACK\n",cfgq_n);
+                int n=cfgq_n; if(n>CFGQ_CAP)n=CFGQ_CAP;
+                for(int i=0;i<n;i++) q_send(id,cfgq_rec[i].data,cfgq_rec[i].len,0);
+            }
             return (int)len;                              /* message size in eax */
         }
         uint32_t t=q->tail; unlock();
@@ -465,6 +499,7 @@ static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
     uint32_t rqid=C->queues[rs].id;
     q_send(rqid,msg,size,0);                              /* v1: echo the request as the reply */
     LOG("HWS stub: replied %u bytes to \"%s\" (0x%x) [echo]\n",size,rname,rqid);
+    __atomic_store_n(&runup_done,1,__ATOMIC_RELEASE);    /* run-up complete: stop recording, arm replay */
 }
 
 /* ---------------- regions (named shared memory) ---------------- */
@@ -527,6 +562,7 @@ static void ensure_init(void){
         const char *dq=getenv("HEROSCALL_DUMPQ"); qdump=dq&&dq[0]=='1';
         const char *hw=getenv("HEROSCALL_HWS_STUB"); hws_stub=hw&&hw[0]=='1';
         const char *tf=getenv("HEROSCALL_TIMERS"); timers_fire=tf&&tf[0]=='1';
+        const char *rt=getenv("HEROSCALL_REPLAY_TRIGGER"); replay_trigger=rt&&rt[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
