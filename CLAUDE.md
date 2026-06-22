@@ -843,6 +843,31 @@ connect proof (IPO) to AppStartMP, and locates the remaining ceiling precisely a
 the GUI-not-ready poll is a busy Ev_receive(timeout 0) loop — run with HEROSCALL_VERBOSE=0 to avoid the
 multi-GB trace; not the real blocker.)
 
+★★ AppStartMP PLIB++ KEYMAP WALL CLEARED — GUI resource init now CLEAN; wall moved one layer deeper to the
+GUI EVENT PUMP (2026-06-22, `emulator/run_appstart_fex.sh`). The PLIB++ "Unable to load the default
+keyboard/character/function key map!" errors (the documented wall in commit 5e35f0c) are GONE. ROOT CAUSE
+(host-strace pinned it): AppStartMP loads the GUI resource set from `%SYS%\resource\{keymap,charmap,
+functionkeymap}_us101.xml` (+ `default_theme.xrs`/`tnc640_theme.xrs` + button bitmaps), and TWO things broke it:
+(1) the script staged only `config/`+`batch/` into the writable SYS mirror, **never `resource/`**; (2) the
+control opens the **LITERAL, UNEXPANDED `%SYS%/resource/...`** path — `PReplacePath`'s percent-macro table is
+unpopulated standalone, so `%SYS%`/`%OEM%`/`%USR%` are NOT substituted (only the `\`→`/` convert happens). This
+is the SAME `%SYS%`/`%OEM%` non-substitution as blocker #6. FIX: (a) `cp -aL $CFG/resource $SYSW/resource`;
+(b) a literal `/%SYS%`→/tmp/s symlink (the open is relative to cwd=/), + `/%OEM%`,`/%USR%`. strace CONFIRMS:
+`openat("%SYS%/resource/keymap_us101.xml")=9`, charmap=9, functionkeymap=9, themes/bmps fd 9/10 — all OPEN,
+zero keymap errors. (Diagnostics added: `emulator/openlog.c` LD_PRELOAD open-logger — but as a GUEST preload it
+PERTURBED AppStartMP's timing-sensitive startup so it never connected; use HOST `strace -f -e openat,newfstatat`
+instead, which is non-invasive and proven to see FEX guest syscalls.)
+★ NEW WALL (precisely pinned, the documented full-GUI ceiling): with resources loading, AppStartMP completes
+RTOS init + config connect (INJECT_ACK) + internal queue/task setup, then BLOCKS in its PLIB++ GUI event pump:
+**`Ev_receive(0x01011001, EV_NOWAIT)` polled 1,518,645× in 45s**, reading the HeROS **`/dev/events`** input/event
+device (herosapi_shim fakes the open + stubs `ioctl(0x4502)→0`, so NO events are delivered). Standalone the
+awaited event `0x01011001` is never posted → AppStartMP **never connects to X (Xvfb = 0 client connections)** and
+**never forks the constellation** (no spawn/FmLoad/heuseradmin/applaunch anywhere in the 1.5M-line trace). So the
+gate is now the GUI EVENT SOURCE feeding the pump (which precedes X-connect AND spawn), not the keymap load.
+NEXT (the natural frontier, within the documented GUI ceiling): RE which event the pump must capture to proceed —
+a candidate for an INJECT-style `Ev_send(0x01011001)` (like INJECT_ACK was for config), OR delivering real input
+events through `/dev/events` (ioctl 0x4502). Deeper GUI RE, but the wall is pinned to the exact awaited event.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and

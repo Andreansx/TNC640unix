@@ -27,6 +27,7 @@ which FEXInterpreter Xvfb openbox >/dev/null || { echo "FATAL: missing FEXInterp
 echo "=== [1] rebuild preloads + AppStartMP closure ==="
 for s in arena_stub; do $CC -shared -fPIC -O2 -Wl,--version-script="$EMU/arena.map" -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
+$CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
 # Copy AppStartMP's i386 closure into the rootfs (cp -aL; overlaps the IPO/ConfigServer closure mostly).
 sudo bash -c '
 SRC=/Users/andreansx/Documents/TNC640unix/work/target/rootfs; R='"$R"'
@@ -45,6 +46,11 @@ sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo 
 # SYS:\config\*.cfg + SYS:\batch\TNC640heros.txt and writes SYS:\runtime\AppStartFinishCounter.txt.
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
 sudo cp -aL "$CFG/config" "$SYSW/config" 2>/dev/null; sudo cp -aL "$CFG/batch" "$SYSW/batch" 2>/dev/null
+# AppStartMP's PLIB++ GUI init loads %SYS%\resource\{keymap,charmap,functionkeymap}_us101.xml via
+# PReplacePath(%SYS% -> getenv SYS=/tmp/s) + FVolumePathname::Convert (\->/) => /tmp/s/resource/*.
+# Stage the control's resource dir so the default keyboard/char/function-key maps load (the PLIB++ wall).
+sudo cp -aL "$CFG/resource" "$SYSW/resource" 2>/dev/null
+echo "  staged SYS resource files: $(ls "$SYSW/resource" 2>/dev/null | wc -l) (keymap_us101.xml present: $([ -e "$SYSW/resource/keymap_us101.xml" ] && echo yes || echo NO))"
 sudo chmod -R u+w "$SYSW/runtime"
 ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bin" /tmp/b
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sudo pkill -x Xvfb 2>/dev/null; sudo pkill -x openbox 2>/dev/null
@@ -93,6 +99,11 @@ mkdir -p /etc/fonts
 FC
 export FONTCONFIG_PATH=/etc/fonts FONTCONFIG_FILE=/etc/fonts/fonts.conf
 cd /
+# %SYS%/%OEM%/%USR% percent-macros are NOT expanded by the control standalone (PReplacePath's macro
+# table is unpopulated without the full config/boot) -> AppStartMP opens the LITERAL path
+# "%SYS%/resource/keymap_us101.xml" (strace-confirmed ENOENT, same gate as config #6's %SYS% paths).
+# Relative to cwd=/, satisfy the literal macro dir with a symlink to the staged SYS/OEM mirror.
+ln -sfn /tmp/s "/%SYS%"; ln -sfn /tmp/o "/%OEM%"; ln -sfn /tmp/s "/%USR%"
 
 echo '### foundation: dbus + auth-daemon + heuserver (bg) ###'
 LD_PRELOAD=/lib/herosapi_shim.so:/lib/renamefix.so FEXInterpreter $R/usr/bin/dbus-daemon --system --nofork --nopidfile --nosyslog >/tmp/a_dbus.log 2>&1 &
@@ -124,9 +135,15 @@ echo '  ConfigServer run-up (HWS stub):' \$(grep -c "HWS stub: replied" /tmp/a_c
 
 echo '### AppStartMP (fg, ~45s) — RTOS process-manager; spawns the constellation ###'
 # AppStartMP issues heroscalls (libheros.so.1) -> needs heros_rtos; arena_stub bridges arena_exclusive.
-timeout -s KILL 45 env LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
+# Run-1 known-good preload set (NO openlog guest preload — it perturbed the timing-sensitive startup
+# so AppStartMP never connected). Capture the EXACT keymap/resource file paths NON-invasively via
+# host strace (proven to see FEX guest syscalls): openat/newfstatat/access -> /tmp/a_strace.log.
+rm -f /tmp/a_strace.log
+timeout -s KILL 45 /usr/bin/strace -f -qq -e trace=openat,newfstatat,access -o /tmp/a_strace.log \
+  env LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt 2>&1 | head -c 120000000 >/tmp/a_appstart.log
 echo "### AppStartMP exited (rc \$?) ###"
+rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null
 pkill -KILL -x FEXInterpreter 2>/dev/null
 EOF
 
@@ -142,8 +159,13 @@ echo "=== [7] AppStartMP RESULTS ==="
 grep -vE "cannot be preloaded|object .* from LD_PRELOAD" /tmp/a_appstart.log 2>/dev/null > /tmp/a_clean.log
 echo "--- ConfigServer served AppStartMP's config query? (INJECT_ACK / Q_read of AppStart's queue) ---"
 grep -E "INJECT_ACK|CfgServerQueue|0000101CfgM" /tmp/a_cfgsrv.log /tmp/a_clean.log 2>/dev/null | grep -iE "inject|read <-|0101cfgm" | head -6
+echo "--- PLIB++ keymap wall: cleared? (was: Unable to load the default keyboard map) ---"
+grep -iE "keymap|charmap|functionkey|keyboard map|character map|function key map|resource symbol" /tmp/a_clean.log | head -10
+echo "--- strace: EXACT keymap/charmap/resource paths AppStartMP opens (+ result/errno) ---"
+grep -aiE "keymap|charmap|functionkey|/resource/|us101|appstart.ini" /tmp/a_strace.log 2>/dev/null | grep -aiE "openat|newfstatat|access" | sort -u | head -30
+echo "    (ENOENT count on resource paths: $(grep -aiE 'keymap|charmap|/resource/|us101' /tmp/a_strace.log 2>/dev/null | grep -ac ENOENT))"
 echo "--- X / WindowManager wait passed? ---"
-grep -iE "X-Server|X-Window|waiting for|PLIB" /tmp/a_clean.log | head -6
+grep -iE "X-Server|X-Window|waiting for|PLIB" /tmp/a_clean.log | head -8
 echo "--- constellation spawn + heuseradmin connect outcome ---"
 grep -iE "heuseradmin|stream socket|connection refused|connected|spawn|FmLoadProcess|FmLoadSubsystem|fork|launch" /tmp/a_clean.log | head -15
 echo "--- next blocker / errors ---"
