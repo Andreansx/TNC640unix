@@ -68,6 +68,37 @@ HDR = {
 }
 
 
+# --- RPC framing (corrected against the LIVE control on yeen, 2026-06-22) -----------
+# JHIO is NOT a passive "header pushed on connect": the connected server waits for a
+# request. It is a bidirectional RPC (send_request / read_response / fcn_id_to_str).
+#   REQUEST  = 20 bytes (0x14): [+4] cFcnId(u8), [+8] parm1, [+0xc] parm2, [+0x10] parm3
+#   RESPONSE = 16 bytes (0x10): [+4] cFcnId(u8), [+8] rc,    [+0xc] val
+#   cFcnId opcodes = 10..26 (0x0a..0x1a), one per _JHIOIntern* call. The exact
+#   opcode<->name map needs the fcn_id_to_str jump-table disassembly (.data 0x1ad2c).
+# Bulk transfers (the 740-byte JHIO_HEADER, the lDataSize block) follow the relevant
+# GetHeader/GetBlock/PutBlock replies. See docs/18 §1.3.
+RPC_REQ_LEN = 0x14
+RPC_RSP_LEN = 0x10
+CFCNID_MIN, CFCNID_MAX = 0x0a, 0x1a
+
+
+def pack_request(cfcnid: int, parm1=0, parm2=0, parm3=0) -> bytes:
+    b = bytearray(RPC_REQ_LEN)
+    b[4] = cfcnid & 0xFF
+    b[8:12] = (parm1 & 0xFFFFFFFF).to_bytes(4, "little")
+    b[12:16] = (parm2 & 0xFFFFFFFF).to_bytes(4, "little")
+    b[16:20] = (parm3 & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(b)
+
+
+def unpack_response(b: bytes):
+    if len(b) != RPC_RSP_LEN:
+        raise ValueError(f"response must be {RPC_RSP_LEN} bytes, got {len(b)}")
+    return {"cFcnId": b[4],
+            "rc": int.from_bytes(b[8:12], "little"),
+            "val": int.from_bytes(b[12:16], "little")}
+
+
 def djb2(data: bytes) -> int:
     """The exact hash libjhiosimnet uses ('JHIO_HEADER hash=0x%x'): djb2, 32-bit wrap."""
     h = 0x1505
@@ -100,10 +131,10 @@ class JhioHeader:
 class JhioClient:
     """Minimal host-side I/O-sim CLIENT skeleton (connect to guest:19009).
 
-    The per-cycle exchange (send header, exchange the lDataSize block with PutBlocks
-    diffs, recv host inputs, cycle handshake) is documented in docs/18; the block
-    framing details are best finalised against a live guest. This class establishes
-    the connection + header transfer that everything else builds on.
+    NOTE (live finding): the guest server does NOT push the header on connect — it is an
+    RPC (see pack_request/unpack_response). recv_header() below is only valid AFTER issuing
+    the GetHeader RPC; a passive recv on the live guest returns nothing. The exact GetHeader
+    opcode (within cFcnId 10..26) is the remaining item for a working client.
     """
     def __init__(self, host: str, port: int = PORT, timeout: float = 5.0):
         self.host, self.port, self.timeout = host, port, timeout

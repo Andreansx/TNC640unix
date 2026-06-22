@@ -221,9 +221,34 @@ for UNIX/macOS. This is the more promising path to a *fully usable* control. Sta
   `work/re/scripts/DecompileFiltered.java` (env `GHIDRA_DECOMP_FILTER`) decompiles only a function
   cluster from a huge binary; runner `work/re/scripts/decompile_optionA.sh`. `analyzeHeadless`
   requires the project dir to pre-exist.
-- **NEXT (Track A):** stand up the guest on an x86-64 Linux host → live-capture 19035 (finalize the
-  handwheel field order + id handshake) → native handwheel GUI; prototype a TCP I/O-sim client to
-  `guest:19009` and measure what demo/programming modes actually need from it.
+- **★★★★ LIVE on a real x86-64 host (`ssh yeen` = styx, Arch + KVM + VirtualBox 7.2.10, 2026-06-22).**
+  Ran the WHOLE Option-A path end-to-end, automated: scp the proprietary OVA(410M)+setup.zip(1.1G) to
+  yeen, `scripts/setup_vm_yeen.sh` (import OVA + NAT port-forwards 19035/19009/5900/2222 + shared
+  folders + stage setup.zip), headless boot. **The real TNC 640 control BOOTS to the live MMI in demo
+  mode** (installer ran: Extract archive→RPM→Replace→Finalize→reboot→MMI; Shareware "max 100 NC lines"
+  + OEM-password notice — reproduces doc 11 on a fresh box). Live validations:
+  • **Keypad (shipped) VALIDATED live:** `keyboardputscancode 3b bb`(F1)+`5b db`(CE) dismissed the
+    Shareware dialog → **Programming mode** ("Power interrupted", control-voltage-OFF). This IS the
+    native keypad's putScancodes transport.
+  • **Handwheel server (19035) VALIDATED:** `InitServerSocket` binds `0x5b4a0002`=AF_INET:0x4a5b(19035)
+    listen(5); server SILENT on connect (matches decompile); **accepts the 33-byte frame** (id=0 BSS
+    default accepted, connection held). Full jog-motion needs an operating mode (control-ready) ⇒
+    handwheel & JHIO are COUPLED. `handwheel/hr_probe.py`.
+  • **★ JHIO (19009) — protocol model CORRECTED by the live control: it's a TCP RPC, not a passive
+    header push.** Even booted with `/HEIDENHAIN/IOSIM/Network=on`, 19009 is an active listener that
+    returns nothing to a passive recv and closes a raw 740B push — it **waits for an RPC request**.
+    Decompiled `send_request`/`read_response`/`fcn_id_to_str`: **20-byte request** (cFcnId@+4, parm1/2/3
+    @+8/+c/+10) / **16-byte response** (cFcnId@+4, rc@+8, val@+c); **cFcnId opcodes 10..26** (jump table
+    .data 0x1ad2c, one per _JHIOIntern* call); the 740B JHIO_HEADER + lDataSize block ride as bulk
+    transfers on GetHeader/GetBlock/PutBlock; cycle lockstep via Signal/WaitForSimCycleDone. doc 18 §1.3/§3
+    updated; `jhio/jhioproto.py` gains pack_request/unpack_response. Remaining for a working host I/O-sim:
+    the exact opcode↔name map (jump-table disasm) + the per-cycle client + a machine I/O model.
+- **NEXT (Track A):** RE the JHIO cFcnId jump table (opcode↔_JHIOIntern* map) → build the host I/O-sim
+  RPC client (GetHeader → live machine-I/O map → per-cycle GetBlock/PutBlock + cycle handshake +
+  minimal "control-ready" model) → then operating modes + the handwheel jog-motion end-to-end; native
+  handwheel GUI. Recovery: VM `TNC640` on yeen is installed+flashed (no reinstall); `VBoxManage startvm
+  TNC640 --type headless`; ack Shareware with `keyboardputscancode 3b bb`. vmusr pw via guestproperty
+  but guest sshd is publickey-only. Screenshots: `VBoxManage controlvm TNC640 screenshotpng`.
 
 ## TRANSLATION PORT ROADMAP (current focus — option B: run unmodified i386 control on native ARM64)
 

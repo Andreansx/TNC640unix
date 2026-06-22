@@ -87,20 +87,31 @@ Default in the guest: `GUEST_IF` set, `SVR_PORT=19009`, no `MODE`/`SVR_IP` ⇒ t
 server**, binding `eth:19009`. A host I/O-sim runs the same role logic in **client** mode:
 `JHIOSIM_MODE=1`, `JHIOSIM_SVR_IP=<guest machine-net IP>`, `JHIOSIM_SVR_PORT=19009`.
 
-## 1.3 Wire protocol (per PLC scan cycle)
+## 1.3 Wire protocol — a TCP **RPC** (corrected against the live control)
 
-Decompiled from `libjhiosimnet`'s exchange loop:
+**IMPORTANT correction (live finding, see §3):** the protocol is **not** a passive "header pushed
+on connect." The connected server **waits for a request**; it is a bidirectional **RPC**. (My
+first model — guest pushes the header on connect — is wrong; a passive `recv` on 19009 of the live
+guest returns nothing.) Decompiled from `send_request`/`read_response`/`fcn_id_to_str`:
 
-1. **Send `JHIO_HEADER`** — a fixed **740-byte (`0x2e4`)** struct, written with a `send()` loop
-   until all 740 bytes go out (`"Failed to send JHIO_HEADER, tx=%d/%d"`, total `0x2e4`). A
-   **djb2 hash** over the 740 bytes is logged (`"JHIO_HEADER hash=0x%x"`).
-2. **Exchange the I/O data block** — the changed I/O regions (`PutBlocks`), with a change-hash so
-   an unchanged block is skipped (`"No PutBlocks changes found."`, `"PutBlocks hash=0x%x (%d bytes)"`,
-   `"CLEAR_PUTBLOCKS"`). The data block is `lDataSize` bytes at `lDataOffset` (see header).
-3. **Receive the host's `JHIO_MEMORY` data** — the inputs the simulated machine drives back
-   (`"Failed to read host JHIO_MEMORY data, tx=%d/%d"`).
-4. **Cycle handshake** — `SignalPlcCycleDone` / `WaitForSimCycleDone` keep guest PLC and host
-   I/O-sim in lockstep, one exchange per scan cycle (same semantics as the Windows extpack).
+- **Request (20 bytes, `0x14`)** — `send_request`: `[+0..3] hdr/len`, **`[+4] cFcnId` (1 byte)**,
+  `[+8] parm1` u32, `[+0xc] parm2` u32, `[+0x10] parm3` u32. Logged
+  `"Send request to %s, cFcnId=%d (%s), parm1=%lu, parm2=%lu, parm3=%lu"`.
+- **Response (16 bytes, `0x10`)** — `read_response`: `[+4] cFcnId`, `[+8] rc` u32, `[+0xc] val`
+  u32. Logged `"Received %s/IOsim response, cFcnId=%i, rc=%d, val=%i"`.
+- **`cFcnId` opcode range = 10..26** (`0x0a..0x1a`, 17 ops via the `fcn_id_to_str` jump table at
+  `.data 0x1ad2c`) — one per `_JHIOIntern*` call (Init / GetHeader / GetHeaderSize / GetBlock(Ex) /
+  PutBlock(Ex) / GetDataSize / GetBaseOffset / GetPointer / GetSimulationId / SetControlReady /
+  SignalPlcCycleDone / WaitForSimCycleDone / IsSimulationRunning / SetPLCRunMode / Lock/Unlock).
+  The exact opcode↔name map needs the jump-table disassembly (next step for a full client).
+- **Bulk transfers** ride on specific ops: a **GetHeader**-class reply is followed by the
+  **740-byte (`0x2e4`) `JHIO_HEADER`** (`"Failed to send JHIO_HEADER, tx=%d/%d"`, djb2-hashed
+  `"JHIO_HEADER hash=0x%x"`); **GetBlock/PutBlock** carry the `lDataSize` I/O data at `lDataOffset`
+  as changed-region diffs (`"PutBlocks hash=0x%x (%d bytes)"`, `"No PutBlocks changes found."`,
+  `"CLEAR_PUTBLOCKS"`); **SignalPlcCycleDone/WaitForSimCycleDone** are the per-cycle lockstep.
+
+So a host I/O-sim must: connect → issue the RPCs (GetHeader to learn the map, then the per-cycle
+GetBlock/PutBlock + cycle handshake) — driven by the client, not received passively.
 
 Header **version** field (`+8`, dword) = 100..400 ⇒ schema versions **1.0 … 4.0** (the lib prints
 `// Version 1.0` … `3.0`); a peer announces its version and the other assumes it if older.
@@ -227,3 +238,36 @@ Same approach as the native keypad: a small cross-platform UI (jog wheel + axis 
 override + the CTRL/RAPID/HANDWHEEL/F-keys) that opens a `QTcpSocket`-equivalent to
 `guest:19035` and emits the `HRSimServer` frames. No proprietary assets or binaries required.
 See `handwheel/` (to be added alongside `keypad/`).
+
+---
+
+# Part 3 — LIVE validation on a real x86-64 host (`yeen`, 2026-06-22)
+
+The whole Option-A path was run end-to-end on an **Arch Linux x86-64 host (`yeen`/styx, KVM)** with
+**VirtualBox 7.2.10**, automated from the proprietary package: import `TNCvbProg.ova` → wire NAT
+port-forwards (19035/19009/5900/2222) + shared folders → stage `setup.zip` → headless boot. Results:
+
+- **The real TNC 640 control BOOTS to the live MMI in demo mode.** First boot ran the documented
+  installer (Copy setup → Extract archive → RPM packages → Replace → Finalize), deleted `setup.zip`,
+  rebooted, and reached the MMI with the **"Shareware"** demo dialog (max 100 NC lines) + the
+  "Default OEM passwords detected" notice — exactly as [11-running-on-linux.md](11-running-on-linux.md)
+  describes, now reproduced on a fresh Arch box (`scripts/setup_vm_yeen.sh`).
+- **Keypad (already shipped) live-validated:** `VBoxManage controlvm … keyboardputscancode 3b bb`
+  (F1) + `5b db` (CE) dismissed the Shareware dialog → the control entered **Programming** mode
+  ("Power interrupted", control-voltage-OFF soft key). This is exactly the native keypad's
+  `putScancodes` transport (`keypad/`).
+- **Handwheel server (19035) confirmed live.** `InitServerSocket` binds `0x5b4a0002` =
+  **AF_INET : port 0x4a5b (19035)**, `listen(5)`. The server is **silent on connect** (matches the
+  decompile — client sends first) and **accepts the 33-byte frame** (`id=0`, the BSS-default
+  expected id, is accepted; the connection is held, not dropped). Full **jog-motion** validation
+  needs an operating mode (control-voltage-ON), which depends on JHIO control-ready — so the
+  handwheel and JHIO are **coupled** (jogging only matters once the machine is "ready").
+- **JHIO (19009) confirmed live as an RPC server + the protocol model corrected.** Even booted with
+  `/HEIDENHAIN/IOSIM/Network=on`, 19009 is an **active listener that returns nothing to a passive
+  `recv` and closes a raw 740-byte push** — because it expects an **RPC request first** (§1.3). This
+  live behaviour is what corrected the model from "passive header push" to the request/response RPC.
+- Probes used: `handwheel/hr_probe.py`, `jhio/jhio_probe.py` (host-side via the NAT forwards).
+
+**Net:** the platform path is proven (real control runs natively on x86-64 Linux + KVM); keypad is
+fully working; the handwheel frame is validated at the server; JHIO's transport is a TCP RPC whose
+opcode map + per-cycle client is the remaining work for a host I/O-sim.
