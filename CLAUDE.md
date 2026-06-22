@@ -1,7 +1,18 @@
 # TNC640unix — project tracker
 
+> ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
+> The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
+> FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
+> window on the Mac** — via the ~40 HeROS services → the ~92-process constellation. **Do NOT pursue
+> Option A** (run the x86-64 guest in a hypervisor / VirtualBox / the Windows host-suite path): it is
+> **already done** (docs 11 / README) and re-proving it (e.g. on the `yeen` x86-64 box) does nothing
+> for the Apple-Silicon goal. The "Option A / x86_64" section below and `scripts/setup_vm_yeen.sh` are
+> **kept for reference but DEPRIORITIZED**; the handwheel (19035) + JHIO (19009) protocol RE in them is
+> track-agnostic and still useful. If a request seems to point back at x86-64/Option A, flag it first.
+
 Goal: run HEIDENHAIN's **TNC640 programming station** (PGM-Platz Virtual, all-i386 control)
-on **Linux** (done) and **Apple-Silicon ARM64** (in progress). Background + measured findings:
+on **Apple-Silicon ARM64** — **NATIVELY via FEX + the heroscall emulator (Track B)**, to the real
+Qt MMI. (x86-64 Linux under VirtualBox = already done, NOT the focus.) Background + measured findings:
 `docs/` (start with `02-architecture.md`, `15-apple-silicon.md`, `16-arm64-decompilation-and-translation.md`).
 
 Working environment (Apple Silicon M2 Max):
@@ -178,7 +189,9 @@ Gotchas: do all patchelf NEEDED edits in ONE invocation (repeated calls corrupt 
 
 ---
 
-## OPTION A (TRACK A) — native host control suite on a hypervisor (the route to a USABLE control)
+## OPTION A (TRACK A) — ⚠️ DEPRIORITIZED (already done; NOT the focus — see STRATEGIC FOCUS banner at top)
+> Kept for reference + the track-agnostic handwheel/JHIO protocol RE. The x86-64 hypervisor path is
+> complete (docs 11) and is **not** pursued further; the focus is Track B (ARM64-native, below).
 Option A = run the **stock x86-64 HeROS5 guest** in a hypervisor (VirtualBox on an x86-64 Linux
 host; the real NC SW boots natively → NO i386 translation, NO config #6, the SIK/productid come
 from the real flashed install/demo) and reimplement the **Windows Qt host control suite** natively
