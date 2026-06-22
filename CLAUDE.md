@@ -261,11 +261,20 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   **encfs-mounts an ENCRYPTED subdir** there: `encdir: Create directory failed ... /mnt/sys/config/jh_int` +
   `sh: encfs: not found` + `umount: /mnt/sys/config/jh_int`. So the config dir is an **encfs (encrypted
   filesystem) mount** the control sets up at startup — standalone it fails (encfs not installed; /mnt/sys→
-  sysroot is READ-ONLY so encdir can't create jh_int; jh_int needs the OEM key). Tested /mnt/sys symlink +
-  SYS=/mnt/sys + volumes→/mnt/sys: tnc.cfg STILL not opened. This is the documented FUSE-backend layer, now
-  concrete. NEXT (substantial): writable `/mnt/sys/config` (tmpfs/copy) + install `encfs` + OEM key, OR stub
-  the `encdir` so the plaintext config loads. (Transport confirmed: ConfigServer answers IPO's GetData; the
-  connect, blocker #5, is solid.)
+  sysroot is READ-ONLY so encdir can't create jh_int; jh_int needs the OEM key). **IMPLEMENTED**
+  `emulator/setup_config_env.sh` (install encfs 1.9.5 + writable `/mnt/sys/config` + colon-form volumes→
+  `/mnt/sys`). RESULT: encfs is a RED HERRING — jh_int is OEM-secret storage and tnc.cfg is PLAINTEXT; the
+  encdir mount still fails under qemu (FUSE/`unshare`) but non-fatally. ★ DECISIVE host-strace
+  (`-e openat,newfstatat,statx,access`): ConfigServer NEVER opens OR STATS tnc.cfg or any data `.cfg/.atr`
+  (0 touched). So `PrepareFile/IsAFile` is never reached ⇒ CfgStore per-layer registration is EMPTY
+  (`CntDataFiles=0`) ⇒ `ReadDataFiles` skips every file. jhconfigfiles.cfg IS parsed (2736B) but
+  `SetupDirInfo→CfgStore::DataFile` registers nothing for the layer; the 4380B config ConfigServer
+  broadcasts comes from a CACHE (`/tmp/CBIOS_MAPPED_FILE_REV_200`), not the files. So the real gate is the
+  per-layer data-file REGISTRATION, very likely gated on the absent runtime productid cache
+  (`/mnt/sys/cache/nckern/productid/*.conf`, ENOENT — controlmark/ncstate select the config variant/layer).
+  NEXT: RE `SetupDirInfo@0x2a2a60`/`ReadConfigDataDir@0x2150a0` (why DataFile registers nothing for "Nc")
+  + provide/generate the productid cache. Blocker #6 = the multi-component config subsystem (productid +
+  cache + per-layer registration + FUSE), a documented frontier. (Connect, blocker #5, fully solid.)
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
