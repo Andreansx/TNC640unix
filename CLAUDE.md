@@ -797,7 +797,7 @@ BOOT-CHAIN SERVER SWEEP (this session) — heuserver methodology applied across 
 | svc | order | result |
 |---|---|---|
 | dbus | S20 | **UP** — binds system bus socket, clean (standard daemon) |
-| heros-auth-daemon | S23 | loads+inits under FEX (Qt5/protobuf/FUSE closure works), stops standalone (FUSE/serve-cond) |
+| heros-auth-daemon | S23 | **UP** (after FUSE win) — 2 FUSE mounts (certs + token fs) + binds srv_socket; needed the real daemon.conf |
 | hessrv | S40 | device blocker SOLVED (memfd /dev/JHncmem), then **SIK/license boundary** |
 | mbus | S60 | **hardware-gated** (FTDI serial / I/O-sim) — skip |
 | heuserver | S77 | **FULLY SOLVED** — binds+serves+auth+fexunmask (the deep win) |
@@ -814,11 +814,15 @@ correctly translates the whole FUSE protocol (i386 encfs forks fusermount → mo
 /dev/fuse fd via SCM_RIGHTS → encfs serves FUSE reqs over /dev/fuse) — qemu-user could NOT, FEX CAN.
 Recipe: control's i386 encfs+fusermount+closure (libfuse/libssl/librlog/...) in $R; mount-ns as root with
 /dev/fuse present; `printf pass | FEXInterpreter encfs --standard -S -f <src> <mnt>` (fusermount in PATH).
-⇒ UNBLOCKS: (1) **heros-auth-daemon**'s FUSE token-mount (re-test it — FUSE was the likely stop cause);
-(2) the **ConfigServer encfs config store** (blocker #6: `/mnt/sys/config/jh_int` is an encfs mount the
-control sets up at startup; the tracker's "encfs fails under qemu / FUSE/unshare" sub-blocker is now
-removed under FEX — the remaining config gates were productid/layer/SIK, not FUSE). NEXT (one-by-one):
-re-test heros-auth-daemon with FUSE working → then the config store under FEX.
+⇒ UNBLOCKS: (1) **heros-auth-daemon — NOW UP** (FUSE win applied): with the real daemon.conf (the empty one
+gave "No daemon section" → no socket), it FUSE-mounts BOTH `/run/auth_daemon/certs` (cert store) and
+`/run/auth_daemon/fs_mount` (token fs) and binds its `auth-daemon-srv.sock` (a unix DATAGRAM socket). The
+[plugin_schlegel]/[plugin_eks] sections are HARDWARE RFID/key-switch readers (/dev/schlegel_rfid,
+/dev/euchner_eks0) — optional, omitted (degrade w/o hardware). So 3 servers now run under FEX: dbus(S20),
+auth-daemon(S23), heuserver(S77). (2) the **ConfigServer encfs config store** (blocker #6: `/mnt/sys/config/
+jh_int` is an encfs mount; the "encfs fails under qemu / FUSE-unshare" sub-blocker is removed under FEX — the
+remaining config gates were productid/layer/SIK, not FUSE). NEXT (one-by-one): the config store under FEX, or
+AppStartMP (integration: heuserver+dbus+auth-daemon are now up).
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
 refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
