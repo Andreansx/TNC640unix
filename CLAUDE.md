@@ -435,6 +435,29 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   config-init step. Chain pinned end-to-end: ReadConfigDataSet→ReadConfigDataDir→ReadDir→PathName→
   RetrieveLayer(EMPTY)→IsAFile=false→loop skipped. NEXT: find `DataStore::AddLayer`'s caller + what populates
   the layer. (Method: base stable per identical-setup → `-d in_asm -dfilter` traces are viable.)
+  ★★★ CONTROL-MARK VALUE RESOLVED (2026-06-23, the tracker's open "control-mark VALUE" question) — but
+  NECESSARY-NOT-SUFFICIENT for the layers. Disassembled `OptionLib::GetOptionTable(CfgControlMark,SikGeneration)`
+  @libOptions.so 0x19470: for **SikGeneration==0** (the demo/no-dongle path) it does `idx = controlmark - 6`,
+  bounds-checks `idx<=0x15`, and jumps a 22-entry table (vaddr 0x6500c) to an in-code `OptionBuilder::GetOptionTable*`.
+  Decoded the table: **controlmark `0x10`(16) → `GetOptionTableTnc640`** (Tnc620=0x0e, Tnc128=6, Tnc320=7,
+  ManualPlus620=0x0b, CncPilot640=0x0c, Pnc610=0x14, …); **controlmark `0`** (what EVERY prior session wrote!)
+  → `idx = 0-6` underflows → `>0x15` → **`GetOptionTableNone` = EMPTY option table** = the exact empty-layer
+  symptom. So the *option table* is BUILT IN CODE from the control-mark — **NO dongle/SIK challenge** needed for
+  the table STRUCTURE (the SIK only gates which individual options are *licensed*); this is the legitimate demo
+  path. Set `controlmark.conf=16` + traced ConfigServer under FEX (`emulator/trace_cfgload.sh`, INJECT_REREAD on):
+  ConfigServer **reads all 5 productid confs** (controlmark=16 consumed) and now **descends into `jh_int/layout`**
+  (O_DIRECTORY) — BUT still opens **0 data .cfg/.atr** and IPO still fails `-k=NC`. ⇒ DECISIVE: the DataStore
+  **layer population is INDEPENDENT of the option table** (controlmark=16 builds the OptionDef but does NOT fill
+  `dataCollection`'s layer Rb_trees — `DataStore::FindLayer@0x249150`/`GetDataLayer` read `dataCollection[act*0x6c+4]`,
+  populated elsewhere). So the tracker's hypothesis "control-mark→GetOptionTable→layers" is REFUTED for the file
+  layers: controlmark=16 is necessary (correct option table, productid read, jh_int/layout descended) but the
+  empty-layer gate is a SEPARATE mechanism. Also confirmed: ConfigServer's `encDir` tries to encfs-mount jh_int
+  and FAILS (`error encfs: 1` — encfs/fusermount not on its PATH in this run) then continues, reading jh_int as a
+  plain dir; populating jh_int flat (65 cfg/atr + layout) did NOT change the 0-data-opens result (the gate is the
+  empty DataStore layer-array, not file presence). Ghidra's decomp of `CfgStore::DataFile`/`ReadConfigDataDir` is
+  exception-`.cold`-garbled (unusable); the layer-creator must be found via runtime trace. NEXT (the real, still-open
+  gate): who inserts into `dataCollection`'s layer Rb_tree (`_M_insert_unique<Lyr::LayerNr>`@0x1509e0) — likely a
+  config-init/per-client step the standalone ConfigServer never reaches, i.e. the constellation per-client state.
   ★ PROGRESS: with the productid confs provided, ConfigServer NOW **stats 53 config files** in
   `/mnt/sys/config/jh_int` (`newfstatat` OK on `tnc.cfg`/`ChannelCfg.atr`/`GlobalSystemCfg.atr`/…) — so the
   productid genuinely unblocks the IsAFile/SetupDirInfo stating path (it WAS necessary). BUT they're STAT-ed,
