@@ -411,6 +411,17 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   qemu-system-x86_64 route boots all of it natively), not an incremental userspace-emulator step. Track B's
   proven reach: individual processes through RTOS/kernel init + connect + config frontier, and the
   orchestrator launching under X+WM. The full multi-process+GUI boot is the documented ceiling.
+  ★★★ DECISIVE BOUNDARY (empirical): tried to start `heuserver -d` (the user/login server AppStartMP's
+  heuseradmin needs). It CRASHES qemu-user: `ERROR:accel/tcg/cpu-exec.c:515: assertion failed:
+  (cpu == current_cpu)` — a qemu-USER limitation (its per-process threading/signal model), and it also
+  needs to write system files (`/etc/security/group.conf`). So the HeROS SYSTEM SERVICES cannot run under
+  per-process qemu-user at all. The init.d boot is ~40+ services (dbus, heros, heros-auth-daemon, hessrv,
+  heuinput, heuseradmin, … then applaunch→AppStartMP). ⇒ PROVEN: the full constellation boot requires
+  FULL-SYSTEM emulation (`qemu-system-x86_64`, a real kernel running the whole HeROS Linux), NOT the
+  userspace qemu-user + heroscall-emulator approach. Track B (userspace) definitively reaches: individual
+  COMPUTE processes (NCK/ConfigServer) through RTOS/kernel init + connect + config frontier, and AppStartMP
+  launching under X+WM — but the SYSTEM SERVICES + GUI boot are a full-system-emulation concern. This is the
+  empirically-proven boundary between Track B (userspace) and the full-system route.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
