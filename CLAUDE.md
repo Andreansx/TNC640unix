@@ -400,6 +400,17 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   init + connect + the config frontier, and the orchestrator AppStartMP RUNS on ARM64 (Xvfb+openbox) and
   spawns the constellation — but booting all 92 + the Qt MMI is the full-system path, not an incremental
   emulator step. This is the genuine, mapped endpoint of Track B.
+  ★ BOOT-ORDER dependency confirmed empirically: binfmt_misc IS registered+enabled for qemu-i386 (flags POF,
+  /usr/bin/qemu-i386), so i386 children auto-launch under qemu (set `QEMU_LD_PREFIX=$rootfs` so they find the
+  sysroot). With Xvfb+openbox+binfmt, AppStartMP forks `heuseradmin`, which STALLS on `Cannot connect to
+  stream socket: Connection refused` — it needs **`heuserver`** (`$rootfs/usr/sbin/heuserver`, the HeROS
+  user/login server), a SYSTEM SERVICE the real boot starts via `/etc/init.d` BEFORE AppStartMP. So the full
+  boot = the HeROS init scripts + system services (heuserver, message bus, …) + AppStartMP + the 92-process
+  constellation + the Qt MMI — i.e. replicating the ENTIRE HeROS boot process-by-process under qemu-user,
+  each service gating the next down to HrMmi.elf. That is definitively the full-system path (the documented
+  qemu-system-x86_64 route boots all of it natively), not an incremental userspace-emulator step. Track B's
+  proven reach: individual processes through RTOS/kernel init + connect + config frontier, and the
+  orchestrator launching under X+WM. The full multi-process+GUI boot is the documented ceiling.
 - Fallback that works today: full-system `qemu-system-x86_64`/UTM (real heros.ko loads) — doc 16 §6.
 
 ### Reproduce
