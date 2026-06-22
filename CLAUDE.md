@@ -243,12 +243,26 @@ for UNIX/macOS. This is the more promising path to a *fully usable* control. Sta
     transfers on GetHeader/GetBlock/PutBlock; cycle lockstep via Signal/WaitForSimCycleDone. doc 18 §1.3/§3
     updated; `jhio/jhioproto.py` gains pack_request/unpack_response. Remaining for a working host I/O-sim:
     the exact opcode↔name map (jump-table disasm) + the per-cycle client + a machine I/O model.
-- **NEXT (Track A):** RE the JHIO cFcnId jump table (opcode↔_JHIOIntern* map) → build the host I/O-sim
-  RPC client (GetHeader → live machine-I/O map → per-cycle GetBlock/PutBlock + cycle handshake +
-  minimal "control-ready" model) → then operating modes + the handwheel jog-motion end-to-end; native
-  handwheel GUI. Recovery: VM `TNC640` on yeen is installed+flashed (no reinstall); `VBoxManage startvm
-  TNC640 --type headless`; ack Shareware with `keyboardputscancode 3b bb`. vmusr pw via guestproperty
-  but guest sshd is publickey-only. Screenshots: `VBoxManage controlvm TNC640 screenshotpng`.
+  • **cFcnId opcode map RECOVERED** (from `fcn_id_to_str`): INTERN_INIT 0x0a, SET_PLC_RUN_MODE 0x0b,
+    GET_HEADER 0x0c, GET_BLOCK 0x0d, PUT_BLOCK 0x0e, GET_BASE_OFFSET 0x0f, IS_SIM_RUNNING 0x11,
+    SET_CTRL_READY 0x12, GET_SIM_ID 0x13, WAIT_SIM_CYCLE_DONE 0x14, SIG_PLC_CYCLE_DONE 0x15,
+    GET_DATASIZE 0x18, GET_HEADERSIZE 0x19, CLEAR_PUTBLOCKS 0x1a. Request magic = `"JHIO"`(0x4f49484a).
+  • **Live RPC probe (128 tries) NEVER answered** — the guest's per-connection handler (`accept_client`
+    → callback → close) does NOT reply to an unsolicited GET_* from a passive client. So the live
+    exchange needs the correct **host-side role** (host = the I/O peer the PLC drives, + session/cycle
+    handshake) = a real host I/O-sim, not a passive requester.
+  • **★ Operational finding:** `IOSIM/Network=on` but NO host I/O-sim peer ⇒ the control **cleanly
+    powers off ~3 min after boot** (PLC requires its net I/O peer; VBox.log clean PoweredOff, no crash).
+    `IOSIM/Network=off` ⇒ control **stable** in demo/Programming mode (programming station works; no
+    19009 server). Stable config = network-off.
+- **NEXT (Track A):** build the host I/O-sim = the guest's network I/O PEER (answer the guest's RPC
+  in the right role: serve GET_BLOCK / accept PUT_BLOCK, GetHeader → the live machine-I/O map, drive
+  SIG/WAIT cycle handshake, assert SET_CTRL_READY) — this both keeps the control up under network mode
+  AND unlocks the operating modes + the handwheel jog-motion end-to-end; then a native handwheel GUI.
+  Recovery: VM `TNC640` on yeen is installed+flashed (no reinstall) — `VBoxManage startvm TNC640
+  --type headless`; ack Shareware `keyboardputscancode 3b bb`; **keep IOSIM/Network OFF for a stable
+  programming station**. vmusr pw is in guestproperty but guest sshd is publickey-only. Stop:
+  `VBoxManage controlvm TNC640 poweroff`. Screenshots: `VBoxManage controlvm TNC640 screenshotpng`.
 
 ## TRANSLATION PORT ROADMAP (current focus — option B: run unmodified i386 control on native ARM64)
 

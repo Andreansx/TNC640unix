@@ -277,6 +277,18 @@ port-forwards (19035/19009/5900/2222) + shared folders → stage `setup.zip` →
   `/HEIDENHAIN/IOSIM/Network=on`, 19009 is an **active listener that returns nothing to a passive
   `recv` and closes a raw 740-byte push** — because it expects an **RPC request first** (§1.3). This
   live behaviour is what corrected the model from "passive header push" to the request/response RPC.
+- **JHIO live, deeper (128-try probe):** sending well-formed RPC requests (correct `"JHIO"` magic +
+  the recovered opcodes, read-only `GET_HEADERSIZE`/`GET_HEADER`/…) to the live 19009 **was never
+  answered** — the guest's per-connection handler (`accept_client` → handler callback → close) does
+  not reply to an unsolicited `GET_*` from a passive client. So the live exchange needs the correct
+  **host-side role** (the host as the I/O *peer* the guest's PLC drives/queries, plus the session/
+  cycle handshake), i.e. a real **host I/O-sim**, not a passive requester.
+- **★ Operational finding:** with `IOSIM/Network=on` **but no host I/O-sim peer connected, the
+  control cleanly powers itself off ~3 min after boot** (VBox.log: "Machine state changed to
+  PoweredOff", no crash) — the PLC requires its network I/O peer. With **`IOSIM/Network=off`** the
+  control is **stable** in demo/Programming mode (no 19009 server, but the programming station works).
+  ⇒ the stable "programming station" config is network-off; bringing up the operating modes needs the
+  host I/O-sim (which both satisfies the PLC peer and drives the handwheel jog) — the next build.
 - Probes used: `handwheel/hr_probe.py`, `jhio/jhio_probe.py` (host-side via the NAT forwards).
 
 **Net:** the platform path is proven (real control runs natively on x86-64 Linux + KVM); keypad is
