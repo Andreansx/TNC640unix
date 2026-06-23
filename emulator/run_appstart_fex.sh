@@ -52,10 +52,11 @@ fi'
 echo "=== [2] FEX config + writable SYS (AppStartMP writes SYS\\runtime) + clean shm ==="
 sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo tee /root/.fex-emu/Config.json >/dev/null
 # p_create FEX-spawn: the i386 guest execve("/usr/bin/FEXInterpreter") is rootfs-prefixed by FEX to
-# $R/usr/bin/FEXInterpreter -> must exist (symlink to the native FEXInterpreter) so the spawned subsystem
-# (winmgr) launches under a fresh FEXInterpreter (native exec, no i386-re-wrap stall).
-FEXBIN=$(command -v FEXInterpreter); sudo mkdir -p "$R/usr/bin"; sudo ln -sf "$FEXBIN" "$R/usr/bin/FEXInterpreter"
-echo "  FEXInterpreter symlink: $R/usr/bin/FEXInterpreter -> $FEXBIN"
+# $R/usr/bin/FEXInterpreter; a SYMLINK there made FEX loop (symlink -> /usr/bin/FEXInterpreter -> re-prefix).
+# REMOVE it so FEX falls back to the REAL native /usr/bin/FEXInterpreter on rootfs-ENOENT (the same fallback
+# that lets the cat/grep helper forks exec). The spawned winmgr then runs under a fresh native FEXInterpreter.
+FEXBIN=$(command -v FEXInterpreter); sudo rm -f "$R/usr/bin/FEXInterpreter" 2>/dev/null
+echo "  FEXInterpreter: rely on FEX rootfs-ENOENT fallback to $FEXBIN (no rootfs symlink)"
 # Writable SYS mirror: real config/batch (RO source) + a writable runtime. AppStartMP reads
 # SYS:\config\*.cfg + SYS:\batch\TNC640heros.txt and writes SYS:\runtime\AppStartFinishCounter.txt.
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
