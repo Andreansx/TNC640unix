@@ -1148,6 +1148,33 @@ HrMmi Qt render under FEX). The GOAL was reached via the yeen full-system route 
 Tooling: `heros_rtos.c` EV_INJECT knob; `run_appstart_fex.sh` (now with cfgfix on ConfigServer + cm=16 + the
 /mnt/sys|plc/config staging).
 
+★★★★★ GUI RENDERS — the real TNC640 "Startup Status" boot window draws LIVE under FEX-native ARM64
+(2026-06-24, after the /dev/events bridge fix). With the bridge (commit bf0b579), AppStartMP's logo thread
+t108 wakes on its queue notifies, drains the logo queue, connects to X (Xvfb :99), fully inits Xlib (fonts
+NotoSansMono/urw-base35 + CJK cmaps + theme tnc640_theme.xrs.zip), and **DRAWS the "Startup Status" splash
+window** (title bar + progress bar + window controls, decorated by openbox) — verified by an Xvfb screenshot
+(`import -window root`; the run script now screenshots at +70/90/110s). This is the FIRST real TNC640 GUI
+rendered via the FEX-native userspace path (NOT the yeen VirtualBox route). The render is genuine (50 writev
+to the X socket, 97 ppoll, bounded — not a busy-loop).
+★ NEXT GATE precisely mapped (the boot sequencer, idalib RE of AppStartMP.elf): `Monitor::Start@0x3b950`
+posts an `FmCallProcedure` → the **Procedures module runs the batch `TNC640heros.txt`** (the 30-subsystem/
+92-process constellation def; FIRST entries = config FmCommandLineOptions for jh.cfg/product.cfg/tnc.cfg, then
+FmLoadSubsystem `winmgr` → `%EXECDIRH%/winmgr.elf`, then SkManager…). The chain (FChainModule: action flows
+via FlushWorkspace through Monitor→Procedures→Config→Subsystems→Progress→LogoLink→EndOfChain) emits
+FmLoadSubsystem; `Subsystems::OnMessage` registers the processes in `AppStart::Processes`; `Monitor::OnEvent@
+0x3d6d0` runs `ScanChildStat@0x3c8b0` (the spawn engine: `if GetNumberOfProcesses()!=0 while(1){ GetProcess
+State → emit FmSubsystemAction(5/6) }` → fork+execve) on a `NEXT_CHILDSTAT`/`CREATE_VOID_SUBSYSTEM` event.
+DECISIVE runtime finding (VERBOSE): AppStartMP (task t106) renders, then loops `Ev_receive(0x01009007,poll)
+→ Q_read → Q_send(52B) → Q_ident` against **CfgServerQueue** = the **config-READ phase** (reading its startup
+config jh/product/tnc.cfg via the GetData round-trip), then blocks `Ev_receive(0x01019007,forever)` — it
+**NEVER reaches the winmgr FmLoadSubsystem** (execve=0, no Tm_ timers). ⇒ the current gate is the **config-DATA
+round-trip for AppStartMP's OWN startup config** (the SAME frontier as config #6 / IPO's -k=NC, now for
+AppStartMP) — ConfigServer must fully serve AppStartMP's GetData requests so the chain advances to the spawn.
+Beyond that lies the constellation spawn (winmgr.elf → 91 more procs, each its own FEX+heros_rtos → HrMmi) =
+the documented full-system ceiling. Tooling: idalib (`scratchpad/idalibvenv` + `work/re/scripts/idadecompile.py`)
+cleanly decompiles AppStartMP.elf where Ghidra's exception-`.cold` split garbled it. Run: `run_appstart_fex.sh`
+(HSTRACE + Xvfb screenshots).
+
 ★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
 the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
 @0x606b0`: it looks up the subsystem by name (+12), reads its process-LIST size (+72); if the list is

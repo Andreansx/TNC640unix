@@ -167,7 +167,7 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 240 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
+timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=execve,connect,clone,fork,vfork -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
@@ -178,7 +178,12 @@ pkill -KILL -x FEXInterpreter 2>/dev/null
 EOF
 
 echo "=== [5] run (contained) ==="
+# Screenshot Xvfb :99 at a few timepoints to SEE the logo render (Xvfb + import are outside the ns).
+rm -f /tmp/logo_*.png
+( sleep 70; for t in 70 90 110; do DISPLAY=$DISP import -window root /tmp/logo_$t.png 2>/dev/null && echo "  [shot] /tmp/logo_$t.png"; sleep 20; done ) &
+SHOTPID=$!
 sudo unshare -m bash -c "$NSCMD" >"$LOG" 2>&1
+kill $SHOTPID 2>/dev/null
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; kill $XVFB $OB 2>/dev/null; sudo pkill -x Xvfb 2>/dev/null; sudo pkill -x openbox 2>/dev/null
 
 echo "=== [6] guard: real /etc unchanged? ==="
