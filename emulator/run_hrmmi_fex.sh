@@ -28,8 +28,9 @@ ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bi
 sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid
 sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
-for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
-sudo chmod -R a+rX /mnt/sys/config /mnt/plc/config /mnt/sys/cache
+if [ "${SKIP_PRODUCTID:-0}" = 1 ]; then sudo rm -rf /mnt/sys/cache/nckern/productid; echo "  productid SKIPPED (testing the free()-crash hypothesis)";
+else for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done; fi
+sudo chmod -R a+rX /mnt/sys/config /mnt/plc/config 2>/dev/null; sudo chmod -R a+rX /mnt/sys/cache 2>/dev/null
 
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sudo pkill -x Xvfb 2>/dev/null; sudo pkill -x openbox 2>/dev/null; sleep 1
 sudo rm -f /dev/shm/heros_rtos_ctl /dev/shm/heros_reg_* /dev/shm/_heusrv_shm 2>/dev/null
