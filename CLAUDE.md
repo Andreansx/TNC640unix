@@ -1224,9 +1224,16 @@ logo/Q_WMGRMSG/CfgM queues; NO Subsystems/Processes/Procedures module queues), a
 `Ev_receive(0x01019007)` for the logo "displayed" confirm while t10d renders the "Startup Status" window + drains
 its logo queue but never signals t10b back. So the chain stalls at the **logo→AppStartMaster display-confirm
 handshake** BEFORE Procedures-runs-batch→FmLoadSubsystem→spawn = the documented GUI-render ceiling (NOT config —
-config is now fully served). EV_INJECT/EV_FORCE of t10b's 0x10000 bit did not advance it. Precise next levers:
-inject the logo's FmProgressNotify confirm onto AppStartMaster's queue (INJECT_ACK-style), or complete the X
-MapNotify/Expose→confirm cycle. Run: `run_appstart_fex.sh`; diag (openat traces) in `scratchpad/run_appstart_diag.sh`.
+config is now fully served). EV_INJECT/EV_FORCE of t10b's 0x10000 bit did not advance it (bit-injection ≠ the actual chain message). A 260s
+run CONFIRMS it is a HARD deadlock, NOT a watchdog-escapable stall: t10b's `Ev_receive(0x01019007)` is INFINITE
+(to=inf, no timeout), it is only ever woken by the `0x1000` logo ping-pong (caught 0x00001000), and it never
+advances — 0 Tm_ timers, 0 winmgr execve even at 260s. `AppStart::LogoLink::OnMessage(FmProgressNotify)@0x20c50`
+is the AppStartMaster-side consumer: a VALID FmProgressNotify (`IsValid(+64)` && `*(+72)!=0`) → FlushWorkspace
+(chain advances); an invalid one → it re-posts FmLogoStartup (retry). So the precise next lever = inject a VALID
+FmProgressNotify into AppStartMaster's chain (INJECT_ACK-style — needs the msg id/schema + target queue), or make
+the logo's PWaitableDisplay (X MapNotify/Expose) fire its "displayed" confirm. Both are the documented GUI-render
+ceiling (the reason the live MMI was reached via yeen). Run: `run_appstart_fex.sh`; diags in
+`scratchpad/run_appstart_{diag,inject,force,long}.sh`.
 
 ★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
 the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
