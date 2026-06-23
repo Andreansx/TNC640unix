@@ -43,9 +43,10 @@ echo "  X socket: $(ls /tmp/.X11-unix/ 2>/dev/null)"
 GUARD=$(md5sum /etc/passwd|awk '{print $1}')
 sudo rm -f /tmp/hrmmi_cfgsrv.log /tmp/hrmmi.log /tmp/hrmmi_strace.log
 sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/tmp/b EXECDIR=/tmp/b EXECBAT=/mnt/sys/batch/heros5 \
+  NO_FOUNDATION="${NO_FOUNDATION:-0}" REREAD="${REREAD:-1}" \
   SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC: CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ DISP="$DISP" \
   HEROSCALL_VERBOSE=1 HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 HEROSCALL_TIMERS=1 \
-  HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
+  HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_REREAD="${REREAD:-1}" HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
   LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0; mount --make-rprivate /; mount --bind "$R/etc" /etc
