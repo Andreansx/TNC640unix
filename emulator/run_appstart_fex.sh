@@ -28,7 +28,7 @@ echo "=== [1] rebuild preloads + AppStartMP closure ==="
 for s in arena_stub; do $CC -shared -fPIC -O2 -Wl,--version-script="$EMU/arena.map" -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
-$CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" -ldl 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix
+$CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
 # Copy AppStartMP's i386 closure into the rootfs (cp -aL; overlaps the IPO/ConfigServer closure mostly).
 sudo bash -c '
 SRC=/Users/andreansx/Documents/TNC640unix/work/target/rootfs; R='"$R"'
@@ -138,7 +138,7 @@ echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer Ap
 # ConfigServer must be task 0x100 (its hardcoded run-up); it starts BEFORE AppStartMP so it owns the
 # real CfgServerQueue (not an AppStartMP black-hole). Then AppStartMP's config query reaches it (+INJECT_ACK).
 ( timeout -s KILL 300 env LD_PRELOAD=/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-    CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ \
+    CFGFIX_SYS=/tmp/s/:/mnt/sys/ CFGFIX_OEM=/tmp/o/:/mnt/plc/ CFGFIX_DEBUG=1 \
     FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver \
     -f=/tmp/s/config/jhconfigfiles.cfg -i=Nc 2>&1 | head -c 60000000 > /tmp/a_cfgsrv.log ) &
 i=0; while [ \$i -lt 120 ]; do grep -q "HWS stub: replied" /tmp/a_cfgsrv.log 2>/dev/null && break; sleep 0.5; i=\$((i+1)); done
