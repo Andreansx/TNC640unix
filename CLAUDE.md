@@ -10,9 +10,22 @@
 > yeen` + `open vnc://127.0.0.1:5910`) and **driven from the Mac with the native-keypad VBox scancodes**
 > (`keyboardputscancode`: F1/OK=`3b bb` dismisses the Shareware demo dialog→Programming; **CE=`53 d3`** clears
 > "Power interrupted"→initialize→Manual operation). Set `/HEIDENHAIN/IOSIM/Network off` for stability. Full
-> recipe in memory `project-mmi-live-on-mac-via-yeen`. The PURE-ARM64-native (FEX) MMI is still open — finish
-> it by HARVESTING this yeen boot's runtime config/layer state (arch-independent data) into the FEX-native
-> ConfigServer to break config #6.
+> recipe in memory `project-mmi-live-on-mac-via-yeen`.
+>
+> ★ GUEST-ROOT HARVEST (2026-06-23, via offline SSH-key injection into the VMDK; full recipe in the memory):
+> got root inside the running HeROS5 guest and observed the real constellation. FINDINGS: (1) real productid
+> `controlmark=16` (confirmed), `virtualmachine=1`, `ncstate=1` (I'd guessed 0/3); (2) **`_jh_int` is EMPTY even
+> on the real booted control** — the encfs config store is a RED HERRING (ConfigServer reads the plaintext
+> `/mnt/sys/config/*.cfg` directly; my Mac encfs-populate experiment chased a non-issue); (3) the constellation
+> uses **channel-group process naming** (`Server:Server/cfgserver`, `Nc:Nc/IPO`, `Nc:Nc/hrmmi`, `Nc:Nc/plc`;
+> AppStartMP rewrites batch `~/cfgserver`→`Server:Server/cfgserver`) — the Mac FEX runs used ad-hoc `~/IPO`
+> names with no channel-group context; (4) CBIOS file = 25-byte marker, NOT the served config; (5) **HrMmi.elf
+> is PID 9469, one node in a ~92-process REAL-TIME constellation on the real RT kernel `5.2.21-rt15-yocto-heros5`**,
+> NOT a standalone process — config #6's layer registration is baked into that coordinated RT boot. ⇒ CONFIRMED:
+> the FEX-native MMI = reproducing the whole 92-proc RT constellation + heros.ko semantics under per-process
+> userspace emulation = the documented genuine ceiling. The harvest is real config-#6 progress (productid
+> corrected, encfs red herring killed, naming structure found) but does not make the full constellation feasible
+> under FEX.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
