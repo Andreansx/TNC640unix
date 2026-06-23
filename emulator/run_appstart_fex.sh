@@ -139,6 +139,7 @@ echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer Ap
 # real CfgServerQueue (not an AppStartMP black-hole). Then AppStartMP's config query reaches it (+INJECT_ACK).
 ( timeout -s KILL 300 env LD_PRELOAD=/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
     CFGFIX_SYS=/tmp/s/:/mnt/sys/ CFGFIX_OEM=/tmp/o/:/mnt/plc/ CFGFIX_DEBUG=1 \
+    HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 \
     FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver \
     -f=/tmp/s/config/jhconfigfiles.cfg -i=Nc 2>&1 | head -c 60000000 > /tmp/a_cfgsrv.log ) &
 i=0; while [ \$i -lt 120 ]; do grep -q "HWS stub: replied" /tmp/a_cfgsrv.log 2>/dev/null && break; sleep 0.5; i=\$((i+1)); done

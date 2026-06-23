@@ -235,6 +235,7 @@ static void mono_now(struct timespec *ts){ ts->tv_sec=0; ts->tv_nsec=0; raw5(265
  * the config-data #6 frontier). Gated off by default. */
 static int ev_unblock_ms=-2;
 static volatile int runup_done=0;        /* set when run-up complete (HWS stub OR serve-loop fallback) — fwd-declared here for ev_receive */
+static void post_inject_reread(void);    /* posts the synthetic UpdNewState that drives the full config-data load (defined after q_send) */
 /* HEROSCALL_EV_INJECT_WANT / _BIT: TARGETED event injection. Only the forever-wait whose want-mask
  * == EV_INJECT_WANT gets the synthetic unblock (others stay forever, undisturbed), and it returns
  * ONLY (want & EV_INJECT_BIT) instead of the full want — so a single precise waitable bit is
@@ -252,9 +253,10 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
      * triggers the config-DATA load (ReadConfigDataSet → ReadDataFiles) never fires, so data-opens=0 and
      * ConfigServer never serves real config to a client (HrMmi). Treat reaching that forever serve-loop
      * wait as run-up-complete. (Process-local; harmless for non-ConfigServer procs.) */
-    if(!runup_done && want==0x01011000 && timeout==0xffffffff){
+    if(!runup_done && timeout==0xffffffff && (want & 0x01010000u)==0x01010000u){  /* forever serve-loop wait (own 0x10000 + CfgServerQueue 0x01000000) */
         __atomic_store_n(&runup_done,1,__ATOMIC_RELEASE);
         fprintf(stderr,"[rtos] RUNUP_COMPLETE pid=%d (serve-loop fallback; no HWS stub)\n",(int)getpid()); fflush(stderr);
+        post_inject_reread();   /* drive the full config-DATA load (tnc.cfg/channel.cfg) on this path too */
     }
     /* HEROSCALL_EV_FORCE_TASK/_BIT: for one specific task, make any Ev_receive that wants the
      * force-bit return it immediately (no block) — breaks the FModule startup-handshake deadlock
@@ -721,23 +723,28 @@ static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
      * NOT the initial load — ReadDataFiles' callers are ReadConfigDataSet, reached via OnUpdNewState.)
      * Posting at run-up loads the config BEFORE IPO connects+queries. Needs /etc/jhvolume colon-form
      * so the "SYS:\config\..." paths resolve. UpdNewState wire = the proven v2 schema (id 0x1f0320). */
-    if(inject_reread && !reread_injected){
-        int cs=q_find_slot("CfgServerQueue");
-        if(cs>=0){
-            reread_injected=1;
-            static const uint8_t upd[]={
-                0x20,0x03,0x1f,0x00,                                   /* header 0x1f0320 = UpdNewState */
-                0xe7,0x00,0x00,0x00, 0x02,0x00,0x00,0x00, 0x4e,0x63,   /* field0 GMsgString "Nc" (layer) */
-                0x63,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80, 0x0b,0x03,0x1f,0x80,
-                0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80,
-                0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80,
-                0xc6,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80                /* markers to match the ~12-field schema */
-            };
-            uint32_t qid=C->queues[cs].id;
-            q_send(qid,upd,(uint32_t)sizeof upd,0);
-            LOG("INJECT_REREAD: posted UpdNewState to CfgServerQueue (0x%x) -> ReadConfigDataSet loads config\n",qid);
-        }
-    }
+    post_inject_reread();
+}
+/* Post the synthetic UpdNewState (id 0x1f0320, "Nc" layer) onto CfgServerQueue so ConfigServer's
+ * OnUpdNewState → ReadConfigDataSet → ReadDataFiles loads the FULL config DATA (tnc.cfg → the "NC"
+ * channel group, channel.cfg, …) — the cascade that the run-up alone leaves incomplete (indices +
+ * .atr only). Fired from BOTH run-up paths (the HWS stub AND the serve-loop fallback). Idempotent. */
+static void post_inject_reread(void){
+    if(!inject_reread || reread_injected) return;
+    int cs=q_find_slot("CfgServerQueue");
+    if(cs<0) return;
+    reread_injected=1;
+    static const uint8_t upd[]={
+        0x20,0x03,0x1f,0x00,                                   /* header 0x1f0320 = UpdNewState */
+        0xe7,0x00,0x00,0x00, 0x02,0x00,0x00,0x00, 0x4e,0x63,   /* field0 GMsgString "Nc" (layer) */
+        0x63,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80, 0x0b,0x03,0x1f,0x80,
+        0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80,
+        0xc6,0x00,0x00,0x80, 0xc6,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80,
+        0xc6,0x00,0x00,0x80, 0xe7,0x00,0x00,0x80                /* markers to match the ~12-field schema */
+    };
+    uint32_t qid=C->queues[cs].id;
+    q_send(qid,upd,(uint32_t)sizeof upd,0);
+    LOG("INJECT_REREAD: posted UpdNewState to CfgServerQueue (0x%x) -> ReadConfigDataSet loads config\n",qid);
 }
 /* INJECT_ACK: IPO sent CfgConnectClient(0x1700c0). Parse its reply-queue name (first GMsgString)
  * and post a synthetic CfgClientIsConnected(0x170100, success=OK) to it so IPO proceeds. */
