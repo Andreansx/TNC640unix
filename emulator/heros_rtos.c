@@ -907,9 +907,16 @@ static void inject_fmload_set(uint32_t qid){
         const char*pn = onep?onep:"~/winmgr";               /* RAW: Config ReplaceToken ~->localNS */
         const char*ip = one ?one :"/tmp/b/winmgr.elf";      /* pre-resolved (Config ConvertWithEnvVar leaves it) */
         uint32_t n;
-        n=gm_build_fmsubsystemaction(buf,0,nm,0);            /* action=0 REGISTER */
-        fprintf(stderr,"[rtos] INJECT_SUBSYS: FmSubsystemAction(register \"%s\") -> AppStartMaster(0x%x)\n",nm,qid);
-        dump_bytes("INJECT_SUBSYS reg",buf,n); q_send(qid,buf,n,0);
+        /* By default DO NOT pre-register: Procedures::OnMessageFromProcedure(FmLoadSubsystem)@0x4bdf0
+         * registers the subsystem itself (creates FmSubsystemAction) then forwards+explodes. A separate
+         * pre-register makes Procedures see it "already loaded" -> "...twice" error -> drops the load
+         * (no explode). HEROSCALL_INJECT_SUBSYS_REG=1 re-enables the explicit register. */
+        const char*reg=getenv("HEROSCALL_INJECT_SUBSYS_REG");
+        if(reg&&reg[0]=='1'){
+            n=gm_build_fmsubsystemaction(buf,0,nm,0);        /* action=0 REGISTER */
+            fprintf(stderr,"[rtos] INJECT_SUBSYS: FmSubsystemAction(register \"%s\") -> AppStartMaster(0x%x)\n",nm,qid);
+            dump_bytes("INJECT_SUBSYS reg",buf,n); q_send(qid,buf,n,0);
+        }
         n=gm_build_fmloadsubsystem(buf,nm,ns,pn,0,ip);       /* load: name,localNS,proc,cmdOpts=absent,image */
         fprintf(stderr,"[rtos] INJECT_SUBSYS: FmLoadSubsystem(\"%s\" proc=\"%s\" img=\"%s\") -> AppStartMaster(0x%x)\n",nm,pn,ip,qid);
         dump_bytes("INJECT_SUBSYS load",buf,n); q_send(qid,buf,n,0);
