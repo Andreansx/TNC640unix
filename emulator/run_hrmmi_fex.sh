@@ -30,7 +30,14 @@ sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
 if [ "${SKIP_PRODUCTID:-0}" = 1 ]; then sudo rm -rf /mnt/sys/cache/nckern/productid; echo "  productid SKIPPED (testing the free()-crash hypothesis)";
 else for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done; fi
-sudo chmod -R a+rX /mnt/sys/config /mnt/plc/config 2>/dev/null; sudo chmod -R a+rX /mnt/sys/cache 2>/dev/null
+sudo chmod -R a+rwX /mnt/sys/config /mnt/plc/config /mnt/sys/cache 2>/dev/null
+# no-op i386 encfs/fusermount shims (bypass the real encfs's ELFCLASS64 libfuse leak; jh_int is a red
+# herring, config is plaintext) — these eliminate the free():invalid-pointer crash in ConfigServer's encDir.
+printf "int main(void){return 0;}\n" > /tmp/noop.c; $CC -O2 -static -o /tmp/noop /tmp/noop.c 2>/dev/null
+[ -e $R/usr/bin/encfs.real ] || sudo cp -a $R/usr/bin/encfs $R/usr/bin/encfs.real 2>/dev/null
+[ -e $R/usr/bin/fusermount.real ] || sudo cp -a $R/usr/bin/fusermount $R/usr/bin/fusermount.real 2>/dev/null
+sudo cp /tmp/noop $R/usr/bin/encfs; sudo cp /tmp/noop $R/usr/bin/fusermount; sudo chmod 0755 $R/usr/bin/encfs $R/usr/bin/fusermount
+sudo mkdir -p /mnt/sys/config/jh_int; sudo cp -aL /mnt/sys/config/*.cfg /mnt/sys/config/*.atr /mnt/sys/config/layout /mnt/sys/config/jh_int/ 2>/dev/null; sudo chmod -R a+rwX /mnt/sys/config/jh_int 2>/dev/null
 
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sudo pkill -x Xvfb 2>/dev/null; sudo pkill -x openbox 2>/dev/null; sleep 1
 sudo rm -f /dev/shm/heros_rtos_ctl /dev/shm/heros_reg_* /dev/shm/_heusrv_shm 2>/dev/null
@@ -51,6 +58,8 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
   unshare -m bash -c '
     set -u; ulimit -c 0; mount --make-rprivate /; mount --bind "$R/etc" /etc
     export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu DISPLAY=$DISP HEROSROOT=$R/heros5
+    # (the i386 no-op encfs/fusermount shims in $R/usr/bin bypass the real encfs's ELFCLASS64 libfuse
+    #  leak — jh_int is a red herring, config is plaintext — so encDir succeeds without corrupting the heap)
     mkdir -p /etc/fonts; [ -e /etc/fonts/fonts.conf ] || printf "<?xml version=\"1.0\"?><fontconfig><dir>/usr/share/fonts</dir><cachedir>/tmp/fc</cachedir></fontconfig>" > /etc/fonts/fonts.conf
     cd /; ln -sfn /tmp/s "/%SYS%"; ln -sfn /tmp/o "/%OEM%"; ln -sfn /tmp/s "/%USR%"
     # foundation: heuserver (HrMmi auth, 19093) + dbus. heuserver writes /etc (contained by the bind).
@@ -64,7 +73,7 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
     LD_PRELOAD=/lib/herosapi_shim.so:/lib/renamefix.so:/lib/fexunmask.so FEXInterpreter $R/usr/sbin/heuserver >/tmp/hrmmi_heu.log 2>&1 & sleep 5
     echo "  heuserver listening: $( (ss -ltn 2>/dev/null||true) | grep -c :19093 )"; fi
     echo "### ConfigServer (bg, cfgfix) ###"
-    ( env HEROSCALL_VERBOSE=0 MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="$PRE" timeout -s KILL 150 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
+    ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE=0 MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="$PRE" timeout -s KILL 150 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
     echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 160 ]; do grep -q "RUNUP_COMPLETE" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer RUNUP_COMPLETE at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
     echo "  letting the INJECT_REREAD config-data load settle before HrMmi (avoid the race)..."; sleep 12
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) — the Qt/PLIB++ MMI ###"
