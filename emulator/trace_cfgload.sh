@@ -22,10 +22,11 @@ sudo rm -f /dev/shm/heros_rtos_ctl /dev/shm/heros_reg_* 2>/dev/null
 # productid cache (control-mark drives OptionLib::GetOptionTable -> which builder -> which layers)
 sudo mkdir -p /mnt/sys/cache/nckern/productid
 printf "%s\n" "$CM" | sudo tee /mnt/sys/cache/nckern/productid/controlmark.conf >/dev/null
-printf "1\n" | sudo tee /mnt/sys/cache/nckern/productid/exportversion.conf >/dev/null
-printf "3\n" | sudo tee /mnt/sys/cache/nckern/productid/ncstate.conf >/dev/null
+# REAL boot-generated values harvested from yeen's guest (controlmark=16, virtualmachine=1, ncstate=1)
+printf "0\n" | sudo tee /mnt/sys/cache/nckern/productid/exportversion.conf >/dev/null
+printf "1\n" | sudo tee /mnt/sys/cache/nckern/productid/ncstate.conf >/dev/null
 printf "1\n" | sudo tee /mnt/sys/cache/nckern/productid/progstationversion.conf >/dev/null
-printf "0\n" | sudo tee /mnt/sys/cache/nckern/productid/virtualmachine.conf >/dev/null
+printf "1\n" | sudo tee /mnt/sys/cache/nckern/productid/virtualmachine.conf >/dev/null
 sudo chmod -R a+r /mnt/sys/cache
 
 GUARD_BEFORE=$(md5sum /etc/passwd | awk '{print $1}')

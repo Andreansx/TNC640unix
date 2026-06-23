@@ -26,6 +26,18 @@
 > userspace emulation = the documented genuine ceiling. The harvest is real config-#6 progress (productid
 > corrected, encfs red herring killed, naming structure found) but does not make the full constellation feasible
 > under FEX.
+>
+> ★★ CONFIG #6 — EXHAUSTIVE A/B vs the real control (2026-06-23, guest boot-strace): the guest ConfigServer
+> (same args `-f=jhconfigfiles.cfg -i=Nc`) reads config PLAINTEXT: productid → jhconfigfiles.cfg(SYS) →
+> /mnt/plc/config/configfiles.cfg(OEM index) → update*.cfg → tnc.cfg + all .atr/.cfg (~107 opens across
+> /mnt/sys/config[57]+/mnt/plc/config[43]+/mnt/tnc[1]); jh_int only later for OEM secrets. The Mac standalone
+> ConfigServer reads jhconfigfiles.cfg then STOPS. Concrete Mac gaps FOUND+FIXED: (1) productid (controlmark=16,
+> **virtualmachine=1, ncstate=1**); (2) **/mnt/plc/config was EMPTY** → staged the 48-file OEM machine config;
+> (3) **/etc/jhvolume missing in the mount-ns** → copied into $R/etc; (4) heuserver connect fails (non-blocking).
+> Even with ALL fixed, standalone ConfigServer STILL stops after jhconfigfiles.cfg → 0 data opens → -k=NC. ⇒
+> DEFINITIVE: the remaining gate is the runtime CONSTELLATION CONTEXT (ConfigServer's Initialize config-load
+> completes only when AppStartMP launches it inside the running constellation), not any file/productid/volume/
+> auth gap. The corrections are real+necessary but not sufficient. Recipe in memory project-config6-controlmark-map.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
