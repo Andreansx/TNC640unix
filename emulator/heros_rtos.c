@@ -531,7 +531,20 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     uint32_t nbits=(flags&2)?(flags&0xff000000u):0;      /* flag bit1 => notify; bits = top byte (kernel +0xe8) */
     lock();
     int s=q_find_slot(base);
-    if(s>=0){ uint32_t id=C->queues[s].id; unlock(); return id; }   /* idempotent on name */
+    if(s>=0){                                            /* idempotent on name, BUT: */
+        /* UPGRADE a no-notify PLACEHOLDER to its real notify owner. HeROS queues are global+named;
+         * if a peer registered the name first as a no-notify OUTPUT queue (e.g. ConfigServer's
+         * EvalContextOutQueue("AppStartMaster") create, which runs before AppStartMP exists), and the
+         * REAL owner now re-creates it as a notify INPUT queue (EvalContextInQueue, flags&2), the
+         * notify-registering owner must take it over — else the kernel notify (Ev_sendtcb +0xb8/+0xe8)
+         * goes to the placeholder creator, and the real reader's dispatcher never wakes for its own
+         * input messages (the AppStartMaster chain deadlock: posts notify ConfigServer, not AppStartMP). */
+        if(nbits && !C->queues[s].notify_bits){
+            C->queues[s].owner=owner; C->queues[s].notify_bits=nbits;
+            LOG("Q_create UPGRADE \"%s\" placeholder -> owner 0x%x notify %08x\n",base,owner,nbits);
+        }
+        uint32_t id=C->queues[s].id; unlock(); return id;
+    }
     s=-1; for(int i=0;i<MAXQ;i++) if(!C->queues[i].used){ s=i; break; }
     if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
     C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
