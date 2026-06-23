@@ -22,8 +22,9 @@ echo "  HrMmi closure ensured (${#S[@]} nodes)"'
 # writable SYS mirror with resources (PLIB++ keymap/charmap) + config + batch
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
 sudo cp -aL "$CFG/config" "$SYSW/config"; sudo cp -aL "$CFG/batch" "$SYSW/batch"; sudo cp -aL "$CFG/resource" "$SYSW/resource" 2>/dev/null
-sudo chmod -R u+w "$SYSW/runtime"
-ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bin" /tmp/b
+sudo chmod -R a+rwX "$SYSW"   # whole SYSW writable: CfgErrorParser::WriteUpdVersion does SetWritePermission(version.cfg) which throws on a RO file
+OEMW=/var/tmp/oemw; sudo rm -rf "$OEMW"; sudo cp -aL "$CFG/default/oem" "$OEMW" 2>/dev/null; sudo chmod -R a+rwX "$OEMW" 2>/dev/null
+ln -sfn "$SYSW" /tmp/s; ln -sfn "$OEMW" /tmp/o; ln -sfn "$R/heros5/bin" /tmp/b   # /%OEM%->writable mirror (CfgErrorParser::WriteUpdVersion SetWritePermission throws on RO version.cfg)
 # config-#6 prerequisites (cfgfix needs the volume targets + productid)
 sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid
 sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null

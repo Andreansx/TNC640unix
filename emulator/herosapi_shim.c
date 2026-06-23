@@ -168,3 +168,9 @@ int unshare(int flags){ return fake_ns_on() ? 0 : (int)syscall(SYS_unshare, flag
 int mount(const char *src, const char *tgt, const char *fs, unsigned long fl, const void *d){
     return fake_ns_on() ? 0 : (int)syscall(SYS_mount, src, tgt, fs, fl, d); }
 int umount2(const char *tgt, int fl){ return fake_ns_on() ? 0 : (int)syscall(SYS_umount2, tgt, fl); }
+/* CfgErrorParser::WriteUpdVersion does FSystemPathname::SetWritePermission(version.cfg) which chmods the
+ * config version file; under FEX that chmod throws (the C++ wrapper raises on a nonzero return), killing
+ * ConfigServer's config thread before RUNUP. The version write-back is non-essential for serving config,
+ * so fake chmod/fchmodat success. Same HEROS_FAKE_NS gate. */
+int chmod(const char *path, mode_t m){ return fake_ns_on() ? 0 : (int)syscall(SYS_chmod, path, m); }
+int fchmodat(int dfd, const char *path, mode_t m, int fl){ return fake_ns_on() ? 0 : (int)syscall(SYS_fchmodat, dfd, path, m, fl); }
