@@ -1123,6 +1123,31 @@ before spawning the constellation (**execve = 0**, no subsystem launched). Two i
     constellation spawn needs BOTH the precise boot-sequencer event AND the config data. Gated probes left in
     place (`herosapi_shim.c` select-cap, `heros_rtos.c` ev-unblock) for the next iteration.
 
+★★ AppStartMP SPAWN GATE — characterized precisely (2026-06-24, config #6 now solved + IDA RE of AppStartMP.elf).
+With ConfigServer carrying `cfgfix.so` (config #6 SOLVED — see blocker #6), `run_appstart_fex.sh` was rerun:
+AppStartMP CONNECTS to ConfigServer (config served, INJECT_ACK to 0-0000107CfgM), connects to X (X99), runs the
+AppStartMaster↔logo exchange — but **STILL blocks at `Ev_receive(0x01019007)` with ZERO constellation execve**
+(all 12 execve are FEXInterpreter/cat/cut/env/grep). ⇒ **config #6 was NOT the spawn gate** (it's needed by the
+constellation CHILDREN, but the spawn TRIGGER is separate). IDA RE of `AppStart::Monitor` (idalib headless on
+AppStartMP.elf): the spawn fires in `Monitor::OnEvent@0x3d6d0` when it receives the **`CREATE_VOID_SUBSYSTEM`**
+event (`AppStart::Subsystems::GetEvent_CREATE_VOID_SUBSYSTEM@0x5e280`, id set by static init) → `FmAppStartAction`
+→ spawn. CRUCIALLY: events reach the Monitor as **MESSAGES on its input queue 0x306** (`Monitor::DispatchMessage
+@0x3e220` routes type **0x40C80080** → OnEvent), NOT as raw Ev_receive bits. The runtime trace shows the Monitor
+spends ~80s cycling the **logo-init exchange** (`Q_read 0x306` ↔ `Q_send 0x313` to the LogoModule thread task
+0x108), reaching the final `Ev_receive(0x01019007)` wait only at the very END — i.e. **the logo→spawn handshake
+never completes headlessly** (the LogoModule never confirms "displayed"; needs a real X render/WM map event). So
+CREATE_VOID_SUBSYSTEM is never posted. WORKAROUNDS TRIED: (a) `HEROSCALL_EV_UNBLOCK_MS` (return full want-mask) →
+trips the `0<mask` assert (prior session); (b) NEW targeted bit injection `HEROSCALL_EV_INJECT_WANT/_BIT`
+(heros_rtos.c — return ONLY want&bit for the exact wait) → does NOT fire because the Monitor returns early on real
+logo events (0x01000000) and only reaches the 0x01019007 wait near the run's end (<inject-delay). ⇒ DEFINITIVE:
+the spawn gate is the **GUI logo-render handshake** + the spawn event being a **MESSAGE** (FmEvent 0x40C80080 on
+queue 0x306), not an event bit. CORRECT next step = synthesize+inject the CREATE_VOID_SUBSYSTEM FmEvent MESSAGE
+onto 0x306 (INJECT-style, like INJECT_ACK — needs the FmEvent schema + the runtime event id), OR complete the
+logo render so the handshake finishes. Both lead into the documented full-GUI/constellation ceiling (92 procs +
+HrMmi Qt render under FEX). The GOAL was reached via the yeen full-system route precisely because of this ceiling.
+Tooling: `heros_rtos.c` EV_INJECT knob; `run_appstart_fex.sh` (now with cfgfix on ConfigServer + cm=16 + the
+/mnt/sys|plc/config staging). This is the honest, precisely-pinned endpoint of the FEX-native AppStartMP path.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and

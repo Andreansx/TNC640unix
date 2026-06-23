@@ -28,6 +28,7 @@ echo "=== [1] rebuild preloads + AppStartMP closure ==="
 for s in arena_stub; do $CC -shared -fPIC -O2 -Wl,--version-script="$EMU/arena.map" -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
+$CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" -ldl 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix
 # Copy AppStartMP's i386 closure into the rootfs (cp -aL; overlaps the IPO/ConfigServer closure mostly).
 sudo bash -c '
 SRC=/Users/andreansx/Documents/TNC640unix/work/target/rootfs; R='"$R"'
@@ -53,6 +54,16 @@ sudo cp -aL "$CFG/resource" "$SYSW/resource" 2>/dev/null
 echo "  staged SYS resource files: $(ls "$SYSW/resource" 2>/dev/null | wc -l) (keymap_us101.xml present: $([ -e "$SYSW/resource/keymap_us101.xml" ] && echo yes || echo NO))"
 sudo chmod -R u+w "$SYSW/runtime"
 ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bin" /tmp/b
+# config-#6 fix prerequisites: the jhDataFiles resolve via the SYS:/PLC: VOLUMES (/etc/jhvolume) to
+# /mnt/sys/config + /mnt/plc/config, and cfgfix classifies IsSysFile/IsOemFile by those resolved prefixes.
+# Stage both volume targets + the productid cache (controlmark=16 = GetOptionTableTnc640).
+sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid
+sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
+[ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
+for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do
+  printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
+sudo chmod -R a+rX /mnt/sys/config /mnt/plc/config /mnt/sys/cache
+echo "  config-#6 fix: /mnt/sys/config ($(ls /mnt/sys/config 2>/dev/null|wc -l)) + /mnt/plc/config ($(ls /mnt/plc/config 2>/dev/null|wc -l)) staged, controlmark=16"
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sudo pkill -x Xvfb 2>/dev/null; sudo pkill -x openbox 2>/dev/null
 sudo rm -f /dev/shm/heros_rtos_ctl /dev/shm/heros_reg_* /dev/shm/_heusrv_shm /dev/shm/hrctlU501 /dev/shm/hregU501_* 2>/dev/null
 
@@ -126,7 +137,8 @@ echo '  heuserver listening:' \$( (ss -ltn 2>/dev/null||true) | grep -c ':19093'
 echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer AppStartMP CfgServerQueue ###'
 # ConfigServer must be task 0x100 (its hardcoded run-up); it starts BEFORE AppStartMP so it owns the
 # real CfgServerQueue (not an AppStartMP black-hole). Then AppStartMP's config query reaches it (+INJECT_ACK).
-( timeout -s KILL 120 env LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+( timeout -s KILL 120 env LD_PRELOAD=/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+    CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ \
     FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver \
     -f=/tmp/s/config/jhconfigfiles.cfg -i=Nc 2>&1 | head -c 60000000 > /tmp/a_cfgsrv.log ) &
 i=0; while [ \$i -lt 120 ]; do grep -q "HWS stub: replied" /tmp/a_cfgsrv.log 2>/dev/null && break; sleep 0.5; i=\$((i+1)); done
@@ -155,9 +167,10 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 60 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
-  env HEROS_EVENTS_PIPE=1 LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
+timeout -s KILL 90 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
+  env HEROS_EVENTS_PIPE=1 HEROSCALL_EV_UNBLOCK_MS=9000 HEROSCALL_EV_INJECT_WANT=01019007 HEROSCALL_EV_INJECT_BIT=00010000 \
+  LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  FEXInterpreter \$R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
 rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null

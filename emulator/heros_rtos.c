@@ -174,19 +174,41 @@ static void mono_now(struct timespec *ts){ ts->tv_sec=0; ts->tv_nsec=0; raw5(265
  * (then it proceeds to spawn) or a missing-DATA gate (then it wakes, finds empty queues, re-blocks =
  * the config-data #6 frontier). Gated off by default. */
 static int ev_unblock_ms=-2;
+/* HEROSCALL_EV_INJECT_WANT / _BIT: TARGETED event injection. Only the forever-wait whose want-mask
+ * == EV_INJECT_WANT gets the synthetic unblock (others stay forever, undisturbed), and it returns
+ * ONLY (want & EV_INJECT_BIT) instead of the full want — so a single precise waitable bit is
+ * delivered (avoids FWaitableInput::Unmask "0<mask" from over-notifying unarmed waitables).
+ * Use for AppStartMP's pre-spawn Ev_receive(0x01019007): inject the CREATE_VOID_SUBSYSTEM bit. */
+static uint32_t ev_inject_want=0, ev_inject_bit=0; static int ev_inject_init=0;
 static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
     int synthetic=0;
     if(ev_unblock_ms==-2){ const char*e=getenv("HEROSCALL_EV_UNBLOCK_MS"); ev_unblock_ms=e?atoi(e):-1; }
-    if(timeout==0xffffffff && ev_unblock_ms>0){ timeout=(uint32_t)ev_unblock_ms; synthetic=1; }
+    if(!ev_inject_init){ ev_inject_init=1;
+        const char*w=getenv("HEROSCALL_EV_INJECT_WANT"); ev_inject_want=w?(uint32_t)strtoul(w,0,16):0;
+        const char*b=getenv("HEROSCALL_EV_INJECT_BIT");  ev_inject_bit =b?(uint32_t)strtoul(b,0,16):0; }
+    if(timeout==0xffffffff && ev_unblock_ms>0){
+        if(!ev_inject_want || want==ev_inject_want){ timeout=(uint32_t)ev_unblock_ms; synthetic=1; }
+    }
     struct timespec deadline; int have_dl=0;
     if(timeout && timeout!=0xffffffff){
         mono_now(&deadline);
         deadline.tv_sec += timeout/1000; deadline.tv_nsec += (long)(timeout%1000)*1000000L;
         if(deadline.tv_nsec>=1000000000L){ deadline.tv_sec++; deadline.tv_nsec-=1000000000L; }
         have_dl=1;
+    }
+    /* DIRECT elapsed-based injection: once EV_INJECT_WANT has been awaited for > EV_UNBLOCK_MS
+     * (tracked ACROSS calls, since the Monitor returns early on real logo events and never reaches
+     * a single long wait), return ONLY (want & EV_INJECT_BIT) — the precise synthetic spawn event. */
+    static struct timespec inj_t0; static int inj_armed=0;
+    if(ev_inject_want && want==ev_inject_want && ev_inject_bit && ev_unblock_ms>0){
+        struct timespec now; mono_now(&now);
+        if(!inj_armed){ inj_armed=1; inj_t0=now; }
+        long el=(now.tv_sec-inj_t0.tv_sec)*1000L+(now.tv_nsec-inj_t0.tv_nsec)/1000000L;
+        if(el>ev_unblock_ms){ uint32_t r=want&ev_inject_bit;
+            LOG("EV_INJECT: task 0x%x want %08x elapsed %ldms -> %08x\n",self,want,el,r); return r; }
     }
     for(;;){
         uint32_t cur=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
@@ -202,7 +224,8 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
             struct timespec now; mono_now(&now);
             long rem=(deadline.tv_sec-now.tv_sec)*1000L+(deadline.tv_nsec-now.tv_nsec)/1000000L;
             if(rem<=0){                                       /* genuinely timed out */
-                if(synthetic){ LOG("EV_UNBLOCK: synth want %08x -> task 0x%x\n",want,self); return want; }
+                if(synthetic){ uint32_t r = ev_inject_bit ? (want & ev_inject_bit) : want;
+                    LOG("EV_UNBLOCK: synth want %08x inject %08x -> task 0x%x\n",want,r,self); return r; }
                 return __atomic_load_n(ev,__ATOMIC_ACQUIRE)&want;
             }
             rel.tv_sec=rem/1000; rel.tv_nsec=(rem%1000)*1000000L; tp=&rel;
