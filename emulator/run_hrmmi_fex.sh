@@ -61,7 +61,7 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
     LD_PRELOAD=/lib/herosapi_shim.so:/lib/renamefix.so:/lib/fexunmask.so FEXInterpreter $R/usr/sbin/heuserver >/tmp/hrmmi_heu.log 2>&1 & sleep 5
     echo "  heuserver listening: $( (ss -ltn 2>/dev/null||true) | grep -c :19093 )"
     echo "### ConfigServer (bg, cfgfix) ###"
-    ( LD_PRELOAD="$PRE" timeout -s KILL 150 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
+    ( env HEROSCALL_VERBOSE=0 LD_PRELOAD="$PRE" timeout -s KILL 150 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
     echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 120 ]; do grep -q "HWS stub: replied" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer run-up done at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
     sleep 5
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) — the Qt/PLIB++ MMI ###"
