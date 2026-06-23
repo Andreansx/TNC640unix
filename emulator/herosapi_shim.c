@@ -210,6 +210,14 @@ int p_create(unsigned p1, unsigned p2, unsigned p3, int *pidout, unsigned p5,
         if (pidout) *pidout = -1; return -1;
     }
     const char *fex = getenv("HEROS_PCREATE_FEXBIN"); if (!fex || !*fex) fex = "/usr/bin/FEXInterpreter";
+    /* the nested FEXInterpreter opens the guest binary rootfs-prefixed; pass the FULL real path (like the
+     * main launch /var/tmp/lr/heros5/bin/AppStartMP.elf). Translate the EXECDIRH symlink prefix:
+     * HEROS_PCREATE_IMGFROM (e.g. "/tmp/b/") -> HEROS_PCREATE_IMGTO (e.g. "/var/tmp/lr/heros5/bin/"). */
+    static char imgbuf[1024];
+    const char *imgfrom = getenv("HEROS_PCREATE_IMGFROM"), *imgto = getenv("HEROS_PCREATE_IMGTO");
+    if (image && imgfrom && imgto && strncmp(image, imgfrom, strlen(imgfrom)) == 0) {
+        snprintf(imgbuf, sizeof imgbuf, "%s%s", imgto, image + strlen(imgfrom)); image = imgbuf;
+    }
     char *argv[300]; int n = 0;
     argv[n++] = (char*)fex;
     if (image && *image) argv[n++] = image;
