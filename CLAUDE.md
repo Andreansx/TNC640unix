@@ -1196,6 +1196,39 @@ handshake is the deep RTOS-semantics frontier, beyond which lies the 92-proc + H
 documented full-system ceiling (reached via yeen). This is the deepest, most precise pin of the FEX-native
 AppStartMP gate to date.
 
+★★★★★ DEADLOCK *SOLVED* (2026-06-24) — the gate was a MISSING `/dev/events` EVENT→FD BRIDGE, not an
+event-id-binding bug. The 2026-06-24 "event-id mismatch" diagnosis above was a MISREAD; the real RE (decompile
+of `GetUniqueEventId@0x3c2a0`, `EVHandlerCreateQueue@0x3e880`, kernel `Q_create@0x10aeb0`/`Q_send`+`Ev_sendtcb`,
+`handlesysevents@0x3d990`, `EVHandlerHandleIOEvent@0x3dcb0`) proved: (1) the **per-queue event-id binding is
+ALREADY faithful** — kernel `Q_create` sets `queue.notify_bits = flags & 0xff000000` gated on `flags&2`
+(line 11129), EXACTLY the emulator's heuristic; `EVHandlerCreateQueue` allocates the queue's notify bit from
+**OWNEVMASK (bits 24-31)** by scanning the EVHandler's used-mask and bakes it into the `flags` top byte, so the
+logo queue 0x313 correctly notifies `0x01000000`; (2) the logo's `0x1000` is a **USEREVMASK handshake event**
+(bits 0-15, `GetUniqueEventId` allows 0-15 + 24-31; 16-23 reserved), NOT the queue bit — the prior session
+conflated them. The ACTUAL gate (found via a focused `HEROSCALL_HSTRACE` event/queue trace in `heros_rtos.c`):
+the logo GUI thread t108 does NOT block in `Ev_receive` — it blocks in **`select()` on `/dev/events`** (the
+HeROS sysevent signaler fd; `EVHandlerHandleIOEvent` NEVER `read()`s it, it is purely a select trigger). The
+real kernel makes `/dev/events` READABLE when `Ev_sendtcb` delivers a matching sysevent; the emulator's
+`ev_send` only set the event word + futex (which wakes an Ev_receive blocker, NOT a select() blocker), so a
+queue notify (`0x01000000`) delivered to a select()-blocked GUI thread was LOST → t108 never read its logo
+queue → t106 waited forever. `HEROS_EVENTS_PIPE=1` (the prior busy-spin fix) made it worse (blocking pipe that
+nothing poked). FIX = the faithful event→fd bridge (`emulator/heros_rtos.c` + `herosapi_shim.c`): herosapi_shim
+hands heros_rtos each thread's `/dev/events` pipe (rd,wr) + the `ioctl(0x4502)` enabled-sysevent mask; on every
+event-word change `heros_rtos` reconciles that pipe's readability to `(pending events & (sysmask|OWNEVMASK)) !=
+0` — readable EXACTLY when the kernel would signal, drained when consumed (via `evdev_reconcile` in `ev_send`
+on the target + `ev_receive` on self). VALIDATED under FEX (`run_appstart_fex.sh`, HSTRACE): the deadlock is
+GONE — t108 now waits on the full dispatcher mask `0x01011001`, **WAKES on the queue notify `0x01000000`,
+DRAINS the logo queue 0x313** (5 msgs, bounded 4 self-re-arms, NO busy-spin), creates `Q_WMGRMSG`, **connects
+to X (`connect(X99)=0`)**, and fully initializes Xlib (fonts NotoSansMono/urw-base35, CJK cmaps, theme
+`tnc640_theme.xrs.zip`). ⇒ the multi-thread FModule/FWaitable RTOS handshake — the deep frontier the prior
+session named — is now FAITHFULLY REIMPLEMENTED + working. The boot ADVANCED from the RTOS deadlock cleanly
+into the **GUI-render layer**: t106 still waits `0x01019007` for the logo "displayed" confirm, and t108 (after
+full Xlib init) blocks at the **X/WM expose-render handshake** = the documented GUI-render ceiling (a DIFFERENT
+layer than the RTOS event semantics; needs a real X expose/WM-map cycle that doesn't complete headlessly under
+Xvfb). Tooling added: `HEROSCALL_HSTRACE=1` (+`_TASKS=`) compact event/queue/thread trace; `heros_evdev_register`
+/`heros_evdev_setmask` bridge hooks. Also fixed a pre-existing `\$R`-unbound bug in `run_appstart_fex.sh` that
+had prevented AppStartMP from launching at all.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and

@@ -137,7 +137,7 @@ echo '  heuserver listening:' \$( (ss -ltn 2>/dev/null||true) | grep -c ':19093'
 echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer AppStartMP CfgServerQueue ###'
 # ConfigServer must be task 0x100 (its hardcoded run-up); it starts BEFORE AppStartMP so it owns the
 # real CfgServerQueue (not an AppStartMP black-hole). Then AppStartMP's config query reaches it (+INJECT_ACK).
-( timeout -s KILL 120 env LD_PRELOAD=/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+( timeout -s KILL 300 env LD_PRELOAD=/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
     CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ \
     FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver \
     -f=/tmp/s/config/jhconfigfiles.cfg -i=Nc 2>&1 | head -c 60000000 > /tmp/a_cfgsrv.log ) &
@@ -167,10 +167,10 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
-  env HEROS_EVENTS_PIPE=1 HEROSCALL_EV_TIMEOUT_CAP_MS=300 HEROSCALL_EV_FORCE_TASK=108 HEROSCALL_EV_FORCE_BIT=1000 \
+timeout -s KILL 240 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
+  env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter \$R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
+  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
 rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null

@@ -52,6 +52,22 @@ static const char* hcname(int lo);
 /* unbuffered debug via raw write(2) — survives early-constructor / pre-crash */
 static void dbg(const char*s){ int n=0; while(s[n])n++; raw5(SYS_write,2,(long)s,n,0,0); }
 
+/* ---- compact HANDSHAKE TRACE (HEROSCALL_HSTRACE=1) ----------------------------
+ * Low-volume protocol trace of the event/queue-notify + thread-rendezvous calls,
+ * to observe the parent/child startup handshake (the 0x106<->0x108 ping-pong on
+ * the logo). VERBOSE is ~1.5M lines / unusable for this; HSTRACE logs ONE compact
+ * line per Ev_send / blocking-or-nonzero Ev_receive / Q_create / Q_send-notify /
+ * Q_read / T_create / T_start. Optional task filter HEROSCALL_HSTRACE_TASKS=106,108
+ * (hex ids) limits output to lines that touch one of those tasks. */
+static int hstrace=0;
+static uint32_t hst_tasks[16]; static int hst_ntasks=0;
+static int hst_hit(uint32_t a,uint32_t b){
+    if(hst_ntasks==0) return 1;
+    for(int i=0;i<hst_ntasks;i++) if(hst_tasks[i]==a||hst_tasks[i]==b) return 1;
+    return 0;
+}
+#define HST(a,b,...) do{ if(hstrace && hst_hit((a),(b))) fprintf(stderr,"[hst] " __VA_ARGS__); }while(0)
+
 /* ---------------- shared control segment ---------------- */
 #define MAXTASK 512
 #define MAXSEM  512
@@ -157,6 +173,49 @@ static uint32_t task_by_name(const char*nm){
     unlock(); return 0;
 }
 
+/* ---------------- /dev/events wake bridge ----------------------------------------
+ * The libbackend EVHandler GUI/IO threads (logo, HrMmi, …) do NOT block in Ev_receive
+ * — they block in select() on /dev/events, the HeROS sysevent signaler fd. The real
+ * kernel makes /dev/events READABLE whenever Ev_sendtcb delivers a matching sysevent to
+ * that task, so the EVHandler's select() wakes and handlesysevents() then ev_receive()s
+ * the bit and dispatches it (FWaitableQueue::Handle -> reads the queue). EVHandlerHandleIO
+ * Event NEVER read()s the fd (verified @0x3dcb0) — it is purely a select() trigger.
+ *
+ * The emulator's ev_send only sets the event word + futex-wakes it, which wakes an
+ * Ev_receive blocker but NOT a select() blocker. So a select()-blocked GUI thread never
+ * wakes for a queue notify -> the logo handshake deadlocks (t106 forwards 5 msgs to the
+ * logo queue 0x313 notifying t108 on 0x01000000, but t108 is in select() and never reads
+ * them, so it never confirms and t106 waits forever).
+ *
+ * Fix: mirror the kernel's event->fd bridge. herosapi_shim creates a per-thread /dev/events
+ * PIPE (HEROS_EVENTS_PIPE=1) and registers (rd,wr) here; ioctl(0x4502,&mask) registers the
+ * enabled sysevent mask. On every event-word change for a task that owns a /dev/events pipe
+ * IN THIS PROCESS, we reconcile its pipe readability to (pending events & (sysmask|OWNEVMASK))
+ * != 0 — readable exactly when the kernel would signal a sysevent, drained when it clears.
+ * OWNEVMASK (0xff000000) is always included: queue notifies (bits 24-31, EVHandlerCreateQueue)
+ * are the critical wakes and must work even before the sysmask ioctl is seen. Same-process only
+ * (the pipe fd is process-local); cross-process targets wake via the event-word futex (config
+ * peers use Ev_receive, not select). */
+#define MAXEVDEV 64
+static struct evdev { volatile uint32_t task; int rd, wr; uint32_t sysmask; int signaled; } evdevs[MAXEVDEV];
+static volatile int n_evdev=0;
+static int events_bridge=0;                      /* HEROS_EVENTS_PIPE=1 -> /dev/events is a pipe */
+static void evdev_reconcile_locked(struct evdev*e){      /* caller holds C->lock */
+    int s=task_slot(e->task); if(s<0) return;
+    uint32_t want = C->tasks[s].events & (e->sysmask | 0xff000000u);
+    if(want){
+        if(!e->signaled){ char c=1; raw5(SYS_write,e->wr,(long)&c,1,0,0); e->signaled=1; }
+    } else if(e->signaled){
+        char b[64]; while(raw5(SYS_read,e->rd,(long)b,sizeof b,0,0)>0) ; e->signaled=0;
+    }
+}
+static void evdev_reconcile(uint32_t task){              /* find task's pipe (this process) + reconcile */
+    if(!events_bridge||n_evdev==0) return;
+    lock();
+    for(int i=0;i<n_evdev;i++) if(evdevs[i].task==task){ evdev_reconcile_locked(&evdevs[i]); break; }
+    unlock();
+}
+
 /* ---------------- events ---------------- */
 /* monotonic clock (i386 SYS_clock_gettime=265, CLOCK_MONOTONIC=1) for honoring
  * finite timeouts across spurious wakeups. i386 timespec = two 32-bit longs. */
@@ -238,15 +297,21 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
         if(el>ev_unblock_ms){ uint32_t r=want&ev_inject_bit;
             LOG("EV_INJECT: task 0x%x want %08x elapsed %ldms -> %08x\n",self,want,el,r); return r; }
     }
+    int hst_waited=0;
     for(;;){
         uint32_t cur=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
         int ok = cond==1 ? ((cur&want)==want) : ((cur&want)!=0);
         if(ok){
             uint32_t caught = cur & want;
             __atomic_and_fetch(ev,~caught,__ATOMIC_ACQ_REL);  /* consume */
+            if(hstrace && (hst_waited||caught)) HST(self,0,"EV< t%x want=%08x c=%u -> caught %08x%s\n",
+                self,want,cond,caught,hst_waited?" (woke)":"");
+            evdev_reconcile(self);    /* events consumed -> re-arm/drain /dev/events to match */
             return caught;
         }
-        if(timeout==0) return 0;
+        if(timeout==0){ evdev_reconcile(self); return 0; }  /* poll miss -> drain stale signal */
+        if(hstrace && !hst_waited){ hst_waited=1; HST(self,0,"EV< t%x WAIT want=%08x c=%u to=%s (have=%08x)\n",
+            self,want,cond,timeout==0xffffffff?"inf":"fin",cur); }
         struct timespec rel,*tp=0;
         if(have_dl){                                          /* compute the remaining slice */
             struct timespec now; mono_now(&now);
@@ -263,8 +328,11 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
 }
 static int ev_send(uint32_t task,uint32_t bits){
     int s=task_slot(task); if(s<0) return -7;
+    if(hstrace){ uint32_t snd=task_self();
+        HST(snd,task,"EV> t%x -> t%x bits=%08x (tgt-wait=%08x)\n",snd,task,bits,C->tasks[s].last_ev_want); }
     __atomic_or_fetch(&C->tasks[s].events,bits,__ATOMIC_ACQ_REL);
     futex(&C->tasks[s].events,FUTEX_WAKE,0x7fffffff,0);
+    evdev_reconcile(task);            /* wake a select()-blocked EVHandler on /dev/events */
     return 0;
 }
 
@@ -472,6 +540,7 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     C->queues[s].name[0]=0; strncpy(C->queues[s].name,base,NAMELEN-1);
     uint32_t id=C->queues[s].id; unlock();
     LOG("Q_create \"%s\" depth %u flags %x owner 0x%x notify %08x -> 0x%x\n",base,depth,flags,owner,nbits,id);
+    HST(owner,0,"QC \"%s\" id=%x owner=t%x flags=%x notify=%08x\n",base,id,owner,flags,nbits);
     return id;
 }
 /* Names used as service PRESENCE PROBES: auto-creating these defeats the control's
@@ -520,6 +589,9 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
      * known-good run_2proc_cfgfix that served IPO.) */
     unlock();
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
+    if(hstrace){ int os=task_slot(owner);
+        HST(sender,owner,"QS [%x]\"%s\" size=%u sndr=t%x notify=%08x->t%x (owner-wait=%08x)\n",
+            id,q->name,size,sender,nbits,owner, os>=0?C->tasks[os].last_ev_want:0); }
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
     LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
     /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
@@ -548,9 +620,11 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             if(buf&&len) memcpy(buf,q->msg[slot].data,len);
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
             qhex("Q_read",id,buf,len);
+            uint32_t qowner=q->owner;
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
             unlock();
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
+            HST(qowner,0,"QR [%x]\"%s\" size=%u (rdr=t%x, remain=%u)\n",id,C->queues[s].name,len,task_self(),q->tail-q->head);
             /* REPLAY_TRIGGER: the first post-runup 69-byte read from CfgServerQueue is IPO's
              * connect; it's now dequeued+about-to-be-registered-pending. Re-inject the recorded
              * startup self-messages so a SIK handler re-runs SendConnected and flushes IPO's ACK.
@@ -747,6 +821,14 @@ static void ensure_init(void){
     if(!__atomic_load_n(&g_inited,__ATOMIC_ACQUIRE)){
         const char *v=getenv("HEROSCALL_VERBOSE"); vrb=v&&v[0]=='1';
         const char *bt=getenv("HEROSCALL_BTRACE"); btrace_on=bt&&bt[0]=='1';
+        const char *hs=getenv("HEROSCALL_HSTRACE"); hstrace=hs&&hs[0]=='1';
+        const char *ht=getenv("HEROSCALL_HSTRACE_TASKS");
+        if(ht){ hst_ntasks=0; const char*q=ht;
+            while(*q&&hst_ntasks<16){ uint32_t v2=0; int any=0;
+                while((*q>='0'&&*q<='9')||(*q>='a'&&*q<='f')||(*q>='A'&&*q<='F')){
+                    int d=(*q<='9')?*q-'0':((*q|0x20)-'a'+10); v2=v2*16+(uint32_t)d; q++; any=1; }
+                if(any) hst_tasks[hst_ntasks++]=v2;
+                while(*q && !((*q>='0'&&*q<='9')||(*q>='a'&&*q<='f')||(*q>='A'&&*q<='F'))) q++; } }
         const char *ad=getenv("HEROSCALL_AS_DELIVER"); as_deliver=!(ad&&ad[0]=='0');
         const char *aq=getenv("HEROSCALL_AUTO_QUEUE"); q_autocreate=!(aq&&aq[0]=='0');
         const char *qw=getenv("HEROSCALL_QREAD_MAXWAIT"); qread_maxwait=0;
@@ -762,12 +844,38 @@ static void ensure_init(void){
         const char *iu=getenv("HEROSCALL_INJECT_UPD"); inject_upd=iu&&iu[0]=='1';
         const char *ia=getenv("HEROSCALL_INJECT_ACK"); inject_ack=ia&&ia[0]=='1';
         const char *ir=getenv("HEROSCALL_INJECT_REREAD"); inject_reread=ir&&ir[0]=='1';
+        const char *ep=getenv("HEROS_EVENTS_PIPE"); events_bridge=ep&&ep[0]=='1';
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
     __atomic_store_n(&g_guard,0,__ATOMIC_RELEASE);
 }
 __attribute__((constructor)) static void rtos_init(void){ ensure_init(); }
+
+/* ---- /dev/events bridge hooks, called by herosapi_shim (weak-linked) ----
+ * herosapi_shim owns the /dev/events open()/ioctl() interpose; it hands us the per-thread
+ * pipe (rd,wr) + the enabled sysevent mask so ev_send/ev_receive can wake/drain the right
+ * select(). Exported (default visibility) so herosapi_shim's weak ref resolves at runtime. */
+void heros_evdev_register(int rd_fd,int wr_fd){
+    ensure_init();
+    if(!events_bridge) return;
+    uint32_t t=task_self();
+    lock();
+    int i; for(i=0;i<n_evdev;i++) if(evdevs[i].rd==rd_fd||evdevs[i].task==t) break;  /* replace on re-open */
+    if(i>=MAXEVDEV){ unlock(); return; }
+    if(i==n_evdev) n_evdev++;
+    evdevs[i].task=t; evdevs[i].rd=rd_fd; evdevs[i].wr=wr_fd; evdevs[i].sysmask=0; evdevs[i].signaled=0;
+    unlock();
+    LOG("evdev register task 0x%x rd=%d wr=%d\n",t,rd_fd,wr_fd);
+}
+void heros_evdev_setmask(int rd_fd,unsigned int mask){
+    ensure_init();
+    if(!events_bridge) return;
+    lock();
+    for(int i=0;i<n_evdev;i++) if(evdevs[i].rd==rd_fd){ evdevs[i].sysmask=mask;
+        evdev_reconcile_locked(&evdevs[i]); break; }
+    unlock();
+}
 
 /* ---------------- opt-in crash fault-locator (HEROSCALL_BTRACE=1) -------------
  * The box has no gdb/strace, and glibc backtrace()/dlsym pull GLIBC_2.34 (the
@@ -860,6 +968,7 @@ long syscall(long n,...){
         if(p[8]) *(uint32_t*)(uintptr_t)p[8]=T;        /* deliver task id to the parent (arg[4]) */
         if(p[12]) ev_send(p[12],0x80000);              /* wake t_create_ex's ev_receive(0x80000) */
         LOG("T_create task 0x%x parent 0x%x ctxbuf %08x -> wait t_start\n",T,p[12],p[10]);
+        HST(T,p[12],"TC t%x parent=t%x -> block until T_start\n",T,p[12]);
         if(s>=0){ for(;;){ uint32_t st=__atomic_load_n(&C->tasks[s].started,__ATOMIC_ACQUIRE);
                   if(st) break; futex(&C->tasks[s].started,FUTEX_WAIT,0,0); } }
         return 0;                                       /* success -> sub_D330 calls _run(arg_out, ctx_buf) */
@@ -875,6 +984,7 @@ long syscall(long n,...){
         __atomic_store_n(&C->tasks[s].started,1,__ATOMIC_RELEASE);
         futex(&C->tasks[s].started,FUTEX_WAKE,0x7fffffff,0);
         LOG("T_start task 0x%x size %u (buf %u, copied %u) -> resumed\n",tid,size,cap,cp);
+        HST(tid,task_self(),"TS t%x resumed by t%x (ctx %u bytes)\n",tid,task_self(),cp);
         return 0;                                       /* >=0 -> t_start() returns true (success) */
     }
     case 0x01:{ /* T_ident: name inline p[0..1] (0=self) */

@@ -76,6 +76,11 @@ static int make_fake(const char *path) {
 #endif
 static int events_wr_fd = -1;
 static int events_pipe = -1;  /* cached HEROS_EVENTS_PIPE flag */
+/* heros_rtos's /dev/events wake bridge (weak — present only when heros_rtos is preloaded).
+ * We hand it the pipe (rd,wr) + the enabled sysevent mask so its ev_send/ev_receive can make
+ * /dev/events readable exactly when the kernel would, waking a select()-blocked EVHandler. */
+extern void heros_evdev_register(int rd_fd, int wr_fd) __attribute__((weak));
+extern void heros_evdev_setmask(int rd_fd, unsigned int mask) __attribute__((weak));
 static int make_fake_events(const char *path) {
     if (events_pipe < 0) { const char *e = getenv("HEROS_EVENTS_PIPE"); events_pipe = (e && e[0]=='1'); }
     if (!events_pipe) return make_fake(path);
@@ -85,6 +90,8 @@ static int make_fake_events(const char *path) {
     fprintf(stderr, "[herosapi_shim] faking open(\"%s\") -> pipe rd fd %d (blocks in select until event; wr fd %d)\n",
             path, pfd[0], pfd[1]);
     remember(pfd[0]);
+    /* register this thread's pipe with heros_rtos so event delivery wakes its select() */
+    if (heros_evdev_register) heros_evdev_register(pfd[0], pfd[1]);
     return pfd[0];
 }
 static int fake_open(const char *path) {
@@ -122,6 +129,9 @@ int __open64_2(const char *path, int flags) {
 int ioctl(int fd, unsigned long req, ...) {
     va_list ap; va_start(ap, req); void *arg = va_arg(ap, void *); va_end(ap);
     if (is_fake(fd)) {
+        /* /dev/events: ioctl(0x4502, &mask) sets the enabled sysevent mask — hand it to the
+         * heros_rtos wake bridge so it signals select() only on enabled sysevents. */
+        if (req == 0x4502 && arg && heros_evdev_setmask) heros_evdev_setmask(fd, *(unsigned int *)arg);
         fprintf(stderr, "[herosapi_shim] ioctl(fd=%d, req=0x%lx) -> stubbed 0\n", fd, req);
         return 0;
     }
