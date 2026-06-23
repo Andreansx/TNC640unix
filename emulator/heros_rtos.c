@@ -67,7 +67,8 @@ struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
               volatile uint32_t started;             /* futex word (t_create<->t_start rendezvous) */
               uint32_t ctx_dst, arg_dst, msgsize;    /* delivery slots (process-local ptrs) */
               volatile uint32_t as_pending;          /* async-signals raised but not yet read (TCB+0x1f0) */
-              volatile uint32_t as_mask; };          /* enabled async-signal mask          (TCB+0x1f4) */
+              volatile uint32_t as_mask;             /* enabled async-signal mask          (TCB+0x1f4) */
+              volatile uint32_t last_ev_want; };     /* most recent Ev_receive want-mask (for queue-notify bit matching) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
 /* one variable-length message + the 12-byte sender header the kernel returns in Q_read's p[4]
  * (from Q_send's message-node fields: source queue id, sender task, mode|size) */
@@ -184,6 +185,7 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
+    C->tasks[s].last_ev_want=want;                 /* record for queue-notify bit matching */
     int synthetic=0;
     if(ev_unblock_ms==-2){ const char*e=getenv("HEROSCALL_EV_UNBLOCK_MS"); ev_unblock_ms=e?atoi(e):-1; }
     if(!ev_inject_init){ ev_inject_init=1;
@@ -487,6 +489,13 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     qhex("Q_send",id,msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
     uint32_t owner=q->owner, nbits=q->notify_bits;
+    /* FModule notify-bit fix: notify_bits is the flags-derived top byte (0x01000000), but a module
+     * registers its input queue under a per-waitable id (FWaitable::GetUniqueEventId) = the bit it
+     * actually Ev_receive-waits for. If that flags-bit isn't in the owner's current single-bit wait,
+     * notify THAT bit so the owner wakes (AppStartMP "logo" queue: flags->0x01000000, logo waits
+     * 0x1000). Overlap cases (ConfigServer 0x01000000 in its 0x01011000 wait) are unchanged. */
+    if(nbits&&owner){ int os=task_slot(owner); uint32_t ow=(os>=0)?C->tasks[os].last_ev_want:0;
+        if(ow && (nbits&ow)==0 && (ow&(ow-1))==0) nbits=ow; }
     unlock();
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */

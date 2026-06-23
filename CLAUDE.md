@@ -1169,6 +1169,33 @@ content); (b) make the logo thread's 0x1000 barrier release / complete the X ren
 state transition. This is the precisely-pinned FEX-native AppStartMP endpoint; the full constellation + HrMmi
 Qt render under FEX remains the documented ceiling (reached via the yeen full-system route).
 
+★★ DEADLOCK CRACKED OPEN to the EMULATOR-SEMANTICS mechanism (2026-06-24) — the logo handshake stalls
+on an **FModule/FWaitableQueue event-id mismatch + a send-before-wait timing gap** in heros_rtos, NOT a GUI
+render. Precise trace: AppStartMaster (task 0x106) relays config/batch messages to the logo's input queue
+0x313 (owner = the logo thread 0x108) and self-wakes via `Ev_send(0x106, 0x1000)` (30×). The logo thread's
+FModule dispatch **waits `Ev_receive(want=0x1000)`** (its FWaitableQueue's `GetUniqueEventId` bit), but the
+emulator notifies queue-0x313 sends with the **flags-derived top byte `0x01000000`** (`flags 1000002 &
+0xff000000`), which is NOT in the logo's `0x1000` wait → the logo wakes ONLY the 2× AppStartMaster sends
+`0x1000` directly, then stalls; the queued messages pile up (depth grows) unread, so the logo never confirms
+and AppStartMaster blocks forever on `Ev_receive(0x01019007)` for the logo-done/`0x10000` bit. (Contrast:
+ConfigServer's CfgServerQueue notify `0x01000000` DOES overlap its owner's `0x01011000` wait, so it works —
+the flags-byte heuristic is right there but wrong for the logo queue.) WORKAROUND IMPLEMENTED (`heros_rtos.c`,
+committed): track each task's last `Ev_receive` want (`last_ev_want`); in Q_send, if the queue's flags-bit
+isn't in the owner's current SINGLE-bit wait, notify THAT bit instead. PRINCIPLED + safe (ConfigServer
+unchanged) but did NOT crack it — the Q_sends to 0x313 happen BEFORE the logo establishes its `0x1000` wait
+(`last_ev_want` not yet set), so the retroactive match misses. ⇒ The genuine fix = faithfully replicate the
+FModule/FWaitable **event-id binding** (per-queue `GetUniqueEventId` at registration, so Q_send notifies the
+exact bit the owner will wait on) + the parent/child startup handshake ordering — substantial heros_rtos RTOS
+RE. Also tooling: `HEROSCALL_EV_INJECT_WANT/_BIT` targeted single-bit event injection (returns only want&bit,
+avoiding the `0<mask` assert) — fired into AppStartMaster's `0x01019007` wait with `0x10000` but AppStartMaster
+reaches that wait only after ~5 messages in 150s (the deadlock crawls it), so injecting the final bit alone
+can't spawn (the batch isn't processed). ⇒ HONEST CEILING: the FEX-native constellation spawn needs a faithful
+multi-thread FModule/FWaitable RTOS model (event-id binding + handshake) in the userspace emulator — the
+emulator carries SINGLE processes far (config #6 SOLVED, IPO past -k=NC) but the multi-thread GUI FModule
+handshake is the deep RTOS-semantics frontier, beyond which lies the 92-proc + HrMmi Qt render = the
+documented full-system ceiling (reached via yeen). This is the deepest, most precise pin of the FEX-native
+AppStartMP gate to date.
+
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
 a file (plaintext `hello-fuse-fex` → encrypted name `mvzrq09bdgQr3HDzX,BBEPes` in the source dir), and
