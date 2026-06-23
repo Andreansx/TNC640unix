@@ -194,18 +194,8 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
       if(!fi){ fi=1; const char*t=getenv("HEROSCALL_EV_FORCE_TASK"); ft=t?(uint32_t)strtoul(t,0,16):0;
                const char*b=getenv("HEROSCALL_EV_FORCE_BIT");  fb=b?(uint32_t)strtoul(b,0,16):0; }
       if(ft && self==ft && fb && (want&fb)){ __atomic_and_fetch(ev,~(want&fb),__ATOMIC_ACQ_REL); return want&fb; } }
-    /* FModule queue-pending fix (send-before-wait): if this task is about to wait on a SINGLE bit
-     * and already OWNS a queue with pending messages whose flags-notify bit is NOT that bit, then
-     * that bit is the queue's real FWaitable id (GetUniqueEventId) — deliver it so the owner reads
-     * its queue now (the logo thread: waits 0x1000 = queue 0x313's id, but Q_send notified the
-     * flags-byte 0x01000000 BEFORE the wait existed). Self-limits: returns until the queue drains,
-     * then waits normally. ConfigServer/IPO unaffected (their queue bit overlaps their want). */
-    if(want && (want&(want-1))==0){
-        for(int qi=0; qi<MAXQ; qi++){ struct queue*q=&C->queues[qi];
-            if(q->used && q->owner==self && q->head!=q->tail && (q->notify_bits&want)==0){
-                LOG("EV queue-pending: task 0x%x owns q 0x%x (pending) -> deliver want %08x\n",self,q->id,want);
-                return want; } }
-    }
+    /* (queue-pending heuristic removed: it falsely delivered a single-bit wait to ConfigServer's
+     * task 0x100 — which waits 0x00080000 for a non-queue reason — corrupting its run-up.) */
     int synthetic=0;
     if(ev_unblock_ms==-2){ const char*e=getenv("HEROSCALL_EV_UNBLOCK_MS"); ev_unblock_ms=e?atoi(e):-1; }
     if(!ev_inject_init){ ev_inject_init=1;
@@ -930,6 +920,9 @@ long syscall(long n,...){
             raw5(SYS_nanosleep,(long)&ts,0,0,0,0); }
         return 0;
     }
+    case 0x31: /* Tm_check(timer) — query a timer's status; return 0 (expired/ready) so the
+                * caller's GUI/poll loop (HrMmi) proceeds instead of treating it as still-pending. */
+        return 0;
     case 0x1b:   /* Tm_evafter(delay_us@p[0], event_bits@p[1]) — fire event to CALLER after delay  */
     case 0x1d:{  /* Tm_evevery(period_us@p[0], event_bits@p[1]) — periodic.  Kernel: Tm_create →
                   * __usecs_to_jiffies(p[0]) on GET_TASK_CURRENT(), sends p[1] on expiry. Without
