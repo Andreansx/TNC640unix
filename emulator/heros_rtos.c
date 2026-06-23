@@ -67,6 +67,12 @@ static int hst_hit(uint32_t a,uint32_t b){
     return 0;
 }
 #define HST(a,b,...) do{ if(hstrace && hst_hit((a),(b))) fprintf(stderr,"[hst] " __VA_ARGS__); }while(0)
+/* printable-ASCII view of a message body (for reading embedded subsystem names in FmProcessState etc.) */
+static const char* msascii(const void*p,uint32_t n){
+    static char b[160]; uint32_t j=0; if(!p){b[0]=0;return b;} if(n>140)n=140;
+    for(uint32_t k=0;k<n&&j<sizeof(b)-1;k++){ unsigned char c=((const unsigned char*)p)[k]; b[j++]=(c>=32&&c<127)?c:'.'; }
+    b[j]=0; return b;
+}
 
 /* ---------------- shared control segment ---------------- */
 #define MAXTASK 512
@@ -605,8 +611,9 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     unlock();
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
     if(hstrace){ int os=task_slot(owner);
-        HST(sender,owner,"QS [%x]\"%s\" size=%u sndr=t%x notify=%08x->t%x (owner-wait=%08x)\n",
-            id,q->name,size,sender,nbits,owner, os>=0?C->tasks[os].last_ev_want:0); }
+        uint32_t mtag = (msg && size>=4) ? *(const uint32_t*)msg : 0;          /* GMessage type id = 1st dword (LE) */
+        HST(sender,owner,"QS [%x]\"%s\" size=%u tag=%08x sndr=t%x notify=%08x->t%x [%s]\n",
+            id,q->name,size,mtag,sender,nbits,owner, msascii(msg,size)); }
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
     LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
     /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
@@ -639,7 +646,8 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
             unlock();
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
-            HST(qowner,0,"QR [%x]\"%s\" size=%u (rdr=t%x, remain=%u)\n",id,C->queues[s].name,len,task_self(),q->tail-q->head);
+            { uint32_t mtag = (buf && len>=4) ? *(const uint32_t*)buf : 0;
+              HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len)); }
             /* REPLAY_TRIGGER: the first post-runup 69-byte read from CfgServerQueue is IPO's
              * connect; it's now dequeued+about-to-be-registered-pending. Re-inject the recorded
              * startup self-messages so a SIK handler re-runs SendConnected and flushes IPO's ACK.
