@@ -40,14 +40,17 @@ cc(){ local l="$1"; [ -n "${S[$l]:-}" ]&&return; S[$l]=1; case " $SKIP " in *" $
   for n in $(i686-linux-gnu-objdump -p "$p" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done; }
 for n in $(i686-linux-gnu-objdump -p "$R/heros5/bin/AppStartMP.elf" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
 echo "  AppStartMP closure ensured (${#S[@]} nodes)"
-# INJECT_FMLOAD: stage winmgr.elf (the first subsystem process AppStartMP would fork) + its lib closure
-# so the injected FmLoadProcess passes FSystemPathname::IsAFile and PCreate can execve it.
-if [ -e "$SRC/heros5/bin/winmgr.elf" ]; then
-  cp -aL "$SRC/heros5/bin/winmgr.elf" "$R/heros5/bin/winmgr.elf"
-  chmod +x "$R/heros5/bin/winmgr.elf"   # p_create does access(X_OK); cp -aL preserved 0644 -> EACCES -> no fork
-  for n in $(i686-linux-gnu-objdump -p "$SRC/heros5/bin/winmgr.elf" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
-  echo "  winmgr.elf + closure staged (${#S[@]} nodes total)"
-fi'
+# INJECT_FMLOAD (FULL SET): stage EVERY distinct subsystem image named in batch/TNC640heros.txt + each
+# closure, all executable, so the injected FmLoadProcess set passes IsAFile + p_create access(X_OK) and the
+# p_create FEX-spawn interposer can launch each under a nested FEXInterpreter.
+BATCH="$CFG/batch/TNC640heros.txt"
+for img in $(grep -aoE "imagePath:=\"%EXECDIRH%\\\\\\\\[A-Za-z0-9_]+\.elf\"" "$BATCH" 2>/dev/null | sed -E "s/.*\\\\\\\\([A-Za-z0-9_]+\.elf)\"/\1/" | sort -u); do
+  if [ -e "$SRC/heros5/bin/$img" ]; then
+    cp -aL "$SRC/heros5/bin/$img" "$R/heros5/bin/$img"; chmod +x "$R/heros5/bin/$img"
+    for n in $(i686-linux-gnu-objdump -p "$SRC/heros5/bin/$img" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
+  fi
+done
+echo "  staged $(grep -aoE "imagePath:=\"%EXECDIRH%\\\\\\\\[A-Za-z0-9_]+\.elf\"" "$BATCH"|sed -E "s/.*\\\\\\\\([A-Za-z0-9_]+\.elf)\"/\1/"|sort -u|wc -l) distinct subsystem images + closures (${#S[@]} nodes total)"'
 
 echo "=== [2] FEX config + writable SYS (AppStartMP writes SYS\\runtime) + clean shm ==="
 sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo tee /root/.fex-emu/Config.json >/dev/null
@@ -57,6 +60,16 @@ sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo 
 # that lets the cat/grep helper forks exec). The spawned winmgr then runs under a fresh native FEXInterpreter.
 FEXBIN=$(command -v FEXInterpreter); sudo rm -f "$R/usr/bin/FEXInterpreter" 2>/dev/null
 echo "  FEXInterpreter: rely on FEX rootfs-ENOENT fallback to $FEXBIN (no rootfs symlink)"
+# FULL-SET file: parse batch/TNC640heros.txt into "localNS/procbase|/tmp/b/<image>" per FmLoadProcess line,
+# so heros_rtos (HEROSCALL_INJECT_FMLOAD_SET) injects an FmLoadProcess for the WHOLE constellation. /tmp is
+# shared into the ns + resolves real under FEX (like /tmp/b), so the guest reads it directly.
+SETF=/tmp/fmload_set.txt
+awk '
+  /localNamespace:=/ { ns=$0; sub(/.*localNamespace:="/,"",ns); sub(/".*/,"",ns) }
+  /processName:=/     { pn=$0; sub(/.*processName:="/,"",pn); sub(/".*/,"",pn); sub(/^~\//,"",pn); have=1 }
+  /imagePath:=/ && have { ip=$0; sub(/.*\\/,"",ip); sub(/".*/,"",ip); print ns"/"pn"|/tmp/b/"ip; have=0 }
+' "$BATCH" > "$SETF"
+echo "  full-set file $SETF: $(wc -l < "$SETF") FmLoadProcess entries (head: $(head -1 "$SETF"))"
 # Writable SYS mirror: real config/batch (RO source) + a writable runtime. AppStartMP reads
 # SYS:\config\*.cfg + SYS:\batch\TNC640heros.txt and writes SYS:\runtime\AppStartFinishCounter.txt.
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
@@ -189,6 +202,8 @@ timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,
   HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-1} \
   HEROS_PCREATE_FEX=${HEROS_PCREATE_FEX:-1} \
   HEROS_PCREATE_IMGFROM=/tmp/b/ HEROS_PCREATE_IMGTO=$R/heros5/bin/ \
+  ${HEROSCALL_INJECT_FMLOAD_SET:+HEROSCALL_INJECT_FMLOAD_SET=$HEROSCALL_INJECT_FMLOAD_SET} \
+  ${HEROSCALL_INJECT_FMLOAD_MAX:+HEROSCALL_INJECT_FMLOAD_MAX=$HEROSCALL_INJECT_FMLOAD_MAX} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \

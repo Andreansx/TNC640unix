@@ -922,6 +922,31 @@ static void inject_fmload_set(uint32_t qid){
         dump_bytes("INJECT_SUBSYS load",buf,n); q_send(qid,buf,n,0);
         return;
     }
+    /* FULL SET: HEROSCALL_INJECT_FMLOAD_SET=<file> with "procName|imagePath" per line (the whole
+     * constellation, generated from batch/TNC640heros.txt). Inject an FmLoadProcess for EACH -> each
+     * forks+launches via the p_create FEX-spawn interposer. HEROSCALL_INJECT_FMLOAD_MAX caps the count. */
+    const char*setf=getenv("HEROSCALL_INJECT_FMLOAD_SET");
+    if(setf&&setf[0]){
+        FILE*f=fopen(setf,"r");
+        if(!f){ fprintf(stderr,"[rtos] INJECT_FMLOAD[set]: cannot open %s\n",setf); }
+        else {
+            const char*mx=getenv("HEROSCALL_INJECT_FMLOAD_MAX"); int maxn=mx&&mx[0]?atoi(mx):100000;
+            char line[1024]; int cnt=0;
+            while(fgets(line,sizeof line,f)){
+                char*nl=strchr(line,'\n'); if(nl)*nl=0;
+                if(!line[0]||line[0]=='#') continue;
+                char*bar=strchr(line,'|'); if(!bar) continue; *bar=0;
+                const char*pn=line; const char*ip=bar+1;
+                if(cnt>=maxn) break;
+                uint32_t n=gm_build_fmloadprocess(buf,pn,0,ip);
+                fprintf(stderr,"[rtos] INJECT_FMLOAD[set %d]: FmLoadProcess(proc=\"%s\" img=\"%s\") %u bytes -> 0x%x\n",cnt,pn,ip,n,qid);
+                q_send(qid,buf,n,0); cnt++;
+            }
+            fclose(f);
+            fprintf(stderr,"[rtos] INJECT_FMLOAD[set]: injected %d FmLoadProcess from %s\n",cnt,setf);
+            return;
+        }
+    }
     for(unsigned i=0;i<sizeof fmload_tbl/sizeof fmload_tbl[0];i++){
         const char*pn = (i==0&&onep)?onep:fmload_tbl[i].procName;
         const char*ip = (i==0&&one )?one :fmload_tbl[i].imagePath;
