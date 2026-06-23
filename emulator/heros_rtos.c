@@ -206,6 +206,11 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     if(timeout==0xffffffff && ev_unblock_ms>0){
         if(!ev_inject_want || want==ev_inject_want){ timeout=(uint32_t)ev_unblock_ms; synthetic=1; }
     }
+    /* HEROSCALL_EV_TIMEOUT_CAP_MS: cap LONG finite Ev_receive timeouts (e.g. the logo's 100s 0x1000
+     * wait, 0x186a0ms) to a small value so a timeout-driven handshake/poll loop iterates fast enough
+     * to progress within a bounded run instead of crawling. Only caps timeouts > 10s. */
+    { static int evcap=-2; if(evcap==-2){ const char*e=getenv("HEROSCALL_EV_TIMEOUT_CAP_MS"); evcap=e?atoi(e):0; }
+      if(evcap>0 && timeout>10000 && timeout!=0xffffffff) timeout=(uint32_t)evcap; }
     struct timespec deadline; int have_dl=0;
     if(timeout && timeout!=0xffffffff){
         mono_now(&deadline);

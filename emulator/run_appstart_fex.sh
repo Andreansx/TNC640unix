@@ -168,7 +168,7 @@ rm -f /tmp/a_strace.log
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
 timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=openat,connect,execve,clone,fork,vfork -o /tmp/a_strace.log \
-  env HEROS_EVENTS_PIPE=1 \
+  env HEROS_EVENTS_PIPE=1 HEROSCALL_EV_TIMEOUT_CAP_MS=300 \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   FEXInterpreter \$R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
