@@ -370,6 +370,18 @@ static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue messag
  * winmgr. Wire = the captured FmProcessState template; HEROSCALL_INJECT_WINMGR_NAME overrides the name. */
 static int inject_winmgr=-1, winmgr_injected=0, in_winmgr_inject=0;
 static void put32(unsigned char*b,uint32_t v);   /* fwd-decl (defined in the INJECT_ACK section) */
+/* HEROSCALL_INJECT_FMLOAD=1: construct + inject the constellation messages onto the AppStartMaster queue,
+ * bypassing the stalled logo handshake. The chain forwards them: a flat FmLoadProcess (type 0xc80161)
+ * traverses Monitor->Procedures->Config->Subsystems->Processes::OnMessage(FmLoadProcess)@0x4f650 which
+ * FORKS the image directly via AppStart::Platform::PCreate (IsAFile-checked). FmSubsystemAction(action=0,
+ * type 0xca0060) registers a subsystem in AppStart::Impl::subsystems first. GMessage wire format (proven
+ * by INJECT_ACK/UPD): dword[0]=type-id, then per schema attribute a 4-byte tag: present = 0x000000<code>
+ * (+payload), absent = 0x80000000|<code>. Codes: GMsgString=0xe7, GMsgInt=0x63, GMsgList=0x18c,
+ * FM_SUBSYSTEM_TYPE(enum)=0x12. Schemas (RE'd 2026-06-24, scratchpad/spawn_inject_findings.md):
+ *  FmLoadProcess[7]: processName(str), commandLineOptions(str), ifDefined(list), forEach(str),
+ *                    imagePath(str), FM_SUBSYSTEM_TYPE(enum), GMsgInt. */
+static int inject_fmload=-1, fmload_injected=0, in_fmload_inject=0;
+static void inject_fmload_set(uint32_t qid);     /* fwd-decl (defined after put32) */
 static int hws_stub=0;               /* HEROSCALL_HWS_STUB=1: auto-reply to QHWServer GetData requests
                                       * (the host-side IOsim has no i386 binary) — experimental */
 static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_evevery actually fire
@@ -642,6 +654,18 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         q_send(id,ps,sizeof ps,0);
         in_winmgr_inject=0;
     }
+    /* INJECT_FMLOAD: on the first message posted to the AppStartMaster queue after the chain is up
+     * (the spurious cfgserver FmProcessState, or any chain message), inject the constellation
+     * FmSubsystemAction(register)+FmLoadProcess set so the chain forks the processes, bypassing the
+     * stalled logo handshake. Triggered once. */
+    if(inject_fmload<0){ const char*e=getenv("HEROSCALL_INJECT_FMLOAD"); inject_fmload=e&&e[0]=='1'; }
+    if(inject_fmload && !fmload_injected && !in_fmload_inject && msg && size>=8
+       && *(const uint32_t*)msg==0x40c803e0u && !strcmp(C->queues[s].name,"AppStartMaster")){
+        fmload_injected=1; in_fmload_inject=1;
+        fprintf(stderr,"[rtos] INJECT_FMLOAD: trigger seen on AppStartMaster(0x%x) -> injecting constellation set\n",id); fflush(stderr);
+        inject_fmload_set(id);
+        in_fmload_inject=0;
+    }
     /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
     if(replay_trigger && !runup_done && msg && size && size<=CFGQ_MSG
        && !strcmp(C->queues[s].name,"CfgServerQueue")){
@@ -783,6 +807,78 @@ static void post_inject_reread(void){
 /* INJECT_ACK: IPO sent CfgConnectClient(0x1700c0). Parse its reply-queue name (first GMsgString)
  * and post a synthetic CfgClientIsConnected(0x170100, success=OK) to it so IPO proceeds. */
 static void put32(unsigned char*b,uint32_t v){ b[0]=v; b[1]=v>>8; b[2]=v>>16; b[3]=v>>24; }
+
+/* ---------------- GMessage serializer for INJECT_FMLOAD ---------------- */
+/* wire type codes (from GMessageData +0x10, libgmsglib/libGMessageShared) */
+#define GMC_STRING 0xe7
+#define GMC_INT    0x63
+#define GMC_LIST   0x18c
+#define GMC_ENUM_SUBSYS_TYPE 0xc8014b   /* real wire type-id from FM_SUBSYSTEM_TYPE ctor push 0xc8014b (NOT the GMessageData 0x12 "kind") */
+/* append a PRESENT GMsgString attribute (tag 0xe7, u32 len, bytes-no-null) */
+static uint32_t gm_str(unsigned char*b,uint32_t p,const char*s){
+    put32(b+p,GMC_STRING); p+=4; uint32_t n=(uint32_t)strlen(s);
+    put32(b+p,n); p+=4; memcpy(b+p,s,n); p+=n; return p;
+}
+/* append an ABSENT attribute marker (tag 0x80000000|code) */
+static uint32_t gm_absent(unsigned char*b,uint32_t p,uint32_t code){
+    put32(b+p,0x80000000u|code); p+=4; return p;
+}
+/* append a PRESENT GMsgInt attribute (tag 0x63, u32 value) */
+static uint32_t gm_int(unsigned char*b,uint32_t p,uint32_t v){
+    put32(b+p,GMC_INT); p+=4; put32(b+p,v); p+=4; return p;
+}
+/* append a PRESENT-EMPTY GMsgList (tag 0x18c, count=0). NOTE: a list does NOT use the absent top-bit —
+ * sending 0x8000018c corrupts the heap; the correct empty form is {type-id, count=0} (subagent RE). */
+static uint32_t gm_list_empty(unsigned char*b,uint32_t p,uint32_t code){
+    put32(b+p,code); p+=4; put32(b+p,0); p+=4; return p;
+}
+/* append a PRESENT enum/scalar attribute (tag=full type-id, u32 value) */
+static uint32_t gm_scalar(unsigned char*b,uint32_t p,uint32_t code,uint32_t v){
+    put32(b+p,code); p+=4; put32(b+p,v); p+=4; return p;
+}
+/* Build FmLoadProcess (type 0xc80161). 7 attrs in schema order. Pass NULL for absent string attrs.
+ * HEROSCALL_INJECT_FMLOAD_PRESENT=1 makes the enum(attr5)+int(attr6) PRESENT with value 0 (the
+ * "normal" process create-mode) instead of absent — the bare inject bypasses Config/Subsystems which
+ * normally set these; absent may leave PCreatePrepare's create-mode non-default (skips PCreate->fork). */
+static int fmload_present=-1;
+static uint32_t gm_build_fmloadprocess(unsigned char*b,const char*procName,const char*cmdOpts,const char*imagePath){
+    if(fmload_present<0){ const char*e=getenv("HEROSCALL_INJECT_FMLOAD_PRESENT"); fmload_present=e&&e[0]=='1'; }
+    uint32_t p=0; put32(b+p,0x00c80161u); p+=4;            /* type-id */
+    p = procName ? gm_str(b,p,procName) : gm_absent(b,p,GMC_STRING);   /* 0 processName */
+    p = cmdOpts  ? gm_str(b,p,cmdOpts)  : gm_absent(b,p,GMC_STRING);   /* 1 commandLineOptions */
+    p = gm_list_empty(b,p,GMC_LIST);                                   /* 2 ifDefined (present-empty list) */
+    p = gm_absent(b,p,GMC_STRING);                                     /* 3 forEach (absent) */
+    p = imagePath? gm_str(b,p,imagePath): gm_absent(b,p,GMC_STRING);   /* 4 imagePath */
+    if(fmload_present){
+        p = gm_scalar(b,p,GMC_ENUM_SUBSYS_TYPE,0);                     /* 5 FM_SUBSYSTEM_TYPE present=0 */
+        p = gm_int(b,p,0);                                             /* 6 GMsgInt present=0 */
+    }else{
+        p = gm_absent(b,p,GMC_ENUM_SUBSYS_TYPE);                       /* 5 (absent) */
+        p = gm_absent(b,p,GMC_INT);                                    /* 6 (absent) */
+    }
+    return p;
+}
+/* The constellation set to inject. For the first milestone we inject ONE flat FmLoadProcess (winmgr)
+ * — Processes::OnMessage(FmLoadProcess) forks it directly (no subsystem registration required).
+ * imagePath must be the RESOLVED path (Config's %EXECDIRH% expansion is bypassed): EXECDIRH=/tmp/b. */
+struct fmproc { const char*procName; const char*cmdOpts; const char*imagePath; };
+static const struct fmproc fmload_tbl[] = {
+    { "winmgr/winmgr", 0, "/tmp/b/winmgr.elf" },
+};
+static void inject_fmload_set(uint32_t qid){
+    unsigned char buf[1024];
+    const char*one=getenv("HEROSCALL_INJECT_FMLOAD_IMG");   /* optional override of the single image path */
+    const char*onep=getenv("HEROSCALL_INJECT_FMLOAD_PROC");
+    for(unsigned i=0;i<sizeof fmload_tbl/sizeof fmload_tbl[0];i++){
+        const char*pn = (i==0&&onep)?onep:fmload_tbl[i].procName;
+        const char*ip = (i==0&&one )?one :fmload_tbl[i].imagePath;
+        uint32_t n=gm_build_fmloadprocess(buf,pn,fmload_tbl[i].cmdOpts,ip);
+        fprintf(stderr,"[rtos] INJECT_FMLOAD: posting FmLoadProcess(proc=\"%s\" img=\"%s\") %u bytes -> AppStartMaster(0x%x)\n",pn,ip,n,qid);
+        fprintf(stderr,"[rtos] INJECT_FMLOAD: bytes="); for(uint32_t k=0;k<n;k++) fprintf(stderr,"%02x",buf[k]); fprintf(stderr,"\n"); fflush(stderr);
+        q_send(qid,buf,n,0);
+    }
+}
+
 static uint32_t acked_qids[32]; static int n_acked=0;   /* per-reply-queue dedup (HrMmi has several) */
 static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size){
     if(!inject_ack||!msg||size<16) return;
@@ -1139,8 +1235,14 @@ long syscall(long n,...){
     case 0x27: /* Sys_getenv(name@p[0], outbuf@p[2], size@p[4]) */
         if(p&&p[0]) return env_get((const char*)(uintptr_t)p[0],(char*)(uintptr_t)p[2],p[4]);
         return -2;
+    case 0x29: /* P_ident(name): look up a RUNNING process by name. The emulator tracks tasks/queues,
+                * not P_ processes, so report NOT-FOUND (-1) — else AppStart::Processes::OnMessage(FmLoadProcess)
+                * reads p_ident!=-1 as "process already running" and throws "...twice" BEFORE IsAFile/PCreate,
+                * silently aborting the spawn (the default 0 broke the fork). -1 = heros not-found convention. */
+        LOG("P_ident(\"%s\") -> -1 (not found)\n", (p&&p[0])?(const char*)(uintptr_t)p[0]:"?");
+        return (uint32_t)-1;
     default:
-        return 0;   /* T_create,T_start,As,P,Tm etc — success stub for now */
+        return 0;   /* T_create,T_start,As,P_childstat,P_signal,Tm etc — success stub for now */
     }
 }
 

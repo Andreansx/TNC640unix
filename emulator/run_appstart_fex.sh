@@ -39,7 +39,14 @@ cc(){ local l="$1"; [ -n "${S[$l]:-}" ]&&return; S[$l]=1; case " $SKIP " in *" $
   if ! { [ -e "$R/$rel" ]&&file -L "$R/$rel" 2>/dev/null|grep -q "ELF 32-bit"; }; then mkdir -p "$R/$(dirname "$rel")"; rm -f "$R/$rel"; cp -aL "$p" "$R/$rel"; fi
   for n in $(i686-linux-gnu-objdump -p "$p" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done; }
 for n in $(i686-linux-gnu-objdump -p "$R/heros5/bin/AppStartMP.elf" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
-echo "  AppStartMP closure ensured (${#S[@]} nodes)"'
+echo "  AppStartMP closure ensured (${#S[@]} nodes)"
+# INJECT_FMLOAD: stage winmgr.elf (the first subsystem process AppStartMP would fork) + its lib closure
+# so the injected FmLoadProcess passes FSystemPathname::IsAFile and PCreate can execve it.
+if [ -e "$SRC/heros5/bin/winmgr.elf" ]; then
+  cp -aL "$SRC/heros5/bin/winmgr.elf" "$R/heros5/bin/winmgr.elf"
+  for n in $(i686-linux-gnu-objdump -p "$SRC/heros5/bin/winmgr.elf" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
+  echo "  winmgr.elf + closure staged (${#S[@]} nodes total)"
+fi'
 
 echo "=== [2] FEX config + writable SYS (AppStartMP writes SYS\\runtime) + clean shm ==="
 sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo tee /root/.fex-emu/Config.json >/dev/null
@@ -168,8 +175,12 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=execve,connect,clone,fork,vfork -o /tmp/a_strace.log \
+timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=execve,connect,clone,fork,vfork,newfstatat,statx,access,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
+  HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-1} \
+  HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
+  ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
+  ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
