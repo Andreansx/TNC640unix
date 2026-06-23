@@ -1234,6 +1234,15 @@ FmProgressNotify into AppStartMaster's chain (INJECT_ACK-style — needs the msg
 the logo's PWaitableDisplay (X MapNotify/Expose) fire its "displayed" confirm. Both are the documented GUI-render
 ceiling (the reason the live MMI was reached via yeen). Run: `run_appstart_fex.sh`; diags in
 `scratchpad/run_appstart_{diag,inject,force,long}.sh`.
+★ RULED OUT (cheap levers, all confirmed NOT the crack — don't repeat): (1) EV_INJECT elapsed bit-injection of
+t10b's 0x10000 — no fire/effect; (2) EV_FORCE immediate bit-return of t10b's 0x10000 — returns the bit but the
+dispatcher finds no real message behind it → re-waits (bit ≠ the chain message); (3) 260s long run — `Ev_receive
+(0x01019007)` is INFINITE (no watchdog), 0 Tm_, 0 spawn; (4) NO window-manager (openbox skipped, to rule out
+reparenting hiding MapNotify/Expose) — identical deadlock, so the WM isn't it. ⇒ the gate is the FModule GUI
+sync (the t10b↔t10d `0x1000` USEREVMASK ping-pong + the logo "displayed" confirm) which lives in **libbackend.so /
+PLib** (FmProgressNotify is a thunk imported from there, NOT in AppStartMP.elf), so the next real attempt needs
+that binary in IDA to decode the confirm message/handshake. This is the documented GUI ceiling; the config half
+(jhDataFiles → batch read) is fully solved + verified upstream of it.
 
 ★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
 the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
