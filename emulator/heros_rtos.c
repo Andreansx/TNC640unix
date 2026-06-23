@@ -916,9 +916,8 @@ long syscall(long n,...){
             raw5(SYS_nanosleep,(long)&ts,0,0,0,0); }
         return 0;
     }
-    case 0x31: /* Tm_check(timer) — query a timer's status; return 0 (expired/ready) so the
-                * caller's GUI/poll loop (HrMmi) proceeds instead of treating it as still-pending. */
-        return 0;
+    /* (no explicit Tm_check/0x31 handler: returning 0 ABORTS ConfigServer's timer logic (signal 6);
+     * the default unhandled path is what both ConfigServer and HrMmi tolerated, so leave 0x31 to it.) */
     case 0x1b:   /* Tm_evafter(delay_us@p[0], event_bits@p[1]) — fire event to CALLER after delay  */
     case 0x1d:{  /* Tm_evevery(period_us@p[0], event_bits@p[1]) — periodic.  Kernel: Tm_create →
                   * __usecs_to_jiffies(p[0]) on GET_TASK_CURRENT(), sends p[1] on expiry. Without
