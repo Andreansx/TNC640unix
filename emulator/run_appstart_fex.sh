@@ -44,6 +44,7 @@ echo "  AppStartMP closure ensured (${#S[@]} nodes)"
 # so the injected FmLoadProcess passes FSystemPathname::IsAFile and PCreate can execve it.
 if [ -e "$SRC/heros5/bin/winmgr.elf" ]; then
   cp -aL "$SRC/heros5/bin/winmgr.elf" "$R/heros5/bin/winmgr.elf"
+  chmod +x "$R/heros5/bin/winmgr.elf"   # p_create does access(X_OK); cp -aL preserved 0644 -> EACCES -> no fork
   for n in $(i686-linux-gnu-objdump -p "$SRC/heros5/bin/winmgr.elf" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
   echo "  winmgr.elf + closure staged (${#S[@]} nodes total)"
 fi'
@@ -175,7 +176,7 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
+timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
   HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-1} \
   HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
