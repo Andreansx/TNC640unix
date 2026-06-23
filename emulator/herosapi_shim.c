@@ -157,3 +157,14 @@ int select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *to) {
     }
     return (int)syscall(SYS__newselect, nfds, r, w, e, to);
 }
+
+/* encDir (ConfigServer's encfs config-store layer) does unshare(CLONE_NEWNS) + mount() to mount the
+ * jh_int encfs view; both FAIL under FEX (ret=-1) -> encDir retry-loops and ConfigServer never reaches
+ * RUNUP_COMPLETE. jh_int is a RED HERRING (config is plaintext /mnt/sys/config; cfgfix reads it directly),
+ * so fake the mount-ns ops as success to stop the retry loop. Gated on HEROS_FAKE_NS=1. */
+static int fake_ns = -1;
+static int fake_ns_on(void){ if (fake_ns < 0){ const char *e = getenv("HEROS_FAKE_NS"); fake_ns = e && e[0]=='1'; } return fake_ns; }
+int unshare(int flags){ return fake_ns_on() ? 0 : (int)syscall(SYS_unshare, flags); }
+int mount(const char *src, const char *tgt, const char *fs, unsigned long fl, const void *d){
+    return fake_ns_on() ? 0 : (int)syscall(SYS_mount, src, tgt, fs, fl, d); }
+int umount2(const char *tgt, int fl){ return fake_ns_on() ? 0 : (int)syscall(SYS_umount2, tgt, fl); }
