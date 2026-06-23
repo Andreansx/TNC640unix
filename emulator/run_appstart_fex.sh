@@ -51,6 +51,11 @@ fi'
 
 echo "=== [2] FEX config + writable SYS (AppStartMP writes SYS\\runtime) + clean shm ==="
 sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo tee /root/.fex-emu/Config.json >/dev/null
+# p_create FEX-spawn: the i386 guest execve("/usr/bin/FEXInterpreter") is rootfs-prefixed by FEX to
+# $R/usr/bin/FEXInterpreter -> must exist (symlink to the native FEXInterpreter) so the spawned subsystem
+# (winmgr) launches under a fresh FEXInterpreter (native exec, no i386-re-wrap stall).
+FEXBIN=$(command -v FEXInterpreter); sudo mkdir -p "$R/usr/bin"; sudo ln -sf "$FEXBIN" "$R/usr/bin/FEXInterpreter"
+echo "  FEXInterpreter symlink: $R/usr/bin/FEXInterpreter -> $FEXBIN"
 # Writable SYS mirror: real config/batch (RO source) + a writable runtime. AppStartMP reads
 # SYS:\config\*.cfg + SYS:\batch\TNC640heros.txt and writes SYS:\runtime\AppStartFinishCounter.txt.
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
@@ -181,6 +186,7 @@ timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,
   HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-1} \
   HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
   HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-1} \
+  HEROS_PCREATE_FEX=${HEROS_PCREATE_FEX:-1} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \

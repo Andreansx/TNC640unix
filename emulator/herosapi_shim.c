@@ -190,3 +190,38 @@ static int fake_chmod = -1;
 static int fake_chmod_on(void){ if (fake_chmod < 0){ const char *e = getenv("HEROS_FAKE_CHMOD"); fake_chmod = e && e[0]=='1'; } return fake_chmod || fake_ns_on(); }
 int chmod(const char *path, mode_t m){ return fake_chmod_on() ? 0 : (int)syscall(SYS_chmod, path, m); }
 int fchmodat(int dfd, const char *path, mode_t m, int fl){ return fake_chmod_on() ? 0 : (int)syscall(SYS_fchmodat, dfd, path, m, fl); }
+
+/* ---------------- p_create interposer: make the constellation spawn ACTUALLY RUN under FEX -----------
+ * AppStart::Platform::PCreate -> p_creates -> p_create normally does clone(CLONE_VM|VFORK 0x4111, callback)
+ * then the child execve's the i386 image (e.g. winmgr.elf). Under FEX the forked-child i386-ELF execve
+ * STALLS in FEX's exec re-wrap (/proc/self/fd inspection hangs). Instead: a PLAIN fork() + execve of the
+ * NATIVE /usr/bin/FEXInterpreter <image> <args...> — a native exec (no FEX re-wrap), exactly like
+ * AppStartMP's cat/grep helper forks that work — so the subsystem process actually launches under FEX with
+ * the rootfs + i386 LD_PRELOAD (heros emulator). p_create(p1,p2,p3,int*pidout,p5,char*image,p7,...varargs):
+ * the real argv = [image, p7, varargs..., NULL]; FEXInterpreter gets [FEXInterpreter, image, p7, varargs].
+ * Gated HEROS_PCREATE_FEX=1. */
+extern char **environ;
+static int pcreate_fex = -1;
+int p_create(unsigned p1, unsigned p2, unsigned p3, int *pidout, unsigned p5,
+             char *image, char *p7, ...) {
+    if (pcreate_fex < 0) { const char *e = getenv("HEROS_PCREATE_FEX"); pcreate_fex = e && e[0]=='1'; }
+    if (!pcreate_fex) {            /* fall back to the real p_create via raw clone is hard; signal failure */
+        /* not enabled: best-effort no-op failure (the gate should be ON for spawn runs) */
+        if (pidout) *pidout = -1; return -1;
+    }
+    const char *fex = getenv("HEROS_PCREATE_FEXBIN"); if (!fex || !*fex) fex = "/usr/bin/FEXInterpreter";
+    char *argv[300]; int n = 0;
+    argv[n++] = (char*)fex;
+    if (image && *image) argv[n++] = image;
+    if (p7) argv[n++] = p7;
+    va_list ap; va_start(ap, p7); char *a;
+    while ((a = va_arg(ap, char*)) != 0 && n < 298) argv[n++] = a;
+    va_end(ap); argv[n] = 0;
+    fprintf(stderr, "[pcreate] FEX-spawn: %s %s (argc=%d)\n", fex, image?image:"?", n);
+    for (int i=0;i<n;i++) fprintf(stderr, "[pcreate]   argv[%d]=%s\n", i, argv[i]?argv[i]:"(null)");
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) { execve(fex, argv, environ); _exit(127); }
+    if (pid > 0 && pidout) *pidout = pid;
+    return pid > 0 ? pid : -1;
+}
