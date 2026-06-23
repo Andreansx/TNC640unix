@@ -51,12 +51,23 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
     export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu DISPLAY=$DISP HEROSROOT=$R/heros5
     mkdir -p /etc/fonts; [ -e /etc/fonts/fonts.conf ] || printf "<?xml version=\"1.0\"?><fontconfig><dir>/usr/share/fonts</dir><cachedir>/tmp/fc</cachedir></fontconfig>" > /etc/fonts/fonts.conf
     cd /; ln -sfn /tmp/s "/%SYS%"; ln -sfn /tmp/o "/%OEM%"; ln -sfn /tmp/s "/%USR%"
+    # foundation: heuserver (HrMmi auth, 19093) + dbus. heuserver writes /etc (contained by the bind).
+    mount -t tmpfs tmpfs /run 2>/dev/null; mkdir -p /run/dbus /var/run/dbus /var/lib/dbus /etc/dbus-1 /etc/sysconfig/heuseradmin /etc/security /var/run/auth_daemon/fs_mount /var/run/auth_daemon/certs
+    [ -e /etc/netgroup ] || : > /etc/netgroup; [ -s /etc/machine-id ] || printf "0123456789abcdef0123456789abcdef\n" > /etc/machine-id; ln -sf /etc/machine-id /var/lib/dbus/machine-id
+    [ -e /dev/fuse ] || { mknod /dev/fuse c 10 229 2>/dev/null; chmod 666 /dev/fuse 2>/dev/null; }
+    export PATH=$R/usr/bin:$R/bin:$R/sbin:$PATH
+    echo "### foundation: dbus + heuserver ###"
+    LD_PRELOAD=/lib/herosapi_shim.so:/lib/renamefix.so FEXInterpreter $R/usr/bin/dbus-daemon --system --nofork --nopidfile --nosyslog >/tmp/hrmmi_dbus.log 2>&1 & sleep 3
+    LD_PRELOAD=/lib/herosapi_shim.so:/lib/renamefix.so:/lib/fexunmask.so FEXInterpreter $R/usr/sbin/heuserver >/tmp/hrmmi_heu.log 2>&1 & sleep 5
+    echo "  heuserver listening: $( (ss -ltn 2>/dev/null||true) | grep -c :19093 )"
     echo "### ConfigServer (bg, cfgfix) ###"
     ( LD_PRELOAD="$PRE" timeout -s KILL 150 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
     echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 120 ]; do grep -q "HWS stub: replied" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer run-up done at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
     sleep 5
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) — the Qt/PLIB++ MMI ###"
-    timeout -s KILL 75 /usr/bin/strace -f -qq -e trace=openat,connect,execve -o /tmp/hrmmi_strace.log \
+    # capture the Xvfb framebuffer mid-run (proof of render if HrMmi connects to X)
+    ( sleep 65; rm -f /tmp/hrmmi_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/hrmmi_screen.xwd 2>/dev/null && echo "  screenshot: $(ls -la /tmp/hrmmi_screen.xwd 2>/dev/null|awk "{print \$5}") bytes" ) &
+    timeout -s KILL 80 /usr/bin/strace -f -qq -e trace=openat,connect,execve -o /tmp/hrmmi_strace.log \
       env LD_PRELOAD="$PRE" FEXInterpreter $R/heros5/bin/HrMmi.elf -p=~/hrmmi hrmmi -k=NC > /tmp/hrmmi.log 2>&1
     pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null
   '

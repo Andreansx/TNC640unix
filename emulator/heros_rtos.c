@@ -504,13 +504,9 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     qhex("Q_send",id,msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
     uint32_t owner=q->owner, nbits=q->notify_bits;
-    /* FModule notify-bit fix: notify_bits is the flags-derived top byte (0x01000000), but a module
-     * registers its input queue under a per-waitable id (FWaitable::GetUniqueEventId) = the bit it
-     * actually Ev_receive-waits for. If that flags-bit isn't in the owner's current single-bit wait,
-     * notify THAT bit so the owner wakes (AppStartMP "logo" queue: flags->0x01000000, logo waits
-     * 0x1000). Overlap cases (ConfigServer 0x01000000 in its 0x01011000 wait) are unchanged. */
-    if(nbits&&owner){ int os=task_slot(owner); uint32_t ow=(os>=0)?C->tasks[os].last_ev_want:0;
-        if(ow && (nbits&ow)==0 && (ow&(ow-1))==0) nbits=ow; }
+    /* (the AppStartMP notify-bit-match heuristic was reverted: it didn't crack the logo handshake
+     * and risked perturbing ConfigServer's worker-thread run-up. Plain flags-byte notify, as in the
+     * known-good run_2proc_cfgfix that served IPO.) */
     unlock();
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
