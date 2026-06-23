@@ -858,6 +858,33 @@ static uint32_t gm_build_fmloadprocess(unsigned char*b,const char*procName,const
     }
     return p;
 }
+#define GMC_ENUM_SUBSYS_ACTION 0xca004b   /* FM_SUBSYSTEM_ACTION enum (ctor push 0xca004b) */
+/* Build FmSubsystemAction (type 0xca0060). 3 attrs: action(enum), name(str), procedure(str).
+ * action=0 = REGISTER (Subsystems::OnMessage(FmSubsystemAction) case 0 → push_back). */
+static uint32_t gm_build_fmsubsystemaction(unsigned char*b,uint32_t action,const char*name,const char*procedure){
+    uint32_t p=0; put32(b+p,0x00ca0060u); p+=4;                        /* type-id */
+    p = gm_scalar(b,p,GMC_ENUM_SUBSYS_ACTION,action);                 /* 0 action (present enum) */
+    p = name ? gm_str(b,p,name) : gm_absent(b,p,GMC_STRING);          /* 1 name */
+    p = procedure&&procedure[0] ? gm_str(b,p,procedure) : gm_absent(b,p,GMC_STRING); /* 2 procedure */
+    return p;
+}
+/* Build FmLoadSubsystem (type 0xc80181). 6 attrs: name(str), localNamespace(str), procedure(str),
+ * type(enum), processes(GMsgList), int. The processes list = PRESENT {0x18c, count=1, <FmLoadProcess>}.
+ * Flows through Config (ReplaceToken ~->localNS, ConvertWithEnvVar) + Subsystems (explode + set the
+ * +128/+132 runtime fields PCreatePrepare reads for the create-mode). Subsystem must be REGISTERED first. */
+static uint32_t gm_build_fmloadsubsystem(unsigned char*b,const char*name,const char*localNS,
+                                         const char*procName,const char*cmdOpts,const char*imagePath){
+    uint32_t p=0; put32(b+p,0x00c80181u); p+=4;                        /* type-id */
+    p = gm_str(b,p,name);                                             /* 0 subsystem name */
+    p = gm_str(b,p,localNS);                                          /* 1 localNamespace */
+    p = gm_absent(b,p,GMC_STRING);                                    /* 2 procedure (absent) */
+    p = gm_absent(b,p,GMC_ENUM_SUBSYS_TYPE);                          /* 3 type FM_SUBSYSTEM_TYPE (absent=normal) */
+    /* 4 processes: PRESENT GMsgList {0x18c, count=1, FmLoadProcess sub-message} */
+    put32(b+p,GMC_LIST); p+=4; put32(b+p,1); p+=4;                    /* list header + count=1 */
+    p += gm_build_fmloadprocess(b+p,procName,cmdOpts,imagePath);      /* the one FmLoadProcess element */
+    p = gm_absent(b,p,GMC_INT);                                       /* 5 int (absent) */
+    return p;
+}
 /* The constellation set to inject. For the first milestone we inject ONE flat FmLoadProcess (winmgr)
  * — Processes::OnMessage(FmLoadProcess) forks it directly (no subsystem registration required).
  * imagePath must be the RESOLVED path (Config's %EXECDIRH% expansion is bypassed): EXECDIRH=/tmp/b. */
@@ -865,16 +892,35 @@ struct fmproc { const char*procName; const char*cmdOpts; const char*imagePath; }
 static const struct fmproc fmload_tbl[] = {
     { "winmgr/winmgr", 0, "/tmp/b/winmgr.elf" },
 };
+static void dump_bytes(const char*tag,const unsigned char*b,uint32_t n){
+    fprintf(stderr,"[rtos] %s (%u bytes)=",tag,n); for(uint32_t k=0;k<n&&k<400;k++) fprintf(stderr,"%02x",b[k]); fprintf(stderr,"\n"); fflush(stderr);
+}
 static void inject_fmload_set(uint32_t qid){
-    unsigned char buf[1024];
+    unsigned char buf[2048];
     const char*one=getenv("HEROSCALL_INJECT_FMLOAD_IMG");   /* optional override of the single image path */
     const char*onep=getenv("HEROSCALL_INJECT_FMLOAD_PROC");
+    const char*sub=getenv("HEROSCALL_INJECT_SUBSYS");        /* 1 = faithful FmSubsystemAction(register)+FmLoadSubsystem path */
+    if(sub&&sub[0]=='1'){
+        /* FAITHFUL PATH: register the subsystem, then load it (Config expands+sets fields, Subsystems
+         * explodes to FmLoadProcess with the +128/+132 create-mode fields → PCreate forks). */
+        const char*nm="winmgr", *ns="winmgr";
+        const char*pn = onep?onep:"~/winmgr";               /* RAW: Config ReplaceToken ~->localNS */
+        const char*ip = one ?one :"/tmp/b/winmgr.elf";      /* pre-resolved (Config ConvertWithEnvVar leaves it) */
+        uint32_t n;
+        n=gm_build_fmsubsystemaction(buf,0,nm,0);            /* action=0 REGISTER */
+        fprintf(stderr,"[rtos] INJECT_SUBSYS: FmSubsystemAction(register \"%s\") -> AppStartMaster(0x%x)\n",nm,qid);
+        dump_bytes("INJECT_SUBSYS reg",buf,n); q_send(qid,buf,n,0);
+        n=gm_build_fmloadsubsystem(buf,nm,ns,pn,0,ip);       /* load: name,localNS,proc,cmdOpts=absent,image */
+        fprintf(stderr,"[rtos] INJECT_SUBSYS: FmLoadSubsystem(\"%s\" proc=\"%s\" img=\"%s\") -> AppStartMaster(0x%x)\n",nm,pn,ip,qid);
+        dump_bytes("INJECT_SUBSYS load",buf,n); q_send(qid,buf,n,0);
+        return;
+    }
     for(unsigned i=0;i<sizeof fmload_tbl/sizeof fmload_tbl[0];i++){
         const char*pn = (i==0&&onep)?onep:fmload_tbl[i].procName;
         const char*ip = (i==0&&one )?one :fmload_tbl[i].imagePath;
         uint32_t n=gm_build_fmloadprocess(buf,pn,fmload_tbl[i].cmdOpts,ip);
         fprintf(stderr,"[rtos] INJECT_FMLOAD: posting FmLoadProcess(proc=\"%s\" img=\"%s\") %u bytes -> AppStartMaster(0x%x)\n",pn,ip,n,qid);
-        fprintf(stderr,"[rtos] INJECT_FMLOAD: bytes="); for(uint32_t k=0;k<n;k++) fprintf(stderr,"%02x",buf[k]); fprintf(stderr,"\n"); fflush(stderr);
+        dump_bytes("INJECT_FMLOAD bytes",buf,n);
         q_send(qid,buf,n,0);
     }
 }
@@ -1239,7 +1285,9 @@ long syscall(long n,...){
                 * not P_ processes, so report NOT-FOUND (-1) — else AppStart::Processes::OnMessage(FmLoadProcess)
                 * reads p_ident!=-1 as "process already running" and throws "...twice" BEFORE IsAFile/PCreate,
                 * silently aborting the spawn (the default 0 broke the fork). -1 = heros not-found convention. */
-        LOG("P_ident(\"%s\") -> -1 (not found)\n", (p&&p[0])?(const char*)(uintptr_t)p[0]:"?");
+        { const char*pn=(p&&p[0])?(const char*)(uintptr_t)p[0]:"?";
+          if(strstr(pn,"winmgr")||strstr(pn,"mgr")) { fprintf(stderr,"[rtos] P_ident(\"%s\") -> -1 (Processes::OnMessage reached)\n",pn); fflush(stderr); }
+          else LOG("P_ident(\"%s\") -> -1\n",pn); }
         return (uint32_t)-1;
     default:
         return 0;   /* T_create,T_start,As,P_childstat,P_signal,Tm etc — success stub for now */

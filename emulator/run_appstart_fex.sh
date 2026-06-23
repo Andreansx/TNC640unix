@@ -175,10 +175,11 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=execve,connect,clone,fork,vfork,newfstatat,statx,access,stat -o /tmp/a_strace.log \
+timeout -s KILL 120 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
   HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-1} \
   HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
+  HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-1} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
