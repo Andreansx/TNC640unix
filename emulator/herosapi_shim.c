@@ -229,7 +229,13 @@ int p_create(unsigned p1, unsigned p2, unsigned p3, int *pidout, unsigned p5,
     for (int i=0;i<n;i++) fprintf(stderr, "[pcreate]   argv[%d]=%s\n", i, argv[i]?argv[i]:"(null)");
     fflush(stderr);
     pid_t pid = fork();
-    if (pid == 0) { execve(fex, argv, environ); _exit(127); }
+    if (pid == 0) {
+        /* the spawned subsystem must NOT re-inject the constellation set (only AppStartMP injects);
+         * unset the inject env so a spawned proc seeing an AppStartMaster FmProcessState stays passive. */
+        unsetenv("HEROSCALL_INJECT_FMLOAD"); unsetenv("HEROSCALL_INJECT_FMLOAD_SET");
+        unsetenv("HEROSCALL_INJECT_FMLOAD_IMG"); unsetenv("HEROSCALL_INJECT_FMLOAD_PROC");
+        execve(fex, argv, environ); _exit(127);
+    }
     if (pid > 0 && pidout) *pidout = pid;
     return pid > 0 ? pid : -1;
 }
