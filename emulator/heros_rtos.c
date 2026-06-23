@@ -639,9 +639,9 @@ static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
 /* INJECT_ACK: IPO sent CfgConnectClient(0x1700c0). Parse its reply-queue name (first GMsgString)
  * and post a synthetic CfgClientIsConnected(0x170100, success=OK) to it so IPO proceeds. */
 static void put32(unsigned char*b,uint32_t v){ b[0]=v; b[1]=v>>8; b[2]=v>>16; b[3]=v>>24; }
-static int ack_injected=0;
+static uint32_t acked_qids[32]; static int n_acked=0;   /* per-reply-queue dedup (HrMmi has several) */
 static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size){
-    if(!inject_ack||ack_injected||!msg||size<16) return;
+    if(!inject_ack||!msg||size<16) return;
     int ts=q_slot(target_qid); if(ts<0||strcmp(C->queues[ts].name,"CfgServerQueue")) return;
     const unsigned char*m=msg;
     uint32_t hdr=m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24);
@@ -651,19 +651,35 @@ static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size)
     uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
     if(nlen==0||nlen>64||12+nlen>size) return;
     char name[80]; memcpy(name,m+12,nlen); name[nlen]=0;
-    int rs=q_find_slot(name); if(rs<0){ LOG("INJECT_ACK: reply queue \"%s\" not found\n",name); return; }
+    const char *cid=name; uint32_t cidlen=nlen;
+    int rs=q_find_slot(name);
+    if(rs<0){
+        /* HrMmi's CfgConnectClient field0 is NOT a clean reply-queue name like IPO's
+         * ("0-0000106CfgM") — it's a descriptive string that EMBEDS the queue name, e.g.
+         * " New start of HrMmi logging with m.QueueHrMmi" (real queue = "QueueHrMmi").
+         * Find the existing queue whose name appears as a substring of field0 (longest wins),
+         * and use ITS name as both the reply target and the ACK clientId. */
+        int best=-1; size_t bestlen=0;
+        for(int qi=0;qi<MAXQ;qi++){ struct queue*q=&C->queues[qi];
+            if(q->used && q->name[0] && strlen(q->name)>=4 && strstr(name,q->name)){
+                size_t l=strlen(q->name); if(l>bestlen){ bestlen=l; best=qi; } } }
+        if(best>=0){ rs=best; cid=C->queues[best].name; cidlen=(uint32_t)bestlen;
+            LOG("INJECT_ACK: matched embedded reply queue \"%s\" in field0 \"%s\"\n",cid,name); }
+    }
+    if(rs<0){ LOG("INJECT_ACK: reply queue \"%s\" not found\n",name); return; }
     uint32_t rqid=C->queues[rs].id;
     /* CfgClientIsConnected: header + clientId(name) + id(marker) + success(enum=OK 0) = 3 fields */
     unsigned char ack[160]; uint32_t p=0;
     put32(ack+p,0x00170100); p+=4;                        /* header (CfgClientIsConnected id) */
     put32(ack+p,0x000000e7); p+=4;                        /* field0 clientId: GMsgString tag (present) */
-    put32(ack+p,nlen); p+=4; memcpy(ack+p,name,nlen); p+=nlen;
+    put32(ack+p,cidlen); p+=4; memcpy(ack+p,cid,cidlen); p+=cidlen;
     put32(ack+p,0x80000063); p+=4;                        /* field1 id: marker (absent/default) */
     put32(ack+p,0x001700eb); p+=4;                        /* field2 success: enum tag (present) */
     put32(ack+p,0x00000000); p+=4;                        /* success value = OK(0) */
-    ack_injected=1;
+    for(int i=0;i<n_acked;i++) if(acked_qids[i]==rqid) return;  /* already ACKed this reply queue */
+    if(n_acked<32) acked_qids[n_acked++]=rqid;
     q_send(rqid,ack,p,0);
-    LOG("INJECT_ACK: posted CfgClientIsConnected(success=OK) to \"%s\" (0x%x), %u bytes\n",name,rqid,p);
+    LOG("INJECT_ACK: posted CfgClientIsConnected(success=OK) to \"%s\" (0x%x), %u bytes\n",cid,rqid,p);
 }
 
 /* ---------------- regions (named shared memory) ---------------- */
