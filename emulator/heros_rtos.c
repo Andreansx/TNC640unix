@@ -175,6 +175,7 @@ static void mono_now(struct timespec *ts){ ts->tv_sec=0; ts->tv_nsec=0; raw5(265
  * (then it proceeds to spawn) or a missing-DATA gate (then it wakes, finds empty queues, re-blocks =
  * the config-data #6 frontier). Gated off by default. */
 static int ev_unblock_ms=-2;
+static volatile int runup_done=0;        /* set when run-up complete (HWS stub OR serve-loop fallback) — fwd-declared here for ev_receive */
 /* HEROSCALL_EV_INJECT_WANT / _BIT: TARGETED event injection. Only the forever-wait whose want-mask
  * == EV_INJECT_WANT gets the synthetic unblock (others stay forever, undisturbed), and it returns
  * ONLY (want & EV_INJECT_BIT) instead of the full want — so a single precise waitable bit is
@@ -186,6 +187,16 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
     C->tasks[s].last_ev_want=want;                 /* record for queue-notify bit matching */
+    /* RUN-UP FALLBACK: the HWS-stub run-up-done signal does NOT fire on the path where ConfigServer
+     * reaches its FModule serve loop directly (Ev_receive(0x01011000, forever) — the dispatch waiting on
+     * its CfgServerQueue 0x01000000 bit + queue/event bits). Without runup_done, the INJECT_REREAD that
+     * triggers the config-DATA load (ReadConfigDataSet → ReadDataFiles) never fires, so data-opens=0 and
+     * ConfigServer never serves real config to a client (HrMmi). Treat reaching that forever serve-loop
+     * wait as run-up-complete. (Process-local; harmless for non-ConfigServer procs.) */
+    if(!runup_done && want==0x01011000 && timeout==0xffffffff){
+        __atomic_store_n(&runup_done,1,__ATOMIC_RELEASE);
+        fprintf(stderr,"[rtos] RUNUP_COMPLETE pid=%d (serve-loop fallback; no HWS stub)\n",(int)getpid()); fflush(stderr);
+    }
     /* HEROSCALL_EV_FORCE_TASK/_BIT: for one specific task, make any Ev_receive that wants the
      * force-bit return it immediately (no block) — breaks the FModule startup-handshake deadlock
      * where the logo thread (0x108) waits forever for the 0x1000 "input-ready"/ack from
@@ -289,7 +300,7 @@ static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_e
  * EXTERNAL client) needs the absent Qt MMI's UpdNewState, which must be CONSTRUCTED (no real
  * one exists to echo). Kept gated-off as a documented dead-end + reusable record/replay scaffold. */
 static int replay_trigger=0;
-static volatile int runup_done=0;        /* set when the HWS stub fires (= run-up complete) */
+/* runup_done declared earlier (before ev_receive) */
 static volatile int trigger_replayed=0;
 /* HEROSCALL_INJECT_UPD=1: after IPO's connect is read+registered, inject a synthetic UpdNewState
  * GMessage (id 0x1f0320, dispatch je@0x236091→OnUpdNewState) onto CfgServerQueue, to make
