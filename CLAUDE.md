@@ -1244,6 +1244,31 @@ PLib** (FmProgressNotify is a thunk imported from there, NOT in AppStartMP.elf),
 that binary in IDA to decode the confirm message/handshake. This is the documented GUI ceiling; the config half
 (jhDataFiles → batch read) is fully solved + verified upstream of it.
 
+★★★★ SPAWN GATE TRACED TO THE ROOT (2026-06-24, IDA on AppStartMP.elf + libbackend.so + message-level RTOS
+trace): with the cfgfix full-load fix the config half is DONE; the spawn gate is now pinned through every layer.
+TOOLING: added `heros_rtos.c` HSTRACE message **type-tag + printable-ASCII** dump (commit) → decoded the exact
+GMessages on AppStartMaster's queues. FINDINGS: (1) the chain LIVELOCKS cycling ONE message type **0x40c803e0 =
+`FmProcessState`** (id→handler map from `Monitor::DispatchMessage@0x3e220`: 0x40c80080=FmEvent→OnEvent,
+0x40c80060=FmCommandLineOption→OnOption, 0x40c80420=FmTimer→OnTimer, 0x40c803e0=FmProcessState→OnMessage). (2)
+`Monitor::OnMessage(FmProcessState)@0x3c400`: state==2 && **action==0 && pending==1** → emit `FmSubsystemAction
+(1=start)` → fork. (3) `AppStart::Processes::OnMessage(FmProcessState)@0x50450`: if the process isn't in
+`childProcesses` (= not forked by AppStartMP) it logs "Cannot track unknown process" and does NOT signal
+`NEXT_CHILDSTAT` (the only other ScanChildStat trigger; `ScanChildStat@0x3c8b0` is ONLY reachable from
+`Monitor::OnEvent`). (4) The cycling FmProcessState (wire `e003c840|02000000|…|name@+16`) carries the name
+**"cfgserver:"** — the heros name of the **pre-launched ConfigServer**, which matches NO registered subsystem
+("Server:~/cfgserver") → "unknown process", ignored; removing the pre-launched ConfigServer changes nothing
+(intrinsic, not interference). (5) DIRECT INJECTION PROBE (`HEROSCALL_INJECT_WINMGR`, heros_rtos.c): synthesize a
+structurally-valid `FmProcessState(name="winmgr:~/winmgr", state=2)` onto the AppStartMaster queue — it FIRES,
+delivers, and flows through the chain to the logo EXACTLY like a real one, but produces **no FmSubsystemAction/
+fork** ⇒ `GetIndexOfSubsystem("winmgr:~/winmgr")@0x5f610` finds nothing = **winmgr is NOT registered**. ROOT GATE:
+AppStartMP READS the batch (8 opens) but its **`FmLoadSubsystem` entries never reach `Subsystems::OnMessage`
+@0x606b0** — no subsystem is registered, so nothing can be started/forked. The FModule boot chain (Procedures
+parses the batch but the FmLoadSubsystem messages don't flow to the Subsystems stage) is the precise gate =
+the documented multi-process-constellation/FModule-boot ceiling. Next levers (each deep): inject the
+`FmLoadSubsystem` set to register the subsystems THEN the FmProcessState to start them, or RE why
+Procedures→Subsystems doesn't flow. Probes: `HEROSCALL_INJECT_WINMGR` (+ `_NAME`), DUMPQ/HSTRACE tag+ascii;
+runs `scratchpad/run_appstart_{diag,winmgr,nocfg,dumpq}.sh`.
+
 ★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
 the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
 @0x606b0`: it looks up the subsystem by name (+12), reads its process-LIST size (+72); if the list is
