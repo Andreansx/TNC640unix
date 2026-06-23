@@ -688,7 +688,14 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
         lock();
         if(q->tail!=q->head){
             uint32_t slot=q->head%QSLOTS;
-            uint32_t len=q->msg[slot].len; if(maxsize&&len>maxsize) len=maxsize;
+            uint32_t full=q->msg[slot].len;                       /* the REAL message length */
+            /* Deliver the FULL message. The p[2]=maxsize arg is NOT a hard buffer cap here — the
+             * GMessage receivers (ConfigServer's FMailslotQueue) allocate a receive buffer to the
+             * kernel's max message size (0x8000) and reuse one fixed buffer across reads, so a 193B
+             * CfgGetData fits. The OLD code truncated to maxsize (0x80=128) -> the GMessage deserializer
+             * parsed a cut-off GMsgList(count=9) -> wild free(): invalid pointer (the HrMmi-context
+             * ConfigServer crash). Return the full size + dequeue, as for any fitting message. */
+            uint32_t len=full;
             if(buf&&len) memcpy(buf,q->msg[slot].data,len);
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
             qhex("Q_read",id,buf,len);
@@ -975,14 +982,24 @@ static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size)
         /* HrMmi's CfgConnectClient field0 is NOT a clean reply-queue name like IPO's
          * ("0-0000106CfgM") — it's a descriptive string that EMBEDS the queue name, e.g.
          * " New start of HrMmi logging with m.QueueHrMmi" (real queue = "QueueHrMmi").
-         * Find the existing queue whose name appears as a substring of field0 (longest wins),
-         * and use ITS name as both the reply target and the ACK clientId. */
-        int best=-1; size_t bestlen=0;
+         * Find the existing queue whose name appears as a substring of field0 and use ITS
+         * name as the reply target + ACK clientId. CRITICAL: a CfgClientIsConnected ACK must
+         * land on a queue the client is actually WAITING on, i.e. one with notify_bits != 0
+         * (a real input/reply queue) — NOT a black-hole/logger queue. field0 itself embeds a
+         * logger-banner queue (" New start of HrMmi logging wit", notify 0) that is LONGER
+         * than the real reply queue "QueueHrMmi" (notify 0x02000000), so a plain longest-wins
+         * match picks the black hole and the ACK never wakes HrMmi's Ev_receive(0x03011001).
+         * => PREFER notify!=0 (longest among them); only fall back to a notify=0 match if none. */
+        int best=-1; size_t bestlen=0; int best_n=-1; size_t bestlen_n=0;
         for(int qi=0;qi<MAXQ;qi++){ struct queue*q=&C->queues[qi];
             if(q->used && q->name[0] && strlen(q->name)>=4 && strstr(name,q->name)){
-                size_t l=strlen(q->name); if(l>bestlen){ bestlen=l; best=qi; } } }
+                size_t l=strlen(q->name);
+                if(l>bestlen){ bestlen=l; best=qi; }                       /* longest, any notify */
+                if(q->notify_bits && l>bestlen_n){ bestlen_n=l; best_n=qi; } } }  /* longest WITH notify */
+        if(best_n>=0){ best=best_n; bestlen=bestlen_n; }                   /* prefer a watched queue */
         if(best>=0){ rs=best; cid=C->queues[best].name; cidlen=(uint32_t)bestlen;
-            LOG("INJECT_ACK: matched embedded reply queue \"%s\" in field0 \"%s\"\n",cid,name); }
+            LOG("INJECT_ACK: matched embedded reply queue \"%s\" (notify %08x) in field0 \"%s\"\n",
+                cid,C->queues[best].notify_bits,name); }
     }
     if(rs<0){ LOG("INJECT_ACK: reply queue \"%s\" not found\n",name); return; }
     uint32_t rqid=C->queues[rs].id;
