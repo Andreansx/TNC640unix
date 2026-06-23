@@ -33,7 +33,7 @@ GUARD_BEFORE=$(md5sum /etc/passwd | awk '{print $1}')
 sudo rm -f /tmp/cfgload.log /tmp/cfgload_strace.log
 
 sudo env R="$R" PRE="$PRE" CM="$CM" \
-  SYS=/tmp/s OEM=/tmp/o USR=/tmp/s OEME=/tmp/o EXECDIRH=/tmp/b EXECDIR=/tmp/b EXECBAT=/tmp/s/batch/heros5 \
+  SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/tmp/b EXECDIR=/tmp/b EXECBAT=/mnt/sys/batch/heros5 \
   SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC: \
   HEROSCALL_VERBOSE=1 HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 \
   HEROSCALL_TIMERS=1 HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 \
@@ -45,8 +45,8 @@ sudo env R="$R" PRE="$PRE" CM="$CM" \
     export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
     cd /
     timeout -s KILL 60 /usr/bin/strace -f -qq -e trace=openat -o /tmp/cfgload_strace.log \
-      FEXInterpreter "$R/heros5/bin/ConfigServer.elf" -p=~/cfgserver cfgserver \
-        -f=/tmp/s/config/jhconfigfiles.cfg -i=Nc > /tmp/cfgload.log 2>&1
+      FEXInterpreter "$R/heros5/bin/ConfigServer.elf" Server:Server/cfgserver \
+        -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/cfgload.log 2>&1
     pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null
   '
 GUARD_AFTER=$(md5sum /etc/passwd | awk '{print $1}')
