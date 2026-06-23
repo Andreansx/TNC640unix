@@ -612,6 +612,11 @@ static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
     q_send(rqid,msg,size,0);                              /* v1: echo the request as the reply */
     LOG("HWS stub: replied %u bytes to \"%s\" (0x%x) [echo]\n",size,rname,rqid);
     __atomic_store_n(&runup_done,1,__ATOMIC_RELEASE);    /* run-up complete: stop recording, arm replay */
+    /* UNCONDITIONAL readiness marker (not VERBOSE-gated): a coordinator (run_hrmmi) waits for this
+     * before launching client processes, so ConfigServer's run-up + the INJECT_REREAD config-data
+     * load complete BEFORE a client's messages arrive — else the load races the client's writes to
+     * CfgServerQueue and corrupts the heap (free(): invalid pointer in ReadConfigDataSet). */
+    { fprintf(stderr,"[rtos] RUNUP_COMPLETE pid=%d\n",(int)getpid()); fflush(stderr); }
     /* INJECT_REREAD: now that ConfigServer's run-up is done, post a synthetic UpdNewState onto
      * CfgServerQueue. OnUpdNewState → CfgServer::ReadConfigDataSet → ReadDataFiles LOADS the config
      * DATA files (tnc.cfg → "NC" channel group). (CfgRereadData/OnRereadData is write-back/refresh,
