@@ -26,7 +26,8 @@ sudo chmod -R a+rwX "$SYSW"   # whole SYSW writable: CfgErrorParser::WriteUpdVer
 OEMW=/var/tmp/oemw; sudo rm -rf "$OEMW"; sudo cp -aL "$CFG/default/oem" "$OEMW" 2>/dev/null; sudo chmod -R a+rwX "$OEMW" 2>/dev/null
 ln -sfn "$SYSW" /tmp/s; ln -sfn "$OEMW" /tmp/o; ln -sfn "$R/heros5/bin" /tmp/b   # /%OEM%->writable mirror (CfgErrorParser::WriteUpdVersion SetWritePermission throws on RO version.cfg)
 # config-#6 prerequisites (cfgfix needs the volume targets + productid)
-sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid
+sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid /mnt/tnc/config /mnt/plce/config
+sudo cp -aL "$CFG/config/." /mnt/tnc/config/ 2>/dev/null; sudo chmod -R a+rwX /mnt/tnc /mnt/plce 2>/dev/null   # USR version write-back (user.cfg "No privilege to write")
 sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
 if [ "${SKIP_PRODUCTID:-0}" = 1 ]; then sudo rm -rf /mnt/sys/cache/nckern/productid; echo "  productid SKIPPED (testing the free()-crash hypothesis)";
