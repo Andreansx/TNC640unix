@@ -361,6 +361,15 @@ static uint32_t sync_timeout=0;      /* HEROSCALL_SYNC_TIMEOUT=ms caps forever Q
                                       * isn't running (no external SikServer); legit fast replies still pass */
 static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for auto-created sems */
 static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue message payloads */
+/* HEROSCALL_INJECT_WINMGR=1: AppStartMP registers the batch subsystems but never kicks off the first
+ * subsystem START (no FmProcessState(state=2) for winmgr, no NEXT_CHILDSTAT). The boot only sees a
+ * SPURIOUS FmProcessState for the pre-launched ConfigServer's heros name "cfgserver" (which doesn't
+ * match a registered subsystem -> "Cannot track unknown process"). Inject a synthetic
+ * FmProcessState(name="<NAME>", state=2) onto the AppStartMaster queue so Monitor::OnMessage
+ * (state==2 && action==0 && pending==1) emits FmSubsystemAction(1=start) -> AppStart::Processes forks
+ * winmgr. Wire = the captured FmProcessState template; HEROSCALL_INJECT_WINMGR_NAME overrides the name. */
+static int inject_winmgr=-1, winmgr_injected=0, in_winmgr_inject=0;
+static void put32(unsigned char*b,uint32_t v);   /* fwd-decl (defined in the INJECT_ACK section) */
 static int hws_stub=0;               /* HEROSCALL_HWS_STUB=1: auto-reply to QHWServer GetData requests
                                       * (the host-side IOsim has no i386 binary) — experimental */
 static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_evevery actually fire
@@ -616,6 +625,23 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
             id,q->name,size,mtag,sender,nbits,owner, msascii(msg,size)); }
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
     LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
+    /* INJECT_WINMGR: on the first FmProcessState (0x40c803e0) posted to the AppStartMaster queue
+     * (= subsystems registered, the boot reached the process-state stage), inject a synthetic
+     * FmProcessState(state=2) for the winmgr subsystem so its start fires. */
+    if(inject_winmgr<0){ const char*e=getenv("HEROSCALL_INJECT_WINMGR"); inject_winmgr=e&&e[0]=='1'; }
+    if(inject_winmgr && !winmgr_injected && !in_winmgr_inject && msg && size>=8
+       && *(const uint32_t*)msg==0x40c803e0u && !strcmp(C->queues[s].name,"AppStartMaster")){
+        winmgr_injected=1; in_winmgr_inject=1;
+        const char*nm=getenv("HEROSCALL_INJECT_WINMGR_NAME"); if(!nm||!nm[0]) nm="winmgr:~/winmgr";
+        unsigned char ps[52]; memset(ps,0,sizeof ps);
+        put32(ps+0,0x40c803e0u);                      /* FmProcessState id */
+        put32(ps+4,0x00000002u);                      /* state = 2 (to-start) */
+        put32(ps+16,0x00010000u);                     /* flag (from the captured template) */
+        size_t nl=strlen(nm); if(nl>30) nl=30; memcpy(ps+20,nm,nl);   /* name at body+16 (offset 20) */
+        LOG("INJECT_WINMGR: posting synthetic FmProcessState(\"%s\",state=2) to AppStartMaster(0x%x)\n",nm,id);
+        q_send(id,ps,sizeof ps,0);
+        in_winmgr_inject=0;
+    }
     /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
     if(replay_trigger && !runup_done && msg && size && size<=CFGQ_MSG
        && !strcmp(C->queues[s].name,"CfgServerQueue")){
