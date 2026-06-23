@@ -372,6 +372,28 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   synthetic **`UpdNewState`** (id 0x1f0320) deserializes + drives `OnUpdNewState` — the GMessage deserializer
   is **schema-driven**, so messages are built from the `.rodata` schema templates (gated `INJECT_UPD`).
   Run-up fixes retained (SIK/Hws stub, `Ev_receive`, `MAXQ`). See docs/17 §Update(2026-06-22).
+- **#6 ★★★★★ SOLVED (2026-06-24) — config #6 was the `%SYS%`/`%OEM%` MACRO NON-EXPANSION, NOT the
+  constellation.** All the "needs the constellation per-client/layer state" analysis below is SUPERSEDED.
+  Found via IDA Hex-Rays (MCP + idalib headless) + a Mac-side LD_PRELOAD logging interposer (`emulator/cfgprobe.c`)
+  on the FEX standalone ConfigServer (libConfigSystem is NOT -Bsymbolic → its exported intra-lib calls are
+  GOT-routed + interposable). Chain: `CfgServer::Start → ReadConfigDataSet (UNCONDITIONAL) → ReadConfigDataDir
+  → ReadDir → ReadOneMsg`. The CfgJhConfigDataFiles message PARSES fine and is NOT forbidden, but because
+  `IsSysFile` is FALSE, `CfgServer::IsJhEntity@0x20bce0` REJECTS it (0x1400010, nulls *msg); ReadDir only
+  entity-matches when ReadOneMsg returns 0, so the nonzero return → message discarded → ReadDir 0 →
+  `MissingFile` → ReadConfigDataDir 0 → no OEM index → IPO -k=NC. `ServerHelper::IsSysFile`/`IsOemFile` are
+  FALSE because they do `IsAncestorOf(FSystemPathname::sys()/oem(), filePath)` and `sys()/oem() =
+  FSystemPathname::Convert("%SYS%/" / "%OEM%/")` returns the **UNEXPANDED literal** "%SYS%/" standalone (the
+  %-macro table is empty; Convert does path-format conversion only) → ancestor check fails vs the resolved
+  "/mnt/sys/config/...". (The earlier sessions SAW the `%SYS%/%OEM%` literals failing on the FS but wrongly
+  dismissed them as a layout/version "side issue" — they are the CORE gate.) FIX = `emulator/cfgfix.c`
+  (LD_PRELOAD): classify IsSysFile/IsOemFile by the real resolved prefix (/mnt/sys/* IS a SYS file, /mnt/plc/*
+  IS an OEM file — exactly what the macro would expand to). VERIFIED under FEX (`FIX=1`/cfgfix.so): **ReadConfig
+  DataDir 0 → 24 (SUCCESS)**; the load CASCADES — 20+ data files OPENED incl. configfiles.cfg (OEM index),
+  **channel.cfg (the NC channel)**, tnc.cfg, ChannelCfg.atr, GlobalSystemCfg.atr, axlist.cfg, kin.cfg. Tooling:
+  IDA 9.4 GUI+MCP, idalib headless (scratchpad/idalibvenv + idadecompile.py), cfgprobe.c, cfgfix.c; run recipes
+  `scratchpad/cfgresolve3.sh` (FIX=1) + `scratchpad/run_2proc_cfgfix.sh` (ConfigServer+cfgfix+IPO). NEXT: confirm
+  IPO passes -k=NC in the 2-proc, then bring up the constellation under FEX with cfgfix → HrMmi. Original (now
+  superseded) #6 notes follow:
 - **#6 config-data round-trip (NEW frontier, past the connect)** — IPO reaches
   `IpoController/IpoKonfig::CheckOptions()` and fails `-k=NC` ("Invalid Command Option -k", AFTER "Connected").
   ROOT CAUSE FOUND: **ConfigServer's channel-group DB is empty** — it reads the config INDEX
