@@ -1146,7 +1146,28 @@ onto 0x306 (INJECT-style, like INJECT_ACK — needs the FmEvent schema + the run
 logo render so the handshake finishes. Both lead into the documented full-GUI/constellation ceiling (92 procs +
 HrMmi Qt render under FEX). The GOAL was reached via the yeen full-system route precisely because of this ceiling.
 Tooling: `heros_rtos.c` EV_INJECT knob; `run_appstart_fex.sh` (now with cfgfix on ConfigServer + cm=16 + the
-/mnt/sys|plc/config staging). This is the honest, precisely-pinned endpoint of the FEX-native AppStartMP path.
+/mnt/sys|plc/config staging).
+
+★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
+the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
+@0x606b0`: it looks up the subsystem by name (+12), reads its process-LIST size (+72); if the list is
+NON-EMPTY it **registers the processes for spawning** (the real subsystems), if EMPTY it signals
+`CREATE_VOID_SUBSYSTEM` (a finalizer, NOT the trigger for the real procs). So `CREATE_VOID_SUBSYSTEM`
+injection alone would NOT spawn the constellation — the real spawn needs the `FmLoadSubsystem` messages
+(from `batch/TNC640heros.txt`) to reach `Subsystems::OnMessage`. Those are gated behind the logo. ★ The
+LOGO thread (task **0x108 = the `logo` queue 0x313 owner**) is pinned: after creating 0x313 it spins a tight
+**`Ev_send(0x108,0x1000) → poll → Ev_send(0x106,0x1000) → wait 0x1000`** ping-pong with AppStartMaster
+(task 0x106) — a PLIB++ GUI inter-thread sync loop — and **NEVER drains queue 0x313** (depth grows 1→2→3
+as AppStartMaster relays to it). So the logo handshake never completes headlessly (the 0x1000 barrier never
+releases — it needs the actual logo render/confirm), the sequencer never advances to dispatch the
+`FmLoadSubsystem` set, and 0 constellation processes execve. ConfigServer (with cfgfix) DOES load + broadcast
+the full config (4380/647/616/516-byte payloads), so config is NOT the gate. ⇒ The remaining gate is the
+**PLIB++ logo-render / GUI inter-thread sync (0x1000 ping-pong on task 0x108)** — the documented GUI-render
+ceiling. Reachable next attempts (all deep, against the ceiling): (a) inject the `FmLoadSubsystem` set
+directly to `Subsystems::OnMessage`'s queue (bypass the logo — needs the FmLoadSubsystem schema + the batch
+content); (b) make the logo thread's 0x1000 barrier release / complete the X render; (c) RE the logo→spawn
+state transition. This is the precisely-pinned FEX-native AppStartMP endpoint; the full constellation + HrMmi
+Qt render under FEX remains the documented ceiling (reached via the yeen full-system route).
 
 ★★★ FUSE WORKS UNDER FEX (2026-06-22) — refutes the earlier "encfs/FUSE fails under qemu" conclusion.
 `emulator/run_fuse_test.sh`: the control's own i386 **encfs** mounts a FUSE filesystem under FEX, encrypts
