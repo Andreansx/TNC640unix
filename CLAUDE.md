@@ -1201,6 +1201,33 @@ HONEST ENDPOINT: the FEX-native constellation spawn is gated on ConfigServer ful
 init config (jhDataFiles), the documented config #6 frontier; the render + the 4 fixes are real groundwork.
 Run: `run_appstart_fex.sh`.
 
+★★★★ jhDataFiles SKIP *SOLVED* → AppStartMP NOW READS THE BATCH (2026-06-24, IDA on libConfigSystem.so).
+The "config #6 cascade-completeness / chmod-non-determinism" framing above is SUPERSEDED — the real cause was
+a clean code gate. `CfgServer::ReadConfigDataSet@0x229d50` UNCONDITIONALLY clears every layer (`while
+GetNextLayer→ClearLayer`) then calls `ReadDataFiles(this,dir,START,false)`. `ServerHelper::SetupDirInfo@0x2a2a60`
+registers jhDataFiles at the LOW indices [2..2+N) and the .atr/update lists at the HIGH indices; START is chosen
+at `0x229e0f`: `cmp byte[this+0x169],0` (=CfgErrorParser+9, the "config-version-changed/full-reread" flag); `mov
+eax,2`; `cmovz eax,edi` — flag!=0 → START=2 (full load incl jhDataFiles), flag==0 → START=ConfigDataDir(~17) =
+SKIP jhDataFiles. FIRST read (fresh version) sets the flag → loads all; once the version is WRITTEN BACK a later
+reread sees a matching version → flag==0 → the unconditional layer-clear WIPES jhDataFiles and does NOT reload
+them (THAT is the multi-proc destructive reread; ConfigServer ALONE loaded 15/15 jhDataFiles in BOTH /mnt and
+/tmp envs — proven via strace, so never path/env related). FIX = `emulator/cfgfix.c` runtime-NOPs the `cmovz`
+(0f 44 c7→90 90 90) in the guest's mapped libConfigSystem.so so START is ALWAYS 2 (full load every reread);
+constructor finds the base in /proc/self/maps, verifies the bytes, mprotect+patch (gated CFGFIX_FORCE_FULLLOAD,
+default ON). VERIFIED under FEX (`run_appstart_fex.sh` + an openat-strace diag, commit after f78174e): patch
+APPLIES in standalone AND the appstart ctx; ConfigServer opens ALL 15 jhDataFiles (99 config opens) and
+broadcasts the FULL config (2×4380B + 1523/647/513B); and **AppStartMP NOW OPENS THE BATCH `TNC640heros.txt`
+(8×) — config-read COMPLETES, Monitor::Start RUNS** (this directly clears the goal's stated gate "init
+config-read never completes / never opens the batch"). ⇒ NEW (downstream, SEPARATE) gate: the spawn still does
+not fire (execve=0 winmgr) — AppStartMP's traced activity in the run is ENTIRELY the LOGO bring-up (only t10d's
+logo/Q_WMGRMSG/CfgM queues; NO Subsystems/Processes/Procedures module queues), and t10b (AppStartMaster) blocks
+`Ev_receive(0x01019007)` for the logo "displayed" confirm while t10d renders the "Startup Status" window + drains
+its logo queue but never signals t10b back. So the chain stalls at the **logo→AppStartMaster display-confirm
+handshake** BEFORE Procedures-runs-batch→FmLoadSubsystem→spawn = the documented GUI-render ceiling (NOT config —
+config is now fully served). EV_INJECT/EV_FORCE of t10b's 0x10000 bit did not advance it. Precise next levers:
+inject the logo's FmProgressNotify confirm onto AppStartMaster's queue (INJECT_ACK-style), or complete the X
+MapNotify/Expose→confirm cycle. Run: `run_appstart_fex.sh`; diag (openat traces) in `scratchpad/run_appstart_diag.sh`.
+
 ★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
 the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
 @0x606b0`: it looks up the subsystem by name (+12), reads its process-LIST size (+72); if the list is
