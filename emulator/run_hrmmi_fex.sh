@@ -7,7 +7,7 @@ PRE="/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 echo "=== build preloads + stage HrMmi closure ==="
 $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $REPO/emulator/cfgfix.c -ldl || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/arena.map -o $R/lib/arena_stub.so $REPO/emulator/arena_stub.c || exit 1
-for s in herosapi_shim heros_rtos renamefix fexunmask; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c || exit 1; done
+for s in herosapi_shim heros_rtos renamefix fexunmask; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
 # ensure HrMmi's i386 closure is in the rootfs (cp -aL; mostly overlaps the AppStartMP closure)
 sudo bash -c '
 SRC='"$CFG"'; R='"$R"'; declare -A S; SKIP="libc.so.6 libpthread.so.0 librt.so.1 libdl.so.2 libm.so.6 ld-linux.so.2 libresolv.so.2 libutil.so.1 libnsl.so.1"
@@ -76,13 +76,13 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
     echo "  heuserver listening: $( (ss -ltn 2>/dev/null||true) | grep -c :19093 )"; fi
     echo "### ConfigServer (bg, cfgfix) ###"
     ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE=0 MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="$PRE" timeout -s KILL 300 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
-    echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 70 ]; do grep -q "RUNUP_COMPLETE" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer RUNUP_COMPLETE at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
+    echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 130 ]; do grep -q "RUNUP_COMPLETE" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer RUNUP_COMPLETE at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
     echo "  letting the INJECT_REREAD config-data load settle before HrMmi (avoid the race)..."; sleep 12
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) — the Qt/PLIB++ MMI ###"
     # capture the Xvfb framebuffer mid-run (proof of render if HrMmi connects to X)
     ( sleep 65; rm -f /tmp/hrmmi_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/hrmmi_screen.xwd 2>/dev/null && echo "  screenshot: $(ls -la /tmp/hrmmi_screen.xwd 2>/dev/null|awk "{print \$5}") bytes" ) &
     timeout -s KILL 80 /usr/bin/strace -f -qq -e trace=openat,connect,execve -o /tmp/hrmmi_strace.log \
-      env LD_PRELOAD="$PRE" FEXInterpreter $R/heros5/bin/HrMmi.elf -p=~/hrmmi hrmmi -k=NC > /tmp/hrmmi.log 2>&1
+      env MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="$PRE" FEXInterpreter $R/heros5/bin/HrMmi.elf -p=~/hrmmi hrmmi -k=NC > /tmp/hrmmi.log 2>&1
     pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null
   '
 G2=$(md5sum /etc/passwd|awk "{print \$1}"); [ "$GUARD" = "$G2" ] && echo "GUARD OK" || echo "*** /etc CHANGED ***"
