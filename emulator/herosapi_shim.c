@@ -179,8 +179,14 @@ int mount(const char *src, const char *tgt, const char *fs, unsigned long fl, co
     return fake_ns_on() ? 0 : (int)syscall(SYS_mount, src, tgt, fs, fl, d); }
 int umount2(const char *tgt, int fl){ return fake_ns_on() ? 0 : (int)syscall(SYS_umount2, tgt, fl); }
 /* CfgErrorParser::WriteUpdVersion does FSystemPathname::SetWritePermission(version.cfg) which chmods the
- * config version file; under FEX that chmod throws (the C++ wrapper raises on a nonzero return), killing
- * ConfigServer's config thread before RUNUP. The version write-back is non-essential for serving config,
- * so fake chmod/fchmodat success. Same HEROS_FAKE_NS gate. */
-int chmod(const char *path, mode_t m){ return fake_ns_on() ? 0 : (int)syscall(SYS_chmod, path, m); }
-int fchmodat(int dfd, const char *path, mode_t m, int fl){ return fake_ns_on() ? 0 : (int)syscall(SYS_fchmodat, dfd, path, m, fl); }
+ * config version file; under FEX that chmod THROWS (the C++ wrapper raises on a nonzero return), and the
+ * throw ABORTS CfgServer::ReadConfigDataSet BEFORE it loads the jhDataFiles (tnc.cfg etc.) -> ConfigServer
+ * serves incomplete config -> AppStartMP's init config-read never completes -> it never reaches the batch.
+ * The version write-back is non-essential, so fake chmod/fchmodat success. SEPARATE gate HEROS_FAKE_CHMOD
+ * (NOT HEROS_FAKE_NS): faking unshare/mount makes encDir's encfs "succeed" with an EMPTY jh_int store and
+ * ConfigServer reads nothing — so we must fake chmod WITHOUT faking the mount-ns ops (let encDir fail so
+ * ConfigServer falls back to reading the plaintext /mnt/sys/config that cfgfix classifies). */
+static int fake_chmod = -1;
+static int fake_chmod_on(void){ if (fake_chmod < 0){ const char *e = getenv("HEROS_FAKE_CHMOD"); fake_chmod = e && e[0]=='1'; } return fake_chmod || fake_ns_on(); }
+int chmod(const char *path, mode_t m){ return fake_chmod_on() ? 0 : (int)syscall(SYS_chmod, path, m); }
+int fchmodat(int dfd, const char *path, mode_t m, int fl){ return fake_chmod_on() ? 0 : (int)syscall(SYS_fchmodat, dfd, path, m, fl); }

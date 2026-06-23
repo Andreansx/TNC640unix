@@ -1175,6 +1175,32 @@ the documented full-system ceiling. Tooling: idalib (`scratchpad/idalibvenv` + `
 cleanly decompiles AppStartMP.elf where Ghidra's exception-`.cold` split garbled it. Run: `run_appstart_fex.sh`
 (HSTRACE + Xvfb screenshots).
 
+★★ CONFIG-SERVE + SPAWN-GATE investigation (2026-06-24, after the render). Goal: get AppStartMP past its
+config-read so the chain reaches `fork+execve(winmgr.elf)`. FOUR real fixes landed (all committed): (1) cfgfix
+was SILENTLY NOT LOADING in run_appstart_fex.sh — it used `dlsym(RTLD_NEXT)`+`-ldl` (dlsym@GLIBC_2.34) which
+broke the FEX preload; removed dlsym (the real IsSysFile/IsOemFile are always-broken standalone, so the
+resolved-prefix classification IS the correct impl). (2) cfgfix path-prefix mismatch — the run resolves config
+under `/tmp/s/config` but `CFGFIX_SYS=/mnt/sys/`; made cfgfix match a COLON-separated prefix list. With both,
+ConfigServer LOADS config + reaches its serve loop + ANSWERS AppStartMP (Q_read 57B → Q_ident reply queue →
+Q_send 28B). (3) `heros_rtos` Q_create now UPGRADES a no-notify PLACEHOLDER queue to its real notify owner —
+ConfigServer (starting first) created "AppStartMaster" with notify=0/owner=ConfigServer, so AppStartMP's own
+chain events notified ConfigServer not itself; now `QS[306] notify=01000000->AppStartMP`. (4) INJECT_REREAD now
+fires on the serve-loop-fallback run-up path too (post_inject_reread), + chmod/unshare fake gates split
+(HEROS_FAKE_CHMOD vs _NS) so the SetWritePermission chmod exception in ReadConfigDataSet can be neutralized
+without the unshare fake making encDir read an empty store. ★ DECISIVE finding: AppStartMP **NEVER opens the
+batch file `TNC640heros.txt`** (the 30-subsystem/92-proc constellation def) — it's stuck in its INIT config-read
+BEFORE `Monitor::Start` posts the FmCallProcedure that runs the batch. So the spawn chain (FmLoadSubsystem →
+Subsystems → ScanChildStat → fork+execve) is downstream of a gate not yet cleared: ConfigServer's config
+cascade loads the `jhAttrFiles` (.atr schemas) + `jhUpdateFiles` (update*.cfg) but NOT the `jhDataFiles`
+(tnc.cfg/jh.cfg/product.cfg — the actual config DATA, listed in jhconfigfiles.cfg's CfgJhConfigDataFiles), even
+though those files are present + volume-resolvable (/mnt/sys/config/tnc.cfg, /mnt/plc/config/channel.cfg). The
+standalone cfgfix run (run_2proc_cfgfix.sh) DID load tnc.cfg ("20+ data files"); the difference is in
+ReadConfigDataDir's jhDataFiles handling and is non-deterministic w.r.t. the chmod-exception/version-write-back
+path (faking chmod changes the loaded-file count 16→1) — the deep config #6 cascade-completeness frontier. ⇒
+HONEST ENDPOINT: the FEX-native constellation spawn is gated on ConfigServer fully loading+serving AppStartMP's
+init config (jhDataFiles), the documented config #6 frontier; the render + the 4 fixes are real groundwork.
+Run: `run_appstart_fex.sh`.
+
 ★ SPAWN MECHANISM FULLY RE'd (idalib on AppStartMP.elf) + the LOGO-THREAD block pinned (2026-06-24):
 the constellation spawn is driven by **`FmLoadSubsystem` messages** → `AppStart::Subsystems::OnMessage
 @0x606b0`: it looks up the subsystem by name (+12), reads its process-LIST size (+72); if the list is
