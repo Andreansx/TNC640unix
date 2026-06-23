@@ -1290,6 +1290,33 @@ content); (b) make the logo thread's 0x1000 barrier release / complete the X ren
 state transition. This is the precisely-pinned FEX-native AppStartMP endpoint; the full constellation + HrMmi
 Qt render under FEX remains the documented ceiling (reached via the yeen full-system route).
 
+★★★★★ SPAWN ACHIEVED via GMessage INJECTION — the FEX-native constellation COMES UP (2026-06-24). The above
+"FmLoadSubsystem never reaches Subsystems::OnMessage / logo deadlock" gate is now BYPASSED: instead of waiting
+for the chain, the emulator INJECTS the constellation directly. Three pieces (committed): (1) **full GMessage
+serializer** in `emulator/heros_rtos.c` (FmLoadProcess id 0xc80161 / FmLoadSubsystem 0xc80181 / FmSubsystemAction
+0xca0060; wire format RE'd from libgmsglib via IDA — recursive type-id dwords, GMsgString 0xe7/GMsgInt 0x63/
+GMsgList 0x18c present-empty/GMsgEnum); `HEROSCALL_INJECT_FMLOAD_SET=<file>` reads "localNS/proc|/tmp/b/<img>"
+per line (run script generates all 92 from `batch/TNC640heros.txt`) and posts an FmLoadProcess for EACH onto
+AppStartMaster → chain → `Processes::OnMessage` → `p_ident`(-1) → `IsAFile` → `PCreate`→`p_create`. (2)
+**create-mode gate RE'd** (`PCreatePrepare@0x45460`): FmLoadProcess attr6/GMsgInt PRESENT → mode 3 (Remote,
+no fork); ABSENT → mode 0 = fork. So inject with attr6 ABSENT (`HEROSCALL_INJECT_FMLOAD_PRESENT=0`). (3)
+**p_create FEX-spawn interposer** (`emulator/herosapi_shim.c`, `HEROS_PCREATE_FEX=1`): the real p_create's
+`clone(CLONE_VM|VFORK 0x4111,callback)`+child-execve(i386 image) STALLS under FEX (forked-JIT-child i386 exec
+re-wrap hangs in /proc/self/fd); replace with plain `fork()`+`execve` of the NATIVE `/usr/bin/FEXInterpreter
+<image>` (native exec = no re-wrap, like AppStartMP's cat/grep helper forks). Sub-fixes: NO rootfs symlink for
+FEXInterpreter (a symlink makes FEX loop infinitely re-prefixing; rely on rootfs-ENOENT fallback to the real
+binary), translate the image `/tmp/b/X`→`$R/heros5/bin/X` (the nested FEX rootfs-prefixes), `chmod +x` every
+staged image (p_create does `access(X_OK)`). RESULT (`run_appstart_fex.sh`, MAX=8 = VM-resource guard; full 92
+would OOM): **8 distinct subsystems FORK+LAUNCH+RUN** (winmgr, skmgr, promview, evtserver, evtviewer, observer,
+hwserver, ConfigServer), each under a fresh nested FEXInterpreter + the heros emulator, doing REAL RTOS init —
+proven by the 21 named queues they create (`Q_WMGR`/`Q_WMGRMSG`, `Q_SkMgr`/`Q_SkMgrCtrl`, `QProMViewer`/
+`QProMRequest`, `QHWServer*`/`SikServer`/`SikHwSrv`, `ObserverQ` + per-process `CfgM` config-client mailslots),
+0 crashes, real /etc/passwd guard intact. So the FEX-native constellation spawn IS realized via injection; each
+subsystem then blocks at its own GUI/peer handshake (the documented multi-thread-GUI / 92-proc+HrMmi ceiling),
+but they are STARTED + RTOS-initialized. Run: `HEROSCALL_INJECT_SUBSYS=0 HEROSCALL_INJECT_FMLOAD_PRESENT=0
+HEROS_PCREATE_FEX=1 HEROSCALL_INJECT_FMLOAD_SET=/tmp/fmload_set.txt HEROSCALL_INJECT_FMLOAD_MAX=8 bash
+emulator/run_appstart_fex.sh`. Commits b1a0b31..1f100c3.
+
 ★★ DEADLOCK CRACKED OPEN to the EMULATOR-SEMANTICS mechanism (2026-06-24) — the logo handshake stalls
 on an **FModule/FWaitableQueue event-id mismatch + a send-before-wait timing gap** in heros_rtos, NOT a GUI
 render. Precise trace: AppStartMaster (task 0x106) relays config/batch messages to the logo's input queue
