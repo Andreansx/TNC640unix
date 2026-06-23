@@ -186,6 +186,14 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
     C->tasks[s].last_ev_want=want;                 /* record for queue-notify bit matching */
+    /* HEROSCALL_EV_FORCE_TASK/_BIT: for one specific task, make any Ev_receive that wants the
+     * force-bit return it immediately (no block) — breaks the FModule startup-handshake deadlock
+     * where the logo thread (0x108) waits forever for the 0x1000 "input-ready"/ack from
+     * AppStartMaster, which stops sending it. Forces the logo to spin its loop + drain its queue. */
+    { static int fi=0; static uint32_t ft=0,fb=0;
+      if(!fi){ fi=1; const char*t=getenv("HEROSCALL_EV_FORCE_TASK"); ft=t?(uint32_t)strtoul(t,0,16):0;
+               const char*b=getenv("HEROSCALL_EV_FORCE_BIT");  fb=b?(uint32_t)strtoul(b,0,16):0; }
+      if(ft && self==ft && fb && (want&fb)){ __atomic_and_fetch(ev,~(want&fb),__ATOMIC_ACQ_REL); return want&fb; } }
     /* FModule queue-pending fix (send-before-wait): if this task is about to wait on a SINGLE bit
      * and already OWNS a queue with pending messages whose flags-notify bit is NOT that bit, then
      * that bit is the queue's real FWaitable id (GetUniqueEventId) — deliver it so the owner reads
