@@ -186,6 +186,18 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
     C->tasks[s].last_ev_want=want;                 /* record for queue-notify bit matching */
+    /* FModule queue-pending fix (send-before-wait): if this task is about to wait on a SINGLE bit
+     * and already OWNS a queue with pending messages whose flags-notify bit is NOT that bit, then
+     * that bit is the queue's real FWaitable id (GetUniqueEventId) — deliver it so the owner reads
+     * its queue now (the logo thread: waits 0x1000 = queue 0x313's id, but Q_send notified the
+     * flags-byte 0x01000000 BEFORE the wait existed). Self-limits: returns until the queue drains,
+     * then waits normally. ConfigServer/IPO unaffected (their queue bit overlaps their want). */
+    if(want && (want&(want-1))==0){
+        for(int qi=0; qi<MAXQ; qi++){ struct queue*q=&C->queues[qi];
+            if(q->used && q->owner==self && q->head!=q->tail && (q->notify_bits&want)==0){
+                LOG("EV queue-pending: task 0x%x owns q 0x%x (pending) -> deliver want %08x\n",self,q->id,want);
+                return want; } }
+    }
     int synthetic=0;
     if(ev_unblock_ms==-2){ const char*e=getenv("HEROSCALL_EV_UNBLOCK_MS"); ev_unblock_ms=e?atoi(e):-1; }
     if(!ev_inject_init){ ev_inject_init=1;
