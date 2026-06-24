@@ -361,6 +361,10 @@ static uint32_t sync_timeout=0;      /* HEROSCALL_SYNC_TIMEOUT=ms caps forever Q
                                       * isn't running (no external SikServer); legit fast replies still pass */
 static int sem_autocount=1;          /* HEROSCALL_SEM_INIT=n: initial count for auto-created sems */
 static int qdump=0;                  /* HEROSCALL_DUMPQ=1: hex-dump queue message payloads */
+/* HEROS_EVT_RELAY=<queue>: with no real evtserver, ConfigServer's config broadcasts to QEvtServer (0x307)
+ * reach a black hole and HrMmi never gets config -> blocks at Ev_receive(0x03011001). Forward every
+ * QEvtServer message to the named subscriber queue (e.g. "QueueHrMmi") so HrMmi wakes + receives config. */
+static const char*evt_relay_target=0; static int evt_relay_init=-1; static int in_evt_relay=0;
 /* HEROSCALL_INJECT_WINMGR=1: AppStartMP registers the batch subsystems but never kicks off the first
  * subsystem START (no FmProcessState(state=2) for winmgr, no NEXT_CHILDSTAT). The boot only sees a
  * SPURIOUS FmProcessState for the pre-launched ConfigServer's heros name "cfgserver" (which doesn't
@@ -672,6 +676,16 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         int k=__atomic_fetch_add(&cfgq_n,1,__ATOMIC_ACQ_REL);
         if(k<CFGQ_CAP){ cfgq_rec[k].len=size; memcpy(cfgq_rec[k].data,msg,size); }
         else __atomic_store_n(&cfgq_n,CFGQ_CAP,__ATOMIC_RELEASE);
+    }
+    /* QEvtServer RELAY: forward each QEvtServer broadcast to the subscriber queue (emulate evtserver's
+     * fan-out so HrMmi gets config without a live, crashing evtserver). Target != QEvtServer => no recursion. */
+    if(evt_relay_init<0){ const char*e=getenv("HEROS_EVT_RELAY"); evt_relay_target=(e&&e[0])?e:0; evt_relay_init=1; }
+    if(evt_relay_target && !in_evt_relay && msg && size && !strcmp(C->queues[s].name,"QEvtServer")){
+        lock(); int rt=q_find_slot(evt_relay_target); uint32_t rtid=(rt>=0)?C->queues[rt].id:0; unlock();
+        if(rtid){ in_evt_relay=1;
+            LOG("EVT_RELAY: forwarding QEvtServer msg (%u bytes, tag %08x) -> \"%s\" (0x%x)\n",
+                size,(size>=4)?*(const uint32_t*)msg:0,evt_relay_target,rtid);
+            q_send(rtid,msg,size,mode); in_evt_relay=0; }
     }
     return 0;
 }

@@ -78,9 +78,17 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
     # noopfree.so FIRST: ConfigServer over-frees a pointer mis-derived from the HrMmi 0x170501 CfgGetData
     # under FEX (free(): invalid pointer -> SIGABRT). Skipping the bad free (leak; short-lived proc) lets
     # ConfigServer survive + SERVE the config (it then processes + broadcasts the config to QEvtServer).
-    ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE="${CFG_VERBOSE:-0}" MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="/lib/noopfree.so:$PRE" timeout -s KILL 300 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
+    ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE="${CFG_VERBOSE:-0}" HEROS_EVT_RELAY="${EVT_RELAY:-}" MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="/lib/noopfree.so:$PRE" timeout -s KILL 300 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
     echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 130 ]; do grep -q "RUNUP_COMPLETE" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer RUNUP_COMPLETE at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
     echo "  letting the INJECT_REREAD config-data load settle before HrMmi (avoid the race)..."; sleep 12
+    if [ "${EVTSERVER:-0}" = 1 ]; then
+    echo "### evtserver (bg) — owns QEvtServer 0x307, relays ConfigServer config to subscribers (HrMmi) ###"
+    # ConfigServer broadcasts config to QEvtServer (0x307); without the event server that queue is a black
+    # hole and HrMmi never receives config on its queues -> blocks at Ev_receive(0x03011001). evtserver is a
+    # config CLIENT too (gets INJECT_ACK), creates+serves QEvtServer, and fans events out to subscribers.
+    ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE="${EVT_VERBOSE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="/lib/noopfree.so:$PRE" timeout -s KILL 200 FEXInterpreter $R/heros5/bin/evtserver.elf -p=~/evtserver evtserver -i=Nc -m=7 -n=7 > /tmp/hrmmi_evt.log 2>&1 ) &
+    echo "  evtserver early log:"; sleep 6; grep -aiE "QEvtServer|Connected|RUNUP|error|abort|signal" /tmp/hrmmi_evt.log 2>/dev/null | grep -aviE "cannot be preloaded" | head -6
+    fi
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) — the Qt/PLIB++ MMI ###"
     # capture the Xvfb framebuffer mid-run (proof of render if HrMmi connects to X)
     ( sleep 65; rm -f /tmp/hrmmi_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/hrmmi_screen.xwd 2>/dev/null && echo "  screenshot: $(ls -la /tmp/hrmmi_screen.xwd 2>/dev/null|awk "{print \$5}") bytes" ) &
