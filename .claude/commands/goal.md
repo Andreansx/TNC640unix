@@ -1,5 +1,5 @@
 ---
-description: The current autonomous goal for TNC640unix — route ConfigServer's config-DATA reply to HrMmi, then push the FEX-native boot chain toward the 92-process constellation + the MMI as a Mac window.
+description: The current autonomous goal for TNC640unix — crack HrMmi's X/WM expose-render handshake so it draws its first real frame FEX-native, then surface the HrMmi window to the Mac; pushing toward the 92-process constellation + the MMI as a Mac window.
 ---
 
 # /goal — TNC640unix FEX-native next objective
@@ -22,79 +22,88 @@ up the chain below, then update `CLAUDE.md` + the relevant memory with the preci
 
 ---
 
-## CURRENT OBJECTIVE (the immediate, well-scoped step)
-**Make ConfigServer's config-DATA reply land on HrMmi's real input queue so HrMmi receives the
-config and advances past the config-load block.**
+## CURRENT OBJECTIVE (the immediate, well-scoped step — a long climb, expect multiple sessions)
+**Crack HrMmi's X/WM expose-render handshake so HrMmi DRAWS its first real frame FEX-native, then
+surface that HrMmi window to the Mac.** This is the half of the ultimate goal that produces a visible
+MMI: getting a real HrMmi window onto the Mac screen — even standalone (2-proc ConfigServer+HrMmi),
+before the full constellation — is the milestone. Fill the constellation in around it afterward.
 
-### Where it stands (verified last session — commits up to `dbaa209`)
+### Where it stands (verified last session — commit `9cef6fe`, config-reply routing SOLVED)
 - `HrMmi.elf` runs FEX-native, passes argv/RTOS/heuserver-auth, connects via `CfgConnectClient`
-  (type `0x1700c0`, reply-to GMsgString `".QueueHrMmi"`), `INJECT_ACK` answers
-  `CfgClientIsConnected` (`0x170100` → `OnCfgConnected`), HrMmi reads the 34B ACK and sends its
-  config requests (159/225B) to `CfgServerQueue` (`0x303`).
-- HrMmi **parses config cleanly** now (the `0x2100018` GMessage abort was a Q_read too-big ABI bug,
-  fixed: too-big ⇒ return `-12` + `errno=ENOMEM`, no dequeue — `emulator/heros_rtos.c` q_read).
-- **THE GATE:** ConfigServer READS HrMmi's requests (with the doubling), computes a ~2711B config
-  reply, but `Q_ident`s the reply-to to **`""` → queue `0x30b`** (a run-up black hole), NOT
-  `QueueHrMmi` (`0x30e`). HrMmi gets 0 replies → blocks at `Ev_receive(0x03011001)` forever.
-- The **QEvtServer relay is the WRONG model and is DEFAULTED OFF** — its broadcasts are
-  ConfigServer's `EvtSendEvent` TRACE stream (`0x320221`) + a 4380B `0x40320461` + HrMmi's own
-  subscribe echo, none of which `HrModule::DispatchMessage@0x3d060` handles (forwarding them →
-  fatal "Message was not handled"). Do **not** revive the relay as the config path.
+  (`0x1700c0`, reply-to `".QueueHrMmi"`), `INJECT_ACK` answers `CfgClientIsConnected` (`0x170100`).
+- **Config now fully arrives:** `HEROS_CFG_REPLY_ROUTE` (heros_rtos.c q_send, ON in
+  `run_2proc_hrmmi.sh`) redirects the empty-named (`""`/`0x30b`) reply to the queue named by the
+  reply's leading GMsgString → the **2711B config reply lands on `QueueHrMmi` (`0x30e`)**, HrMmi
+  reads it clean (buffer doubling 128→2048→2711, `0x2100018=0`, Unhandled=0, crash=0), M_attaches a
+  region, sends follow-up config requests (served directly on `0x316/0x317`), subscribes to
+  QEvtServer, and **connects to X** (`connect(AF_UNIX "/tmp/.X11-unix/X99")=0`, Fontconfig active).
+- **THE GATE (this objective):** after the X connect HrMmi re-blocks on
+  **`Ev_receive(0x03011001, forever)`** = the GUI-render / X-WM expose handshake — the documented
+  multi-thread FModule render layer. This is structurally the SAME frontier as AppStartMP's logo
+  `0x1000` ping-pong, which was cracked via the `/dev/events` event→fd bridge (commit `bf0b579`).
+  ConfigServer stays crash-free; `/etc` guard OK. Clean A/B exists: `CFG_REPLY_ROUTE=0` → 2711B →
+  `0x30b`, HrMmi blocked forever, X11=0.
 
-### The task
-Find why ConfigServer resolves the per-client config-DATA reply-to to `""` and make the reply land
-on the client's real input queue (`QueueHrMmi` / `0x30e`). Two viable angles — pick based on what
-the RE shows:
-1. **Faithful (preferred):** RE ConfigServer's per-client registration / reply-queue mapping (how
-   it records a connected client's reply-to and uses it for `CfgGetData` replies, vs. the `INJECT_ACK`
-   connect path that already extracts `.XxxQue` reply-tos). Make the per-client state map the client
-   → its `QueueHrMmi` so the DATA reply routes correctly. Use IDA (idalib headless:
-   `scratchpad/idalibvenv` + `work/re/scripts/idadecompile.py`; MCP tools also available) on
-   `libConfigSystem.so` / `libbackend-server.so` — look at `CfgServer::OnGetData` /
-   `CfgServer::OnWriteData@0x225510` / the reply-queue resolution, and the `OnConnectClient` vs
-   `Initialize` client-registration split documented for blocker #5.
-2. **Inject-style (pragmatic, like `INJECT_ACK`):** intercept ConfigServer's config-data reply in
-   the emulator and re-route it from the `""`/`0x30b` black hole to the requesting client's
-   `QueueHrMmi`. The emulator already extracts `.XxxQue` reply-tos for CONNECTs — extend that to
-   DATA replies. Gate it behind an env knob (default OFF) like the other `HEROSCALL_*`/`HEROS_*`
-   knobs so it is reproducible and non-destabilizing.
+### The task (two phases — do phase A first; A is the hard RE, B is the payoff)
+**Phase A — make HrMmi render its first frame.** RE exactly what `Ev_receive(0x03011001)` is waiting
+on. Compare to the cracked logo handshake: the logo thread blocked in `select()` on `/dev/events`
+because the emulator's `ev_send` woke `Ev_receive` blockers but not `select()` blockers — the fix was
+the faithful event→fd bridge (`heros_rtos.c` + `herosapi_shim.c` `evdev_reconcile`: make the
+`/dev/events` pipe readable exactly when the kernel would signal). Determine whether HrMmi's render
+block is (1) the same missing select()-trigger / event→fd reconciliation on its render thread's
+waitables, (2) a genuine X **Expose/MapNotify/ConfigureNotify** the headless Xvfb+openbox never
+delivers (HrMmi may wait for the WM to map+expose its top-level window — a real WM mapping/synthetic
+expose, or `xdotool`-forced expose, may be needed), or (3) an FModule inter-thread `0x1000`-style
+USEREVMASK ping-pong between HrMmi's GUI threads. Use `HEROSCALL_HSTRACE=1` to see which
+thread/queue/waitable is involved, IDA (idalib headless: `scratchpad/idalibvenv` +
+`work/re/scripts/idadecompile.py`; MCP also available) on `HrMmi.elf` / `libbackend.so` / PLib for
+the render dispatcher, and host `strace -f` for the X-socket traffic (writev to X = drawing). Prefer
+the faithful RTOS/X fix; if an inject/stub is the only tractable step, gate it behind a default-OFF
+`HEROS_*`/`HEROSCALL_*` env knob (like the existing ones) and document it.
+
+**Phase B — surface the HrMmi window to the Mac.** Once HrMmi draws into Xvfb `:99` on the lima VM,
+get the window onto the Mac: run `x11vnc` against `:99` in the VM, tunnel to the Mac
+(`ssh -fNL 590X:127.0.0.1:5900 …` over `limactl`-exposed SSH, or limactl's port forwarding), and
+`open vnc://127.0.0.1:590X` — analogous to the yeen recipe in `project-mmi-live-on-mac-via-yeen`,
+but pointed at the FEX-native Xvfb instead of the VirtualBox guest. Even a partial/blank-but-real
+HrMmi top-level window visible on the Mac is the deliverable for this objective.
 
 ### How to run / reproduce
 ```
-bash emulator/run_2proc_hrmmi.sh        # clean 2-proc: ConfigServer + HrMmi (RELAY off by default)
-# knobs: DUMPQ=1 hex-dumps message payloads; RELAY=QueueHrMmi restores the old (crashing) relay for A/B
+bash emulator/run_2proc_hrmmi.sh        # clean 2-proc: ConfigServer + HrMmi (CFG_REPLY_ROUTE=1 default)
+# knobs: CFG_REPLY_ROUTE=0 for the A/B baseline; DUMPQ=1 hex-dumps payloads; HEROSCALL_HSTRACE=1 trace
+# the script starts Xvfb :99 + openbox in the VM; screenshot the framebuffer with `import -window root`
 ```
 Build the i386 preloads in the lima VM `tnc` (`i686-linux-gnu-gcc`); the script builds them. The FEX
-rootfs is `/var/tmp/lr`. Trace with `HEROSCALL_HSTRACE=1` (compact event/queue/thread trace) and host
-`strace -f -e openat,newfstatat` (non-invasive; guest open-loggers perturb timing).
+rootfs is `/var/tmp/lr`. Host `strace -f -e trace=network,writev` is non-invasive (guest open-loggers
+perturb timing). Screenshot the Xvfb root window to confirm what HrMmi actually drew.
 
 ### Done when (verification criteria)
-- HrMmi reads the config-DATA reply on `QueueHrMmi` (`0x30e`) — visible in the trace as a `Q_read
-  0x30e` of the ~2711B (or the real per-request) config payload, `0x2100018=0`, `Unhandled=0`,
-  `signal=0`, no abort.
-- HrMmi **advances past** `Ev_receive(0x03011001)` — i.e. it proceeds to the next stage (GUI/Xlib
-  init, X connect, or the next config round-trip) rather than blocking forever.
-- ConfigServer stays crash-free (no `free(): invalid pointer`, no `CfgUnitOfMeasure` throw).
-- Then: update `CLAUDE.md` (the HrMmi section + blocker chain) and the memory
+- HrMmi **advances past** `Ev_receive(0x03011001)` — visible in the trace as it leaving that wait and
+  issuing X drawing traffic (`writev` to the X socket).
+- An Xvfb screenshot (`import -window root` on `:99`) shows a **real HrMmi top-level window** (MMI
+  chrome/widgets, not just the AppStartMP "Startup Status" splash or a blank root).
+- That window is **visible on the Mac** via the VNC tunnel (`open vnc://…`).
+- ConfigServer stays crash-free; the real `/etc/passwd` md5 guard is unchanged.
+- Then: update `CLAUDE.md` (the HrMmi FEX-NATIVE FRONTIER section + blocker chain) and the memory
   `project-hrmmi-executes-under-fex` with the new precise frontier, and **commit + push**.
 
 ---
 
 ## THE CHAIN ABOVE THIS STEP (the roadmap to the ultimate goal)
-Once the config-DATA reply reaches HrMmi, the next frontiers (in rough order) are:
-1. **HrMmi GUI/render layer** — Xlib init (fonts/theme `tnc640_theme.xrs.zip` already load for
-   AppStartMP's logo), connect to X (Xvfb `:99` + openbox in the VM), the X/WM expose-render
-   handshake. This is the documented multi-thread FModule GUI-sync layer (the `0x1000` USEREVMASK
-   ping-pong; the logo handshake was cracked via the `/dev/events` event→fd bridge, commit
-   `bf0b579` — apply the same faithful-RTOS approach to HrMmi's render handshake).
-2. **Surface the render to the Mac** — once HrMmi draws into Xvfb on the lima VM, get the window
-   onto the Mac (e.g. VNC/x11vnc on `:99` tunneled to the Mac, analogous to the yeen recipe in
-   `project-mmi-live-on-mac-via-yeen`).
-3. **The constellation around HrMmi** — HrMmi is one of 92 processes. Bring up the peers it talks
-   to as needed (IPO/NCK past its HWS/JHIO frontier, evtserver, the rest of `batch/TNC640heros.txt`).
-   The spawn mechanism is proven: GMessage `FmLoadProcess` injection +
+Once HrMmi renders + shows on the Mac, the remaining frontiers (in rough order) are:
+1. **HrMmi functional render** — beyond the first frame, drive HrMmi to its real MMI screen (Manual
+   operation / Programming) rather than a partial/splash window; this likely needs more config
+   round-trips and/or the peer subsystems it queries during full UI bring-up.
+2. **The constellation around HrMmi** — HrMmi is one of 92 processes. Bring up the peers it talks
+   to as needed (IPO/NCK past its HWS/JHIO frontier, evtserver, winmgr, the rest of
+   `batch/TNC640heros.txt`). The spawn mechanism is proven: GMessage `FmLoadProcess` injection +
    `HEROS_PCREATE_FEX=1` (native-FEXInterpreter exec) launches subsystems
    (`run_appstart_fex.sh`, `HEROSCALL_INJECT_FMLOAD_SET`). Scale carefully (VM RAM — `MAX` guard).
+3. **Full 92-proc boot + drivable MMI** — the ultimate goal: AppStartMP brings up the whole
+   constellation FEX-native, HrMmi renders the live operational MMI, surfaced + drivable as a Mac
+   window. This is the documented full-system ceiling under userspace; reaching it incrementally per
+   `/goal` run is the long climb.
 
 Tackle **one** frontier per `/goal` run. Prefer faithful RTOS/ABI reimplementation over hacks; when
 a hack (inject/stub) is the only tractable step, gate it behind a default-OFF env knob and document
