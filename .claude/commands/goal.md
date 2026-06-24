@@ -61,12 +61,20 @@ the render dispatcher, and host `strace -f` for the X-socket traffic (writev to 
 the faithful RTOS/X fix; if an inject/stub is the only tractable step, gate it behind a default-OFF
 `HEROS_*`/`HEROSCALL_*` env knob (like the existing ones) and document it.
 
-**Phase B — surface the HrMmi window to the Mac.** Once HrMmi draws into Xvfb `:99` on the lima VM,
-get the window onto the Mac: run `x11vnc` against `:99` in the VM, tunnel to the Mac
-(`ssh -fNL 590X:127.0.0.1:5900 …` over `limactl`-exposed SSH, or limactl's port forwarding), and
-`open vnc://127.0.0.1:590X` — analogous to the yeen recipe in `project-mmi-live-on-mac-via-yeen`,
-but pointed at the FEX-native Xvfb instead of the VirtualBox guest. Even a partial/blank-but-real
-HrMmi top-level window visible on the Mac is the deliverable for this objective.
+**Phase B — surface the HrMmi window to the Mac as a STANDALONE NATIVE WINDOW (NO VNC — user
+directive).** The target is a real macOS window per the user's explicit preference, NOT a VNC
+desktop-in-a-box. Use **XQuartz in rootless mode**: run XQuartz on the Mac (each X11 top-level
+becomes its own native Quartz window), and point HrMmi's `DISPLAY` at the Mac's X server over the
+lima SSH tunnel (X11-forward the X socket; e.g. `ssh -Y` via `limactl`-exposed SSH, or tunnel TCP
+6000+display to XQuartz with `xhost`/`X -listen tcp`). Then HrMmi draws straight onto the Mac
+desktop as a rootless window — no Xvfb framebuffer, no VNC. IMPORTANT SYNERGY: a real X server +
+WM (XQuartz) sends genuine `Expose`/`MapNotify`/`ConfigureNotify`, so running HrMmi against XQuartz
+may itself help clear the Phase-A render gate if that gate is "an X expose the headless
+Xvfb+openbox never delivers" — so try the XQuartz target EARLY, not only as the final step. Qt/X
+clients render fonts client-side (XRender glyphs), so Mac-side fonts are not a blocker; MIT-SHM
+won't apply cross-host (X falls back automatically — fine for a UI). Keep the Xvfb+VNC path ONLY as
+a debugging fallback, never the deliverable. Even a partial-but-real HrMmi top-level window as a
+native Mac window is the deliverable for this objective.
 
 ### How to run / reproduce
 ```
