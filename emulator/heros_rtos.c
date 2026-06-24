@@ -102,8 +102,8 @@ struct queue{ int used; uint32_t id; char name[NAMELEN];
               struct qmsg msg[QSLOTS]; };
 struct region{int used; uint32_t id; char name[20]; uint32_t size; };
 
-#define EVTRING 24
-#define EVTMSGCAP 2048
+#define EVTRING 32
+#define EVTMSGCAP 16384   /* must hold the big config broadcast (the full ~4380B config payload) */
 struct ctl {
     volatile int magic;                              /* 0=empty 1=initing 2=ready */
     volatile int32_t lock;                           /* futex spinlock */
@@ -742,9 +742,16 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             if(buf&&len) memcpy(buf,q->msg[slot].data,len);
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
             qhex("Q_read",id,buf,len);
-            uint32_t qowner=q->owner;
+            uint32_t qowner=q->owner, qnotify=q->notify_bits;
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
+            int more = (q->tail != q->head);            /* queue still non-empty after this read? */
             unlock();
+            /* LEVEL-TRIGGERED queue notify: the kernel event word is a BITMASK, so N sends to a queue set
+             * its notify bit ONCE; after the owner reads one message and clears the bit, the remaining
+             * messages would be stranded (HrMmi read 1 of 7 flushed config msgs then waited forever). The
+             * real kernel keeps the queue readable while non-empty -> re-assert the notify bit so the
+             * EVHandler dispatcher wakes again and drains the queue. */
+            if(more && qnotify && qowner) ev_send(qowner, qnotify);
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
             { uint32_t mtag = (buf && len>=4) ? *(const uint32_t*)buf : 0;
               HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len)); }
