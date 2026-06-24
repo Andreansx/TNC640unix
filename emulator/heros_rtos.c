@@ -738,9 +738,20 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
              * CfgGetData fits. The OLD code truncated to maxsize (0x80=128) -> the GMessage deserializer
              * parsed a cut-off GMsgList(count=9) -> wild free(): invalid pointer (the HrMmi-context
              * ConfigServer crash). Return the full size + dequeue, as for any fitting message. */
-            uint32_t len=full;
-            if(buf&&len) memcpy(buf,q->msg[slot].data,len);
+            uint32_t copied=(maxsize&&full>maxsize)?maxsize:full;
+            if(buf&&copied) memcpy(buf,q->msg[slot].data,copied);
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
+            if(maxsize&&full>maxsize){
+                /* TWO-PHASE read: the caller buffer (HrMmi/ConfigServer libGMessage use 0x80=128) is too
+                 * small. Copy what FITS, LEAVE the message queued, and return the FULL size so the caller
+                 * reallocs + re-reads. Delivering the full message into the 128B buffer OVERFLOWS it and the
+                 * GMessage deserializer aborts at the buffer boundary (msg error 0x2100018 at offset 0x80). */
+                qhex("Q_read[big]",id,buf,copied);
+                unlock();
+                LOG("Q_read <- queue 0x%x size %u (TOO BIG for buf %u: not dequeued, caller re-reads)\n",id,full,maxsize);
+                return (int)full;
+            }
+            uint32_t len=copied;
             qhex("Q_read",id,buf,len);
             uint32_t qowner=q->owner, qnotify=q->notify_bits;
             __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
@@ -751,7 +762,9 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
              * messages would be stranded (HrMmi read 1 of 7 flushed config msgs then waited forever). The
              * real kernel keeps the queue readable while non-empty -> re-assert the notify bit so the
              * EVHandler dispatcher wakes again and drains the queue. */
-            if(more && qnotify && qowner) ev_send(qowner, qnotify);
+            if(more && qnotify && qowner){ ev_send(qowner, qnotify);
+                LOG("Q_read re-assert notify %08x->task 0x%x (queue 0x%x still has %u msgs, reader=t%x)\n",
+                    qnotify,qowner,id,q->tail-q->head,task_self()); }
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
             { uint32_t mtag = (buf && len>=4) ? *(const uint32_t*)buf : 0;
               HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len)); }
