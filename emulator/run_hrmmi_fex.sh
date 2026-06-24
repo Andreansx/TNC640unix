@@ -56,6 +56,7 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
   SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC: CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ DISP="$DISP" \
   HEROSCALL_VERBOSE=1 HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 HEROSCALL_TIMERS=1 \
   HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_REREAD="${REREAD:-1}" HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
+  HEROS_EVT_RELAY="${EVT_RELAY:-}" \
   LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0; mount --make-rprivate /; mount --bind "$R/etc" /etc
@@ -78,7 +79,7 @@ sudo env R="$R" PRE="$PRE" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc 
     # noopfree.so FIRST: ConfigServer over-frees a pointer mis-derived from the HrMmi 0x170501 CfgGetData
     # under FEX (free(): invalid pointer -> SIGABRT). Skipping the bad free (leak; short-lived proc) lets
     # ConfigServer survive + SERVE the config (it then processes + broadcasts the config to QEvtServer).
-    ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE="${CFG_VERBOSE:-0}" HEROS_EVT_RELAY="${EVT_RELAY:-}" MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="/lib/noopfree.so:$PRE" timeout -s KILL 300 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
+    ( env HEROS_FAKE_NS=1 HEROSCALL_VERBOSE="${CFG_VERBOSE:-0}" HEROS_EVT_RELAY="${EVT_RELAY:-}" MALLOC_ARENA_MAX="${CFG_ARENA_MAX:-1}" GLIBC_TUNABLES="glibc.malloc.arena_max=${CFG_ARENA_MAX:-1}" MALLOC_CHECK_="${CFG_MALLOC_CHECK:-0}" LD_PRELOAD="${CFG_FREEGUARD-/lib/noopfree.so:}$PRE" timeout -s KILL 300 FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver -f=/mnt/sys/config/jhconfigfiles.cfg -i=Nc > /tmp/hrmmi_cfgsrv.log 2>&1 ) &
     echo "  cfgsrv early log:"; sleep 3; head -8 /tmp/hrmmi_cfgsrv.log 2>/dev/null | grep -aviE "cannot be preloaded"; i=0; while [ $i -lt 130 ]; do grep -q "RUNUP_COMPLETE" /tmp/hrmmi_cfgsrv.log 2>/dev/null && { echo "  ConfigServer RUNUP_COMPLETE at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
     echo "  letting the INJECT_REREAD config-data load settle before HrMmi (avoid the race)..."; sleep 12
     if [ "${EVTSERVER:-0}" = 1 ]; then

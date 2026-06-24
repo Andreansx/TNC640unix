@@ -102,6 +102,8 @@ struct queue{ int used; uint32_t id; char name[NAMELEN];
               struct qmsg msg[QSLOTS]; };
 struct region{int used; uint32_t id; char name[20]; uint32_t size; };
 
+#define EVTRING 24
+#define EVTMSGCAP 2048
 struct ctl {
     volatile int magic;                              /* 0=empty 1=initing 2=ready */
     volatile int32_t lock;                           /* futex spinlock */
@@ -110,6 +112,12 @@ struct ctl {
     struct sem    sems[MAXSEM];
     struct queue  queues[MAXQ];
     struct region regs[MAXREG];
+    /* QEvtServer late-subscriber catch-up (HEROS_EVT_RELAY): ConfigServer broadcasts config to
+     * QEvtServer DURING RUN-UP, before HrMmi exists. Buffer those broadcasts here so they can be
+     * flushed to a subscriber queue (HrMmi's QueueHrMmi) when it is created — emulating the event
+     * server's fan-out to a late subscriber. */
+    volatile uint32_t evt_ring_n;                    /* total broadcasts seen (ring index = n % EVTRING) */
+    struct { uint32_t len; uint8_t data[EVTMSGCAP]; } evt_ring[EVTRING];
 };
 static struct ctl *C;
 
@@ -558,6 +566,7 @@ static int q_find_slot(const char*base){
     for(int i=0;i<MAXQ;i++) if(C->queues[i].used&&!strncmp(C->queues[i].name,base,NAMELEN-1)) return i;
     return -1;
 }
+static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode);  /* fwd (q_create flush) */
 static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     char base[NAMELEN]; q_basename(base,nm);
     uint32_t owner=task_self();                          /* creator owns the queue (kernel +0xb8) */
@@ -587,6 +596,19 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     uint32_t id=C->queues[s].id; unlock();
     LOG("Q_create \"%s\" depth %u flags %x owner 0x%x notify %08x -> 0x%x\n",base,depth,flags,owner,nbits,id);
     HST(owner,0,"QC \"%s\" id=%x owner=t%x flags=%x notify=%08x\n",base,id,owner,flags,nbits);
+    /* QEvtServer late-subscriber FLUSH: when the relay's subscriber queue is created (HrMmi's
+     * QueueHrMmi), deliver every QEvtServer broadcast buffered during ConfigServer's run-up to it,
+     * so HrMmi receives the config events it subscribed to and wakes from Ev_receive(0x03011001). */
+    if(evt_relay_init<0){ const char*e=getenv("HEROS_EVT_RELAY"); evt_relay_target=(e&&e[0])?e:0; evt_relay_init=1; }
+    if(evt_relay_target && !in_evt_relay && !strcmp(base,evt_relay_target)){
+        uint32_t n=C->evt_ring_n; if(n>EVTRING) n=EVTRING;
+        if(n){ in_evt_relay=1;
+            LOG("EVT_RELAY: FLUSH %u buffered QEvtServer broadcast(s) -> \"%s\" (0x%x)\n",n,base,id);
+            uint32_t start = (C->evt_ring_n>EVTRING) ? (C->evt_ring_n-EVTRING) : 0;  /* oldest first (FIFO) */
+            for(uint32_t i=start;i<C->evt_ring_n;i++){ uint32_t k=i%EVTRING;
+                if(C->evt_ring[k].len) q_send(id,C->evt_ring[k].data,C->evt_ring[k].len,0); }
+            in_evt_relay=0; }
+    }
     return id;
 }
 /* Names used as service PRESENCE PROBES: auto-creating these defeats the control's
@@ -677,11 +699,18 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         if(k<CFGQ_CAP){ cfgq_rec[k].len=size; memcpy(cfgq_rec[k].data,msg,size); }
         else __atomic_store_n(&cfgq_n,CFGQ_CAP,__ATOMIC_RELEASE);
     }
-    /* QEvtServer RELAY: forward each QEvtServer broadcast to the subscriber queue (emulate evtserver's
-     * fan-out so HrMmi gets config without a live, crashing evtserver). Target != QEvtServer => no recursion. */
+    /* QEvtServer RELAY: emulate evtserver's fan-out so HrMmi gets config without a live (crashing)
+     * evtserver. Every QEvtServer broadcast is BUFFERED in the shared evt_ring; if the subscriber queue
+     * already exists it is also forwarded NOW; and q_create flushes the whole ring to the subscriber when
+     * it appears (ConfigServer broadcasts during run-up, before HrMmi's queue exists). Target != QEvtServer
+     * => no recursion. */
     if(evt_relay_init<0){ const char*e=getenv("HEROS_EVT_RELAY"); evt_relay_target=(e&&e[0])?e:0; evt_relay_init=1; }
-    if(evt_relay_target && !in_evt_relay && msg && size && !strcmp(C->queues[s].name,"QEvtServer")){
-        lock(); int rt=q_find_slot(evt_relay_target); uint32_t rtid=(rt>=0)?C->queues[rt].id:0; unlock();
+    if(evt_relay_target && !in_evt_relay && msg && size && size<=EVTMSGCAP && !strcmp(C->queues[s].name,"QEvtServer")){
+        lock();
+        uint32_t k = C->evt_ring_n % EVTRING;            /* buffer the broadcast (shared, for late flush) */
+        C->evt_ring[k].len = size; memcpy(C->evt_ring[k].data, msg, size); C->evt_ring_n++;
+        int rt=q_find_slot(evt_relay_target); uint32_t rtid=(rt>=0)?C->queues[rt].id:0;
+        unlock();
         if(rtid){ in_evt_relay=1;
             LOG("EVT_RELAY: forwarding QEvtServer msg (%u bytes, tag %08x) -> \"%s\" (0x%x)\n",
                 size,(size>=4)?*(const uint32_t*)msg:0,evt_relay_target,rtid);
