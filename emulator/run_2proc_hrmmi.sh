@@ -2,8 +2,13 @@ set -u
 # Clean 2-proc ConfigServer + HrMmi, based on run_2proc_cfgfix (where ConfigServer reliably reaches its
 # serve loop + serves IPO). The heavy run_hrmmi_fex.sh setup (dbus/heuserver + Xvfb + encfs staging)
 # destabilizes ConfigServer's run-up; this strips it to the minimum so ConfigServer SERVES HrMmi's config.
-# ConfigServer carries noopfree (survive HrMmi's 0x170501 over-free) + the QEvtServer relay (forward the
-# config response broadcasts to HrMmi's QueueHrMmi). Xvfb/openbox added so HrMmi can reach X after config.
+# ConfigServer carries noopfree (survive HrMmi's 0x170501 over-free). Xvfb/openbox added so HrMmi can reach
+# X after config. RELAY (HEROS_EVT_RELAY) DEFAULTS OFF now: the QEvtServer broadcasts are ConfigServer's
+# EvtSendEvent TRACE stream (type 0x320221 "Message=... from thread=Nc", cfgserver.cpp:352) + a 4380B
+# 0x40320461 + HrMmi's own subscribe echo — NONE of which are types HrMmi's HrModule::DispatchMessage
+# handles, so forwarding them makes HrMmi fatally "Message was not handled". HrMmi's real config path is
+# CfgConnectClient(0x1700c0, reply-to ".QueueHrMmi")->INJECT_ACK->config-data reply; set RELAY=QueueHrMmi
+# to restore the old (crashing) relay for comparison.
 REPO=/Users/andreansx/Documents/TNC640unix
 CFG=$REPO/work/control/sysroot
 R=/var/tmp/lr
@@ -48,7 +53,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC: CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ \
   HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 HEROSCALL_TIMERS=1 \
   HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
-  HEROS_EVT_RELAY=QueueHrMmi DISP="$DISP" CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" \
+  HEROS_EVT_RELAY="${RELAY-}" HEROSCALL_DUMPQ="${DUMPQ:-0}" DISP="$DISP" CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" \
   LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
