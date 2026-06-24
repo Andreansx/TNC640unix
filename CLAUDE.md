@@ -39,6 +39,26 @@
 > completes only when AppStartMP launches it inside the running constellation), not any file/productid/volume/
 > auth gap. The corrections are real+necessary but not sufficient. Recipe in memory project-config6-controlmark-map.
 
+> ## ★★★★★ FEX-NATIVE FRONTIER (2026-06-24) — HrMmi RECEIVES config + CONNECTS TO X on the Mac
+> The pure-FEX-native Track-B path advanced past the config gate INTO the GUI layer. `HrMmi.elf` runs under
+> FEX, parses config cleanly (0x2100018 fix), and now **RECEIVES the config-DATA reply on its real queue +
+> connects to X**. The gate was config-reply ROUTING: ConfigServer resolves the per-client reply-to to "" (the
+> real connect-registration is bypassed by INJECT_ACK, so no Client reply-queue is recorded) → `Q_ident("")` →
+> the empty-named black-hole queue (0x30b) → it sent the 2711B config reply THERE, not to QueueHrMmi (0x30e).
+> But every per-client reply EMBEDS its real reply-to as its leading GMsgString (`.QueueHrMmi`/`.EditThreadQue`/
+> `.EditThreadNotify`). FIX = `emulator/heros_rtos.c` q_send (env `HEROS_CFG_REPLY_ROUTE`, default OFF, ON in
+> run_2proc_hrmmi.sh): redirect a send to the empty-named queue to the queue named by that leading string (strip
+> the leading '.'); the connect-ack (0x170100) is left to INJECT_ACK (no dup). VERIFIED (`run_2proc_hrmmi.sh`):
+> `CFG_REPLY_ROUTE: redirect ""(0x30b) -> "QueueHrMmi"(0x30e) ... type 00290081, 2711 bytes`; HrMmi reads the
+> full 2711B config CLEAN (buffer doubling 128→2048→2711, 0x2100018=0, Unhandled=0, crash=0), M_attaches a
+> region, sends FOLLOW-UP config requests (served directly → 28B on 0x316/0x317), subscribes to QEvtServer
+> (520B → 0x307), and **connects to X** (`connect(AF_UNIX "/tmp/.X11-unix/X99")=0`, Fontconfig active).
+> ConfigServer crash-free; /etc GUARD OK. Clean A/B: `CFG_REPLY_ROUTE=0` → 2711B → 0x30b, HrMmi blocked
+> forever, X11=0. ★ NEW GATE: after the X connect HrMmi re-blocks on `Ev_receive(0x03011001, forever)` = the
+> **GUI-render / X-WM expose handshake** (the documented multi-thread FModule render layer, SAME frontier as
+> AppStartMP's logo `0x1000` ping-pong, cracked there via the /dev/events event→fd bridge bf0b579). Next
+> roadmap step: HrMmi GUI/render → surface to the Mac. Memory `project-hrmmi-executes-under-fex`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

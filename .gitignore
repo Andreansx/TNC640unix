@@ -45,3 +45,6 @@ config.env
 .DS_Store
 *.swp
 *~
+
+# session scratchpad (idalib venv, temp RE output)
+scratchpad/

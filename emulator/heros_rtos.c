@@ -635,8 +635,37 @@ static uint32_t q_ident(const char*nm){
     LOG("Q_ident \"%s\" -> 0x%x\n",base,id);
     return id;                                            /* 0 => not found */
 }
+static int cfg_reply_route=-1;
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x size %u\n",id,size); qhex("Q_FAIL",id,msg,size); return -9; }
+    /* CFG_REPLY_ROUTE (HEROS_CFG_REPLY_ROUTE=1): ConfigServer resolves a per-client reply-to of ""
+     * (the real connect-registration is bypassed by INJECT_ACK, so no Client reply-queue is recorded)
+     * and Q_ident("")->the empty-named black-hole queue, then sends EVERY per-client reply there:
+     * the connect-ack AND the config-DATA reply. Each reply, however, embeds its real reply-to as its
+     * leading GMsgString (the clientId ".QueueHrMmi"/".EditThreadQue"/".EditThreadNotify"). Redirect a
+     * send to the empty-named queue to the queue named by that leading string (strip the leading '.')
+     * so the config data reaches the waiting client (QueueHrMmi 0x30e, notify 0x02000000). The
+     * connect-ack (CfgClientIsConnected 0x170100) is left for INJECT_ACK so the client does not get a
+     * duplicate ack ahead of the data reply. */
+    if(cfg_reply_route<0){ const char*e=getenv("HEROS_CFG_REPLY_ROUTE"); cfg_reply_route=e&&e[0]=='1'; }
+    if(cfg_reply_route && C->queues[s].name[0]==0 && msg && size>=12){
+        const unsigned char*m=msg;
+        uint32_t mtype=m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24);
+        uint32_t tag  =m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24);
+        if(tag==0xe7 && !(inject_ack && (mtype&0x7fffffff)==0x170100)){   /* leading GMsgString; skip connect-ack */
+            uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
+            if(nlen>=1 && nlen<=64 && 12+nlen<=size){
+                char nm[80]; memcpy(nm,m+12,nlen); nm[nlen]=0;
+                const char*base=nm; if(base[0]=='.') base++;     /* ".QueueHrMmi" -> "QueueHrMmi" */
+                int rs=q_find_slot(base);
+                if(rs>=0 && rs!=s && C->queues[rs].name[0]){
+                    LOG("CFG_REPLY_ROUTE: redirect \"\"(0x%x) -> \"%s\"(0x%x) by embedded reply-to \"%s\" (type %08x, %u bytes)\n",
+                        C->queues[s].id,C->queues[rs].name,C->queues[rs].id,nm,mtype,size);
+                    s=rs; id=C->queues[rs].id;
+                }
+            }
+        }
+    }
     if(size>QMSGCAP){ LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
     uint32_t sender=task_self();
     struct queue*q=&C->queues[s];
