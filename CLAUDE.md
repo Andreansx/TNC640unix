@@ -1,7 +1,31 @@
 # TNC640unix — project tracker
 
-> ## ★★★ GOAL REACHED (2026-06-23) — the real TNC 640 MMI LIVE + drivable ON THE MAC
-> When the FEX-native userspace path hit the config #6 ceiling (the DataStore per-client layer registration
+> ## ★ GROUND TRUTH + FRAMING (2026-06-24, user-set — read before writing "this is impossible")
+> Two corrections to how this tracker has been talking about the work. They are durable; apply them going forward.
+>
+> **1. There is NO license barrier — demo mode is the intended, free, universal way to run this.** The TNC640
+> PGM-Platz is the FREE Heidenhain download. It runs perfectly in **demo mode** with no dongle and no purchased
+> license — that is *by design* and is how essentially everyone uses it (hobby/learning/programming on a personal
+> machine; nobody buys a SIK to mess with a virtual mill). So there is **nothing to circumvent and no "licensing
+> ceiling."** Where the SIK still matters technically (e.g. `hessrv` reading a zeroed SIK device), the honest task
+> is **reproducing the demo SIK *state* that ships inside the free image** — a state-repro engineering task, NOT
+> defeating a license. Do NOT write "legally barred" / "circumvention" about running the demo control.
+>
+> **2. Stop pre-declaring things "infeasible" or a hard "ceiling."** Track record: nearly every gate previously
+> written up as the "documented ceiling / honest endpoint / infeasible" has been CROSSED in a later session
+> (config #6, the logo deadlock, heuserver, the constellation spawn, …). These are **frontiers**, not walls —
+> large *engineering* problems, not impossibilities. The tracker now says "frontier"; keep it that way. Resource
+> limits are config, not laws: the whole VBox appliance (HeROS kernel + all 92 processes + Qt MMI) fits in **8 GB**
+> per Heidenhain, the Mac has 32 GB — any "OOM" is the **lima VM's allocated RAM** (was 4 GiB; size it up), not a
+> hardware limit.
+>
+> **3. The `yeen` VNC route is a reference fallback, NOT the deliverable.** Running the x86_64 guest in VirtualBox
+> + VNC is trivial (no RE, no Apple-Silicon work) and proves nothing new. The actual goal is the **i386 control
+> running natively translated on Apple Silicon (FEX + the heroscall emulator) → the real Qt MMI as a Mac window**
+> (Track B). Don't present yeen as "the goal" — it's the thing we already know works elsewhere.
+
+> ## ★★ FULL-SYSTEM FALLBACK (2026-06-23) — real TNC 640 MMI surfaced to the Mac via the `yeen` x86_64 VM (reference, NOT the Track-B goal — see GROUND TRUTH point 3)
+> When the FEX-native userspace path hit the config #6 frontier (the DataStore per-client layer registration
 > needs the running constellation — see below; 3 sub-blockers SOLVED en route: controlmark=16→Tnc640 table,
 > encfs password `Yomxn8YJyvrbNli62Rpl`, encfs config store populated+mounted under FEX), the user authorized
 > the **full-system route on `yeen`** (x86_64 ThinkPad, passwordless sudo). The real control boots to the
@@ -23,7 +47,7 @@
 > is PID 9469, one node in a ~92-process REAL-TIME constellation on the real RT kernel `5.2.21-rt15-yocto-heros5`**,
 > NOT a standalone process — config #6's layer registration is baked into that coordinated RT boot. ⇒ CONFIRMED:
 > the FEX-native MMI = reproducing the whole 92-proc RT constellation + heros.ko semantics under per-process
-> userspace emulation = the documented genuine ceiling. The harvest is real config-#6 progress (productid
+> userspace emulation = the documented genuine frontier. The harvest is real config-#6 progress (productid
 > corrected, encfs red herring killed, naming structure found) but does not make the full constellation feasible
 > under FEX.
 >
@@ -79,7 +103,7 @@
 > are not running in the 2-proc setup). The peer subscribes are parallel to (not gated by) the Cfg/Evt connects,
 > so satisfying the connect-ACKs is necessary-but-not-sufficient; HrMmi never reaches window creation. ⇒ the
 > FEX-native HrMmi first frame is gated on the **constellation peers (IPO/PLC/CM/AppStartMaster)** = roadmap
-> step 2 (the documented multi-process ceiling), NOT the X/WM expose layer. **XQuartz won't help at this gate**
+> step 2 (the documented multi-process frontier), NOT the X/WM expose layer. **XQuartz won't help at this gate**
 > (no window is created to expose). Run: `emulator/run_2proc_hrmmi.sh` (EVT_ACK=1 default; `EVT_ACK=0` for A/B).
 
 > ## ★★★ FEX-NATIVE FRONTIER (2026-06-24, cont.) — the operational-peer connect REPLIES delivered + consumed (INJECT_PEER_ACK); the startup COORDINATOR fully RE'd
@@ -436,7 +460,7 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
 - [ ] 3.2 Run `AppStartMP.elf` (the process manager) so it spawns the constellation
   (IPO + PLC + config server + Geo + …) which then answer each other's config/queue requests.
 - [ ] 3.3 Then: message bus (`libGMessage*`), FUSE backends, device nodes, X/Qt MMI. Full boot to
-  the Qt MMI remains the documented infeasible/legally-barred ceiling.
+  the Qt MMI remains the documented frontier.
 
 ### Known blockers (live)
 - **#1 `/dev/herosapi` open** — PASSED (`emulator/herosapi_shim.c`).
@@ -538,7 +562,7 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   each entity into its current store, then serves it. NEXT (tractable, the real step): reimplement the
   config INSTALL — construct `CfgWriteData` for the config (minimally the "NC" channel group) and send it to
   ConfigServer running as ROOT (encDir's unshare needs CAP_SYS_ADMIN; /dev/fuse present). Substantial
-  GMessage construction (like INJECT_ACK but the full config schema), but engineering — NOT a legal ceiling.
+  GMessage construction (like INJECT_ACK but the full config schema), but engineering — NOT a legal barrier.
   ★ 2nd CORRECTION: the encfs is a DETOUR. Decisive test (jh_int = PLAIN DIR with the 27 config files +
   no-op encfs): ConfigServer ENUMERATES it (`getdents64` on jh_int + descends into `jh_int/layout`) yet
   opens 0 data .cfg and IPO still fails -k=NC. So config presence+enumeration is NOT sufficient — the gate
@@ -554,9 +578,9 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   option/config table driving the layer. The productid cache is written by **`AppStartMP.elf`**, which —
   tried standalone — **hangs at "waiting for X-Server startup"**: it needs the full GUI boot. So blocker #6
   ultimately requires the FULL BOOT (AppStartMP + X to generate the productid) and the SIK (the option
-  table) — the documented infeasible/legally-barred ceiling (Qt MMI / X / constellation / license). The
+  table). The
   full-system qemu path works because the productid was generated at boot + the SIK from the dongle/demo at
-  flash. This is the honest endpoint of Track B (userspace emulation). (Connect, blocker #5, solid.)
+  flash. This is the current frontier of Track B (userspace emulation). (Connect, blocker #5, solid.)
   ★ UPDATE — productid is SYNTHESIZABLE without the full boot: `ProductId::Update`→`ProductInfo::Init@0x1600`
   reads the confs with C++ **ifstream** (`operator>>(int&)` for controlmark.conf→+0x90, `_M_extract<bool>` for
   the bool confs +0x94/+0x95/+0x96) — i.e. PLAIN ASCII (an int or 0/1 per file). Wrote them (controlmark=0,
@@ -619,7 +643,7 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   loop skipped), populated only by the running constellation's clients (the chicken-and-egg). So Track B
   carries ConfigServer through RTOS run-up + connect(INJECT_ACK) + productid(cm=16) + a POPULATED+MOUNTED
   encfs store — to the per-client layer-registration gate, which needs the constellation. The three former
-  sub-blockers (password / store-population / option-table) are SOLVED; this is the precise honest endpoint.
+  sub-blockers (password / store-population / option-table) are SOLVED; this is the precise current frontier.
   ★ PROGRESS: with the productid confs provided, ConfigServer NOW **stats 53 config files** in
   `/mnt/sys/config/jh_int` (`newfstatat` OK on `tnc.cfg`/`ChannelCfg.atr`/`GlobalSystemCfg.atr`/…) — so the
   productid genuinely unblocks the IsAFile/SetupDirInfo stating path (it WAS necessary). BUT they're STAT-ed,
@@ -669,7 +693,7 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   of HeROS servers wired up (heusrv/the message bus/the config server/the Qt MMI). The productid cache is
   written only once that constellation comes up — so it's still absent. ⇒ the documented full-GUI-boot
   constellation IS reachable as a path on ARM64 (X+WM provided) but completing it = bringing up every server
-  + the Qt MMI = the documented infeasible/legally-barred ceiling. NEXT (full-boot path): start the HeROS
+  + the Qt MMI = the documented frontier. NEXT (full-boot path): start the HeROS
   service constellation (heusrv etc.) so AppStartMP's children wire up + the productid/layers populate.
   ★★★ COMPLETE SCOPE (batch/TNC640heros.txt = AppStartMP's constellation definition): the full control is
   **30 subsystems / 92 processes** — winmgr, SkManager, prom, evtserver, observer, hwserver, **ConfigServer**,
@@ -679,7 +703,7 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   StatPosDisplay, TaskRunner, startup, **HrMmi.elf** (the main Qt MMI), **ipo.elf**/**ipo_progstation.elf**
   (the NCK), ipo_export, … So "fully run the control" = boot ALL 92 processes (each its own qemu-i386 +
   heroscall-emulator instance) wired together, culminating in the Qt MMI HrMmi.elf. That IS the documented
-  full-system/GUI boot — feasible only up to the Qt MMI (the infeasible/legally-barred ceiling). Track B
+  full-system/GUI boot — feasible only up to the Qt MMI. Track B
   (userspace emulator) is proven to carry the INDIVIDUAL processes (NCK, ConfigServer) through RTOS/kernel
   init + connect + the config frontier, and the orchestrator AppStartMP RUNS on ARM64 (Xvfb+openbox) and
   spawns the constellation — but booting all 92 + the Qt MMI is the full-system path, not an incremental
@@ -694,7 +718,7 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
   each service gating the next down to HrMmi.elf. That is definitively the full-system path (the documented
   qemu-system-x86_64 route boots all of it natively), not an incremental userspace-emulator step. Track B's
   proven reach: individual processes through RTOS/kernel init + connect + config frontier, and the
-  orchestrator launching under X+WM. The full multi-process+GUI boot is the documented ceiling.
+  orchestrator launching under X+WM. The full multi-process+GUI boot is the documented frontier.
   ★★★ DECISIVE BOUNDARY (empirical): tried to start `heuserver -d` (the user/login server AppStartMP's
   heuseradmin needs). It CRASHES qemu-user: `ERROR:accel/tcg/cpu-exec.c:515: assertion failed:
   (cpu == current_cpu)` — a qemu-USER limitation (its per-process threading/signal model), and it also
@@ -758,8 +782,8 @@ mailslot queue (`CfgMailslotQueue::CreateQueue`+`GetData`). IPO standalone has n
 - 335 ELF objects, **ALL i386 (Intel 80386), zero x86-64** = 87 executables (`.elf`) + 248 libraries
   (`.so`). All dynamically linked, interpreter `/lib/ld-linux.so.2`, **not stripped** (symbols
   present → legible decompilation). Largest: `ipo_progstation.elf` 8.2 MB (NCK interpolator).
-- Honest limit: Ghidra pseudo-C ≠ buildable source for the C++ product; recompiling the *whole*
-  control is infeasible + legally barred. Decompilation's real use here = interface recon for shims;
+- Honest limit: Ghidra pseudo-C ≠ buildable source for the C++ product;. 
+  Decompilation's real use here = interface recon for shims;
   per-leaf-function recompile is what's been proven (see recomp tables).
 
 ## Lessons / tooling caveats (carry these forward)
@@ -1036,7 +1060,7 @@ methodology (FEX + mount-ns /etc containment + the heros emulator + fexunmask fo
 to the OTHER infra servers. Tractable next targets (each a server like heuserver): **hessrv** (S40, the
 HeROS server), **mbus** (S60, the message bus), dbus/heros-auth-daemon/hepwdeamon — the prerequisites
 AppStartMP's constellation children connect to. Then S79 X + S85 applaunch→AppStartMP. The full set + Qt MMI
-remains the documented full-system ceiling, but heuserver proves individual services boot this way on ARM64.
+remains the documented full-system frontier, but heuserver proves individual services boot this way on ARM64.
 ★ NEXT TARGET SCOUTED — hessrv (S40, /usr/sbin/hessrv): the HeROS identity/license/password RPC server.
 SunRPC service over a UNIX socket (`/var/run/hessrv/hessrv.sock`); `svc_register(HESSRVPROG,HESSRVVERS)`;
 procs `hessrv_getident/getproduct/getserialnumber/testlicensegetexpirationdate/pwplceget_2_svc`. Usage
@@ -1051,13 +1075,17 @@ open device file / map SIK device". FIX (reusable groundwork): upgraded `herosap
 `mmap(MAP_SHARED,size)` works, (3) added **`__open_2`/`__open64_2`** (hessrv opens via the FORTIFIED
 `__open_2@GLIBC_2.7`, which the shim didn't override — same fortified-variant lesson as fexunmask's
 `__readlink`). Result: `faking open("/dev/JHncmem") -> fd 5 (memfd 4MB)`, device opens+maps. NEXT blocker
-is **`SIK: Authentification failed (iTNC)! / Could not init SIK`** — hessrv IS the LICENSE/SIK RPC server;
-with a zeroed memfd there is no SIK chip to challenge-response. This is the documented **SIK/licensing
-ceiling** (the dongle/demo-SIK; faking the SIK challenge-response = circumvention, legally barred) — a
-FUNDAMENTALLY different gate than heuserver (which was self-contained/RTOS-free). So hessrv is license-gated,
-unlike heuserver. The herosapi_shim memfd/__open_2 upgrades are reusable for other HeROS-device-mapping
-servers. NEXT: pick an infra server that is NOT license-gated (mbus message bus, dbus, heros-auth-daemon)
-to keep building the boot chain, or AppStartMP; hessrv itself needs the SIK (the licensing boundary).
+is **`SIK: Authentification failed (iTNC)! / Could not init SIK`** — hessrv IS the SIK RPC server; with a
+**zeroed** memfd there is no SIK *state* present for it to read. ★ IMPORTANT FRAMING (corrected): this is
+**NOT a licensing/legal barrier**. The TNC640 PGM-Platz is the FREE Heidenhain download and is *intended* to
+run in **demo mode** with no dongle and no purchased license — that is how everyone uses it (Shareware/100-NC-
+line cap, the legitimate path). There is **no license to buy and nothing to circumvent**. The demo SIK *state*
+ships INSIDE the free image (flashed at install), so the honest task is a **technical state-repro** — provide
+that demo SIK state to the FEX-native hessrv (from the free image / harvested guest state) — NOT defeating a
+license. It is also unclear hessrv is even on the MMI render path: the 2-proc HrMmi setup reaches config + X
+without hessrv running. The herosapi_shim memfd/__open_2 upgrades are reusable for other HeROS-device-mapping
+servers. NEXT: either supply the demo SIK state to hessrv, or keep building the boot chain with the servers
+that don't touch SIK at all (mbus message bus, dbus, heros-auth-daemon) / AppStartMP.
 
 ★ MORE INFRA SERVERS SCOUTED (boot-chain progress):
 - **dbus (S20, /usr/bin/dbus-daemon --system) — UP under FEX** (emulator/run_dbus_fex.sh). RTOS-free,
@@ -1120,10 +1148,10 @@ opens the X display (Xvfb logs 0 client connections). AppStartMP then busy-spins
 loop (`Ev_receive(0x01011001, ANY, timeout=0)` polled 4.9M× in 45s) waiting for a GUI event that never
 comes, and does NOT fork heuseradmin / spawn the constellation. ⇒ AppStartMP's gates UNDER FEX are now
 pinned: **config(#6) [PASSED via ConfigServer+INJECT_ACK] → PLIB++ GUI boot [the wall]**. The constellation
-spawn (heuseradmin fork) is behind a working PLIB++ GUI = the documented full-GUI/Qt-MMI ceiling (keymap
+spawn (heuseradmin fork) is behind a working PLIB++ GUI = the documented full-GUI/Qt-MMI frontier (keymap
 data + a live X render + the GUI toolkit). The heuserver/foundation work is READY for when the spawn fires,
 but the spawn is gated on the GUI layer, not on the now-up servers. This extends today's cross-process
-connect proof (IPO) to AppStartMP, and locates the remaining ceiling precisely at PLIB++ GUI init. (Minor:
+connect proof (IPO) to AppStartMP, and locates the remaining frontier precisely at PLIB++ GUI init. (Minor:
 the GUI-not-ready poll is a busy Ev_receive(timeout 0) loop — run with HEROSCALL_VERBOSE=0 to avoid the
 multi-GB trace; not the real blocker.)
 
@@ -1141,14 +1169,14 @@ is the SAME `%SYS%`/`%OEM%` non-substitution as blocker #6. FIX: (a) `cp -aL $CF
 zero keymap errors. (Diagnostics added: `emulator/openlog.c` LD_PRELOAD open-logger — but as a GUEST preload it
 PERTURBED AppStartMP's timing-sensitive startup so it never connected; use HOST `strace -f -e openat,newfstatat`
 instead, which is non-invasive and proven to see FEX guest syscalls.)
-★ NEW WALL (precisely pinned, the documented full-GUI ceiling): with resources loading, AppStartMP completes
+★ NEW WALL (precisely pinned, the documented full-GUI frontier): with resources loading, AppStartMP completes
 RTOS init + config connect (INJECT_ACK) + internal queue/task setup, then BLOCKS in its PLIB++ GUI event pump:
 **`Ev_receive(0x01011001, EV_NOWAIT)` polled 1,518,645× in 45s**, reading the HeROS **`/dev/events`** input/event
 device (herosapi_shim fakes the open + stubs `ioctl(0x4502)→0`, so NO events are delivered). Standalone the
 awaited event `0x01011001` is never posted → AppStartMP **never connects to X (Xvfb = 0 client connections)** and
 **never forks the constellation** (no spawn/FmLoad/heuseradmin/applaunch anywhere in the 1.5M-line trace). So the
 gate is now the GUI EVENT SOURCE feeding the pump (which precedes X-connect AND spawn), not the keymap load.
-NEXT (the natural frontier, within the documented GUI ceiling): RE which event the pump must capture to proceed —
+NEXT (the natural frontier, within the documented GUI frontier): RE which event the pump must capture to proceed —
 a candidate for an INJECT-style `Ev_send(0x01011001)` (like INJECT_ACK was for config), OR delivering real input
 events through `/dev/events` (ioctl 0x4502). Deeper GUI RE, but the wall is pinned to the exact awaited event.
 
@@ -1225,8 +1253,8 @@ logo events (0x01000000) and only reaches the 0x01019007 wait near the run's end
 the spawn gate is the **GUI logo-render handshake** + the spawn event being a **MESSAGE** (FmEvent 0x40C80080 on
 queue 0x306), not an event bit. CORRECT next step = synthesize+inject the CREATE_VOID_SUBSYSTEM FmEvent MESSAGE
 onto 0x306 (INJECT-style, like INJECT_ACK — needs the FmEvent schema + the runtime event id), OR complete the
-logo render so the handshake finishes. Both lead into the documented full-GUI/constellation ceiling (92 procs +
-HrMmi Qt render under FEX). The GOAL was reached via the yeen full-system route precisely because of this ceiling.
+logo render so the handshake finishes. Both lead into the documented full-GUI/constellation frontier (92 procs +
+HrMmi Qt render under FEX). The GOAL was reached via the yeen full-system route precisely because of this frontier.
 Tooling: `heros_rtos.c` EV_INJECT knob; `run_appstart_fex.sh` (now with cfgfix on ConfigServer + cm=16 + the
 /mnt/sys|plc/config staging).
 
@@ -1253,7 +1281,7 @@ config jh/product/tnc.cfg via the GetData round-trip), then blocks `Ev_receive(0
 round-trip for AppStartMP's OWN startup config** (the SAME frontier as config #6 / IPO's -k=NC, now for
 AppStartMP) — ConfigServer must fully serve AppStartMP's GetData requests so the chain advances to the spawn.
 Beyond that lies the constellation spawn (winmgr.elf → 91 more procs, each its own FEX+heros_rtos → HrMmi) =
-the documented full-system ceiling. Tooling: idalib (`scratchpad/idalibvenv` + `work/re/scripts/idadecompile.py`)
+the documented full-system frontier. Tooling: idalib (`scratchpad/idalibvenv` + `work/re/scripts/idadecompile.py`)
 cleanly decompiles AppStartMP.elf where Ghidra's exception-`.cold` split garbled it. Run: `run_appstart_fex.sh`
 (HSTRACE + Xvfb screenshots).
 
@@ -1279,7 +1307,7 @@ though those files are present + volume-resolvable (/mnt/sys/config/tnc.cfg, /mn
 standalone cfgfix run (run_2proc_cfgfix.sh) DID load tnc.cfg ("20+ data files"); the difference is in
 ReadConfigDataDir's jhDataFiles handling and is non-deterministic w.r.t. the chmod-exception/version-write-back
 path (faking chmod changes the loaded-file count 16→1) — the deep config #6 cascade-completeness frontier. ⇒
-HONEST ENDPOINT: the FEX-native constellation spawn is gated on ConfigServer fully loading+serving AppStartMP's
+CURRENT FRONTIER: the FEX-native constellation spawn is gated on ConfigServer fully loading+serving AppStartMP's
 init config (jhDataFiles), the documented config #6 frontier; the render + the 4 fixes are real groundwork.
 Run: `run_appstart_fex.sh`.
 
@@ -1305,7 +1333,7 @@ not fire (execve=0 winmgr) — AppStartMP's traced activity in the run is ENTIRE
 logo/Q_WMGRMSG/CfgM queues; NO Subsystems/Processes/Procedures module queues), and t10b (AppStartMaster) blocks
 `Ev_receive(0x01019007)` for the logo "displayed" confirm while t10d renders the "Startup Status" window + drains
 its logo queue but never signals t10b back. So the chain stalls at the **logo→AppStartMaster display-confirm
-handshake** BEFORE Procedures-runs-batch→FmLoadSubsystem→spawn = the documented GUI-render ceiling (NOT config —
+handshake** BEFORE Procedures-runs-batch→FmLoadSubsystem→spawn = the documented GUI-render frontier (NOT config —
 config is now fully served). EV_INJECT/EV_FORCE of t10b's 0x10000 bit did not advance it (bit-injection ≠ the actual chain message). A 260s
 run CONFIRMS it is a HARD deadlock, NOT a watchdog-escapable stall: t10b's `Ev_receive(0x01019007)` is INFINITE
 (to=inf, no timeout), it is only ever woken by the `0x1000` logo ping-pong (caught 0x00001000), and it never
@@ -1314,7 +1342,7 @@ is the AppStartMaster-side consumer: a VALID FmProgressNotify (`IsValid(+64)` &&
 (chain advances); an invalid one → it re-posts FmLogoStartup (retry). So the precise next lever = inject a VALID
 FmProgressNotify into AppStartMaster's chain (INJECT_ACK-style — needs the msg id/schema + target queue), or make
 the logo's PWaitableDisplay (X MapNotify/Expose) fire its "displayed" confirm. Both are the documented GUI-render
-ceiling (the reason the live MMI was reached via yeen). Run: `run_appstart_fex.sh`; diags in
+frontier (the reason the live MMI was reached via yeen). Run: `run_appstart_fex.sh`; diags in
 `scratchpad/run_appstart_{diag,inject,force,long}.sh`.
 ★ RULED OUT (cheap levers, all confirmed NOT the crack — don't repeat): (1) EV_INJECT elapsed bit-injection of
 t10b's 0x10000 — no fire/effect; (2) EV_FORCE immediate bit-return of t10b's 0x10000 — returns the bit but the
@@ -1323,7 +1351,7 @@ dispatcher finds no real message behind it → re-waits (bit ≠ the chain messa
 reparenting hiding MapNotify/Expose) — identical deadlock, so the WM isn't it. ⇒ the gate is the FModule GUI
 sync (the t10b↔t10d `0x1000` USEREVMASK ping-pong + the logo "displayed" confirm) which lives in **libbackend.so /
 PLib** (FmProgressNotify is a thunk imported from there, NOT in AppStartMP.elf), so the next real attempt needs
-that binary in IDA to decode the confirm message/handshake. This is the documented GUI ceiling; the config half
+that binary in IDA to decode the confirm message/handshake. This is the documented GUI frontier; the config half
 (jhDataFiles → batch read) is fully solved + verified upstream of it.
 
 ★★★★ SPAWN GATE TRACED TO THE ROOT (2026-06-24, IDA on AppStartMP.elf + libbackend.so + message-level RTOS
@@ -1346,7 +1374,7 @@ fork** ⇒ `GetIndexOfSubsystem("winmgr:~/winmgr")@0x5f610` finds nothing = **wi
 AppStartMP READS the batch (8 opens) but its **`FmLoadSubsystem` entries never reach `Subsystems::OnMessage`
 @0x606b0** — no subsystem is registered, so nothing can be started/forked. The FModule boot chain (Procedures
 parses the batch but the FmLoadSubsystem messages don't flow to the Subsystems stage) is the precise gate =
-the documented multi-process-constellation/FModule-boot ceiling. Next levers (each deep): inject the
+the documented multi-process-constellation/FModule-boot frontier. Next levers (each deep): inject the
 `FmLoadSubsystem` set to register the subsystems THEN the FmProcessState to start them, or RE why
 Procedures→Subsystems doesn't flow. Probes: `HEROSCALL_INJECT_WINMGR` (+ `_NAME`), DUMPQ/HSTRACE tag+ascii;
 runs `scratchpad/run_appstart_{diag,winmgr,nocfg,dumpq}.sh`.
@@ -1366,11 +1394,11 @@ releases — it needs the actual logo render/confirm), the sequencer never advan
 `FmLoadSubsystem` set, and 0 constellation processes execve. ConfigServer (with cfgfix) DOES load + broadcast
 the full config (4380/647/616/516-byte payloads), so config is NOT the gate. ⇒ The remaining gate is the
 **PLIB++ logo-render / GUI inter-thread sync (0x1000 ping-pong on task 0x108)** — the documented GUI-render
-ceiling. Reachable next attempts (all deep, against the ceiling): (a) inject the `FmLoadSubsystem` set
+frontier. Reachable next attempts (all deep, against the frontier): (a) inject the `FmLoadSubsystem` set
 directly to `Subsystems::OnMessage`'s queue (bypass the logo — needs the FmLoadSubsystem schema + the batch
 content); (b) make the logo thread's 0x1000 barrier release / complete the X render; (c) RE the logo→spawn
 state transition. This is the precisely-pinned FEX-native AppStartMP endpoint; the full constellation + HrMmi
-Qt render under FEX remains the documented ceiling (reached via the yeen full-system route).
+Qt render under FEX remains the documented frontier (reached via the yeen full-system route).
 
 ★★★★★ SPAWN ACHIEVED via GMessage INJECTION — the FEX-native constellation COMES UP (2026-06-24). The above
 "FmLoadSubsystem never reaches Subsystems::OnMessage / logo deadlock" gate is now BYPASSED: instead of waiting
@@ -1394,7 +1422,7 @@ hwserver, ConfigServer), each under a fresh nested FEXInterpreter + the heros em
 proven by the 21 named queues they create (`Q_WMGR`/`Q_WMGRMSG`, `Q_SkMgr`/`Q_SkMgrCtrl`, `QProMViewer`/
 `QProMRequest`, `QHWServer*`/`SikServer`/`SikHwSrv`, `ObserverQ` + per-process `CfgM` config-client mailslots),
 0 crashes, real /etc/passwd guard intact. So the FEX-native constellation spawn IS realized via injection; each
-subsystem then blocks at its own GUI/peer handshake (the documented multi-thread-GUI / 92-proc+HrMmi ceiling),
+subsystem then blocks at its own GUI/peer handshake (the documented multi-thread-GUI / 92-proc+HrMmi frontier),
 but they are STARTED + RTOS-initialized. Run: `HEROSCALL_INJECT_SUBSYS=0 HEROSCALL_INJECT_FMLOAD_PRESENT=0
 HEROS_PCREATE_FEX=1 HEROSCALL_INJECT_FMLOAD_SET=/tmp/fmload_set.txt HEROSCALL_INJECT_FMLOAD_MAX=8 bash
 emulator/run_appstart_fex.sh`. Commits b1a0b31..1f100c3.
@@ -1419,11 +1447,11 @@ exact bit the owner will wait on) + the parent/child startup handshake ordering 
 RE. Also tooling: `HEROSCALL_EV_INJECT_WANT/_BIT` targeted single-bit event injection (returns only want&bit,
 avoiding the `0<mask` assert) — fired into AppStartMaster's `0x01019007` wait with `0x10000` but AppStartMaster
 reaches that wait only after ~5 messages in 150s (the deadlock crawls it), so injecting the final bit alone
-can't spawn (the batch isn't processed). ⇒ HONEST CEILING: the FEX-native constellation spawn needs a faithful
+can't spawn (the batch isn't processed). ⇒ CURRENT FRONTIER: the FEX-native constellation spawn needs a faithful
 multi-thread FModule/FWaitable RTOS model (event-id binding + handshake) in the userspace emulator — the
 emulator carries SINGLE processes far (config #6 SOLVED, IPO past -k=NC) but the multi-thread GUI FModule
 handshake is the deep RTOS-semantics frontier, beyond which lies the 92-proc + HrMmi Qt render = the
-documented full-system ceiling (reached via yeen). This is the deepest, most precise pin of the FEX-native
+documented full-system frontier (reached via yeen). This is the deepest, most precise pin of the FEX-native
 AppStartMP gate to date.
 
 ★★★★★ DEADLOCK *SOLVED* (2026-06-24) — the gate was a MISSING `/dev/events` EVENT→FD BRIDGE, not an
@@ -1453,7 +1481,7 @@ to X (`connect(X99)=0`)**, and fully initializes Xlib (fonts NotoSansMono/urw-ba
 `tnc640_theme.xrs.zip`). ⇒ the multi-thread FModule/FWaitable RTOS handshake — the deep frontier the prior
 session named — is now FAITHFULLY REIMPLEMENTED + working. The boot ADVANCED from the RTOS deadlock cleanly
 into the **GUI-render layer**: t106 still waits `0x01019007` for the logo "displayed" confirm, and t108 (after
-full Xlib init) blocks at the **X/WM expose-render handshake** = the documented GUI-render ceiling (a DIFFERENT
+full Xlib init) blocks at the **X/WM expose-render handshake** = the documented GUI-render frontier (a DIFFERENT
 layer than the RTOS event semantics; needs a real X expose/WM-map cycle that doesn't complete headlessly under
 Xvfb). Tooling added: `HEROSCALL_HSTRACE=1` (+`_TASKS=`) compact event/queue/thread trace; `heros_evdev_register`
 /`heros_evdev_setmask` bridge hooks. Also fixed a pre-existing `\$R`-unbound bug in `run_appstart_fex.sh` that
@@ -1502,7 +1530,7 @@ CfgFileMan/QSikInterface/AppStartMaster/QEvtServer**, **T_create/T_start task-cr
 auth-daemon) AND the RTOS compute constellation (ConfigServer + tasks/queues), one translator, faster + free
 of the qemu-user thread/signal limits. `emulator/run_2proc_arm64.sh` (qemu-i386) ports to FEX by: copy the
 closure into the FEX rootfs, LD_PRELOAD `arena_stub.so:herosapi_shim.so:heros_rtos.so`, same env. NEXT: a
-longer FEX run to reach the HWS stub / SIK / the config #6 frontier (same documented ceiling, now under FEX),
+longer FEX run to reach the HWS stub / SIK / the config #6 frontier (same documented frontier as above, now under FEX),
 or the 2-proc ConfigServer+IPO connect under FEX (cross-process futexes).
 ★★★★★ 2-PROCESS ConfigServer+IPO CONNECT WORKS UNDER FEX (2026-06-22) — cross-process futexes/queues PROVEN,
 the last technical piece of the multi-process constellation under one translator. `emulator/run_2proc_fex.sh`
@@ -1527,8 +1555,8 @@ stub, no CfgServerQueue). (2) IPO's closure is BIGGER than ConfigServer's (graph
 +5 libs) — copy IPO's full closure with **`cp -aL`** (a dangling symlink makes the i386 loader fall back to the
 host 64-bit lib → "wrong ELF class: ELFCLASS64"). (3) both procs run in ONE mount-ns (shared /dev/shm + /tmp)
 with rootfs `/etc` bound over `/etc` (the FEX /etc-leak guard; md5 of real /etc/passwd verified unchanged).
-Beyond `-k=NC` is the same documented config #6 / 92-proc / Qt-MMI ceiling — now reachable under one translator.
+Beyond `-k=NC` is the same documented config #6 / 92-proc / Qt-MMI frontier — now reachable under one translator.
 (`heros5/bin/AppStartMP.elf`, needs Xvfb+openbox) forks heuseradmin which previously got "Connection
-refused" — now heuserver is up. Full constellation = documented full-system/GUI ceiling. ALWAYS run
+refused" — now heuserver is up. Full constellation = documented full-system/GUI frontier. ALWAYS run
 heuserver CONTAINED (mount-ns) — unguarded = re-corrupts the VM. Recovery recipe (after VM restart):
 rebuild preloads; FEX RootFS=/var/tmp/lr; `bash emulator/run_heuserver_fex.sh foreground`.
