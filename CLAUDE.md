@@ -58,6 +58,29 @@
 > **GUI-render / X-WM expose handshake** (the documented multi-thread FModule render layer, SAME frontier as
 > AppStartMP's logo `0x1000` ping-pong, cracked there via the /dev/events event→fd bridge bf0b579). Next
 > roadmap step: HrMmi GUI/render → surface to the Mac. Memory `project-hrmmi-executes-under-fex`.
+>
+> ## ★★ FEX-NATIVE FRONTIER (2026-06-24, cont.) — QEvtServer connect-ACK SOLVED + the render gate RE-PINNED
+> The `Ev_receive(0x03011001)` block above was characterized as the "X-WM expose handshake" — **that premise is
+> CORRECTED by RE this session**: HrMmi connects to X but **blocks BEFORE creating any window** (Xvfb screenshot =
+> 1 unique color = blank; no XCreateWindow/XMapWindow), so the gate is NOT an X expose. Two findings:
+> (1) **INJECT_EVT_ACK (new, `emulator/heros_rtos.c`, env `HEROSCALL_INJECT_EVT_ACK`, default OFF, ON in
+> run_2proc_hrmmi.sh)** — the INJECT_ACK pattern for a SECOND facility (QEvtServer). RE: `HrModule::ConnectToEvtSrv
+> @0x2c140` sends **EvtConnectClient (wire type 0x320081, leading GMsgString reply-to embedding `.QueueHrMmi`)**;
+> HrMmi then waits for **EvtClientIsConnected (wire type 0x3200A0)** which `HrModule::DispatchMessage` routes to
+> `OnEvtConnected@0x324e0`. Schema RE'd from `libGMessageMisc` .rodata 0x23ce80 = **3 GMsgInt fields
+> (Success/stateError/viewerHandle)**; inject all-0 → `OnEvtConnected` success branch (body+20==0). With no
+> QEvtServer process the real reply never comes, so this connect was a dangling handshake. VERIFIED A/B
+> (`run_2proc_hrmmi.sh`): EVT_ACK=1 → HrMmi reads the 28B EvtClientIsConnected (no crash), `OnEvtConnected` runs,
+> sends `EvtErrorRequest` (28B→QEvtServer) **+ a follow-on CfgConnect(67B)+config-req(159B)** that EVT_ACK=0 does
+> NOT do; both stay crash-free, /etc GUARD OK. (Connect-ack #2 of the family: Cfg 0x170100 ✓, Evt 0x3200A0 ✓.)
+> (2) **★ THE REAL RENDER GATE = the operational-peer CONSTELLATION, not an X handshake.** In BOTH EVT_ACK states
+> HrMmi subscribes to its operational peers — **AppStartMaster (0x308), IPO/NCK (0x310), Q_PLC_FRONTSTAGE (0x30f),
+> CM/ChannelManager (0x311)** — then blocks at `Ev_receive(0x03011001)` waiting for THEIR replies (those processes
+> are not running in the 2-proc setup). The peer subscribes are parallel to (not gated by) the Cfg/Evt connects,
+> so satisfying the connect-ACKs is necessary-but-not-sufficient; HrMmi never reaches window creation. ⇒ the
+> FEX-native HrMmi first frame is gated on the **constellation peers (IPO/PLC/CM/AppStartMaster)** = roadmap
+> step 2 (the documented multi-process ceiling), NOT the X/WM expose layer. **XQuartz won't help at this gate**
+> (no window is created to expose). Run: `emulator/run_2proc_hrmmi.sh` (EVT_ACK=1 default; `EVT_ACK=0` for A/B).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under

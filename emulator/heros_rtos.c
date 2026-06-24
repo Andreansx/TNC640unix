@@ -430,6 +430,16 @@ static int inject_upd=0;
  * and post it. IPO's OnCfgClientIsConnected@0x1a72d0 reads success, and on OK proceeds to
  * CfgMailslotQueue::Create→SyncMessage→AskIpoConditions→IpoSystemView1 (past the connect). */
 static int inject_ack=0;
+/* HEROSCALL_INJECT_EVT_ACK=1: the SAME connect-ACK pattern as INJECT_ACK, but for the EVENT server
+ * (QEvtServer). HrMmi's HrModule::ConnectToEvtSrv@0x2c140 sends EvtConnectClient(id 0x3200c0) to
+ * QEvtServer with its reply-queue name as the leading GMsgString (idclient), then blocks reading that
+ * queue. With no QEvtServer process the reply never comes → HrMmi blocks at Ev_receive(0x03011001)
+ * AFTER receiving config + connecting to X (it never creates its window). We synthesize
+ * EvtClientIsConnected(id 0x3200a0; 3 GMsgInt fields Success/stateError/viewerHandle, all 0 =
+ * success) and post it to the reply queue → HrModule::OnEvtConnected@0x324e0 takes its success
+ * branch (body+20==0) and continues the MMI bring-up. Schema RE'd from libGMessageMisc .rodata
+ * 0x23ce80 (type id 0x3200a0 + 3×0x63) + HrModule::DispatchMessage (OnEvtConnected ← 3276960=0x3200a0). */
+static int inject_evt_ack=0;
 /* HEROSCALL_INJECT_REREAD=1: ConfigServer loads its config DATA files (tnc.cfg → the "NC" channel
  * group etc.) only on a CfgRereadData message (id 0x170640 → CfgServer::OnRereadData@0x18f550 →
  * RereadData → ReadDataFiles). The MMI/constellation normally sends it at startup; standalone nobody
@@ -1118,6 +1128,53 @@ static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size)
     LOG("INJECT_ACK: posted CfgClientIsConnected(success=OK) to \"%s\" (0x%x), %u bytes\n",cid,rqid,p);
 }
 
+/* INJECT_EVT_ACK: HrMmi's EvtConnectClient(0x3200c0)->QEvtServer mirrors CfgConnectClient->CfgServerQueue.
+ * Same reply-to resolution (the leading GMsgString embeds the watched queue, e.g. ".QueueHrMmi"); reply
+ * with EvtClientIsConnected(0x3200a0) so OnEvtConnected proceeds. See the HEROSCALL_INJECT_EVT_ACK note. */
+static uint32_t evt_acked_qids[32]; static int n_evt_acked=0;
+static void inject_evt_connect_ack(uint32_t target_qid,const void*msg,uint32_t size){
+    if(!inject_evt_ack||!msg||size<16) return;
+    int ts=q_slot(target_qid); if(ts<0||strcmp(C->queues[ts].name,"QEvtServer")) return;
+    const unsigned char*m=msg;
+    uint32_t hdr=m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24);
+    /* EvtConnectClient wire type-id = 0x320081 (RE'd empirically: HrMmi's 67B connect send carries hdr
+     * 0x320081 + leading GMsgString reply-to; its 520B 0x320221 send is an EvtSendEvent publish, NOT a
+     * connect). The 0x3200c0 schema in libGMessageMisc .rodata is a different message. */
+    if((hdr&0x7fffffff)!=0x320081) return;               /* not an EvtConnectClient (ignore publishes) */
+    uint32_t tag=m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24);
+    if(tag!=0xe7) return;                                 /* expect GMsgString reply-to (idclient) */
+    uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
+    if(nlen==0||nlen>64||12+nlen>size) return;
+    char name[80]; memcpy(name,m+12,nlen); name[nlen]=0;
+    int rs=q_find_slot(name);
+    if(rs<0){
+        /* identical to INJECT_ACK: field0 EMBEDS the queue name; prefer the longest WATCHED
+         * (notify!=0) substring queue (QueueHrMmi 0x02000000), else longest any. */
+        int best=-1; size_t bestlen=0; int best_n=-1; size_t bestlen_n=0;
+        for(int qi=0;qi<MAXQ;qi++){ struct queue*q=&C->queues[qi];
+            if(q->used && q->name[0] && strlen(q->name)>=4 && strstr(name,q->name)){
+                size_t l=strlen(q->name);
+                if(l>bestlen){ bestlen=l; best=qi; }
+                if(q->notify_bits && l>bestlen_n){ bestlen_n=l; best_n=qi; } } }
+        if(best_n>=0){ best=best_n; }
+        if(best>=0){ rs=best;
+            LOG("INJECT_EVT_ACK: matched embedded reply queue \"%s\" (notify %08x) in field0 \"%s\"\n",
+                C->queues[best].name,C->queues[best].notify_bits,name); }
+    }
+    if(rs<0){ LOG("INJECT_EVT_ACK: reply queue \"%s\" not found\n",name); return; }
+    uint32_t rqid=C->queues[rs].id;
+    for(int i=0;i<n_evt_acked;i++) if(evt_acked_qids[i]==rqid) return;   /* one ACK per reply queue */
+    if(n_evt_acked<32) evt_acked_qids[n_evt_acked++]=rqid;
+    /* EvtClientIsConnected: header + Success(int 0=OK) + stateError(int 0) + viewerHandle(int 0) */
+    unsigned char ack[64]; uint32_t p=0;
+    put32(ack+p,0x003200a0); p+=4;                        /* header (EvtClientIsConnected id) */
+    put32(ack+p,0x00000063); p+=4; put32(ack+p,0); p+=4;  /* Success:      GMsgInt present = 0 (OK) */
+    put32(ack+p,0x00000063); p+=4; put32(ack+p,0); p+=4;  /* stateError:   GMsgInt present = 0 */
+    put32(ack+p,0x00000063); p+=4; put32(ack+p,0); p+=4;  /* viewerHandle: GMsgInt present = 0 */
+    q_send(rqid,ack,p,0);
+    LOG("INJECT_EVT_ACK: posted EvtClientIsConnected(success) to \"%s\" (0x%x), %u bytes\n",C->queues[rs].name,rqid,p);
+}
+
 /* ---------------- regions (named shared memory) ---------------- */
 #define REGION_BYTES (64u*1024u*1024u)
 static uint32_t reg_ident(const char*name){
@@ -1189,6 +1246,7 @@ static void ensure_init(void){
         const char *rt=getenv("HEROSCALL_REPLAY_TRIGGER"); replay_trigger=rt&&rt[0]=='1';
         const char *iu=getenv("HEROSCALL_INJECT_UPD"); inject_upd=iu&&iu[0]=='1';
         const char *ia=getenv("HEROSCALL_INJECT_ACK"); inject_ack=ia&&ia[0]=='1';
+        const char *iea=getenv("HEROSCALL_INJECT_EVT_ACK"); inject_evt_ack=iea&&iea[0]=='1';
         const char *ir=getenv("HEROSCALL_INJECT_REREAD"); inject_reread=ir&&ir[0]=='1';
         const char *ep=getenv("HEROS_EVENTS_PIPE"); events_bridge=ep&&ep[0]=='1';
         ctl_init();
@@ -1393,6 +1451,7 @@ long syscall(long n,...){
         int r=q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
         hws_autoreply(p[4], (const void*)(uintptr_t)p[0], p[2]);   /* HWS_STUB: synth QHWServer reply */
         inject_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_ACK: synth IPO connect-ACK */
+        inject_evt_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_EVT_ACK: synth QEvtServer connect-ACK */
         return r;
     }
     case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], hdr/base@p[4], timeout@p[6], qid@p[7]).
