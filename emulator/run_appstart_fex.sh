@@ -29,6 +29,16 @@ for s in arena_stub; do $CC -shared -fPIC -O2 -Wl,--version-script="$EMU/arena.m
 for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
 $CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
+# FULL-SET: parse the constellation batch ONCE (main scope) -> set file (name|image) + distinct image list
+# (the sudo staging block + heros_rtos INJECT_FMLOAD_SET both consume these).
+BATCH="$CFG/batch/TNC640heros.txt"; SETF=/tmp/fmload_set.txt
+awk '
+  /localNamespace:=/ { ns=$0; sub(/.*localNamespace:="/,"",ns); sub(/".*/,"",ns) }
+  /processName:=/     { pn=$0; sub(/.*processName:="/,"",pn); sub(/".*/,"",pn); sub(/^~\//,"",pn); have=1 }
+  /imagePath:=/ && have { ip=$0; sub(/.*\\/,"",ip); sub(/".*/,"",ip); print ns"/"pn"|/tmp/b/"ip; have=0 }
+' "$BATCH" > "$SETF"
+sed -E 's#.*/tmp/b/##' "$SETF" | sort -u > /tmp/fmload_images.txt
+echo "  full-set: $(wc -l < "$SETF") FmLoadProcess entries, $(wc -l < /tmp/fmload_images.txt) distinct images (head: $(head -1 "$SETF"))"
 # Copy AppStartMP's i386 closure into the rootfs (cp -aL; overlaps the IPO/ConfigServer closure mostly).
 sudo bash -c '
 SRC=/Users/andreansx/Documents/TNC640unix/work/target/rootfs; R='"$R"'
@@ -40,17 +50,14 @@ cc(){ local l="$1"; [ -n "${S[$l]:-}" ]&&return; S[$l]=1; case " $SKIP " in *" $
   for n in $(i686-linux-gnu-objdump -p "$p" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done; }
 for n in $(i686-linux-gnu-objdump -p "$R/heros5/bin/AppStartMP.elf" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
 echo "  AppStartMP closure ensured (${#S[@]} nodes)"
-# INJECT_FMLOAD (FULL SET): stage EVERY distinct subsystem image named in batch/TNC640heros.txt + each
-# closure, all executable, so the injected FmLoadProcess set passes IsAFile + p_create access(X_OK) and the
-# p_create FEX-spawn interposer can launch each under a nested FEXInterpreter.
-BATCH="$CFG/batch/TNC640heros.txt"
-for img in $(grep -aoE "imagePath:=\"%EXECDIRH%\\\\\\\\[A-Za-z0-9_]+\.elf\"" "$BATCH" 2>/dev/null | sed -E "s/.*\\\\\\\\([A-Za-z0-9_]+\.elf)\"/\1/" | sort -u); do
-  if [ -e "$SRC/heros5/bin/$img" ]; then
-    cp -aL "$SRC/heros5/bin/$img" "$R/heros5/bin/$img"; chmod +x "$R/heros5/bin/$img"
-    for n in $(i686-linux-gnu-objdump -p "$SRC/heros5/bin/$img" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
-  fi
-done
-echo "  staged $(grep -aoE "imagePath:=\"%EXECDIRH%\\\\\\\\[A-Za-z0-9_]+\.elf\"" "$BATCH"|sed -E "s/.*\\\\\\\\([A-Za-z0-9_]+\.elf)\"/\1/"|sort -u|wc -l) distinct subsystem images + closures (${#S[@]} nodes total)"'
+# INJECT_FMLOAD (FULL SET): stage every distinct subsystem image (from /tmp/fmload_images.txt, generated in
+# main scope before this block) chmod +x + closure, so each injected FmLoadProcess passes IsAFile+access(X_OK).
+while read -r img; do
+  [ -z "$img" ] && continue; [ -e "$SRC/heros5/bin/$img" ] || continue
+  cp -aL "$SRC/heros5/bin/$img" "$R/heros5/bin/$img"; chmod +x "$R/heros5/bin/$img"
+  for n in $(i686-linux-gnu-objdump -p "$SRC/heros5/bin/$img" 2>/dev/null|awk "/NEEDED/{print \$2}"); do cc "$n"; done
+done < /tmp/fmload_images.txt
+echo "  staged $(wc -l < /tmp/fmload_images.txt) distinct subsystem images + closures (${#S[@]} nodes total)"'
 
 echo "=== [2] FEX config + writable SYS (AppStartMP writes SYS\\runtime) + clean shm ==="
 sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo tee /root/.fex-emu/Config.json >/dev/null
@@ -60,16 +67,7 @@ sudo mkdir -p /root/.fex-emu; printf '{"Config":{"RootFS":"%s"}}\n' "$R" | sudo 
 # that lets the cat/grep helper forks exec). The spawned winmgr then runs under a fresh native FEXInterpreter.
 FEXBIN=$(command -v FEXInterpreter); sudo rm -f "$R/usr/bin/FEXInterpreter" 2>/dev/null
 echo "  FEXInterpreter: rely on FEX rootfs-ENOENT fallback to $FEXBIN (no rootfs symlink)"
-# FULL-SET file: parse batch/TNC640heros.txt into "localNS/procbase|/tmp/b/<image>" per FmLoadProcess line,
-# so heros_rtos (HEROSCALL_INJECT_FMLOAD_SET) injects an FmLoadProcess for the WHOLE constellation. /tmp is
-# shared into the ns + resolves real under FEX (like /tmp/b), so the guest reads it directly.
-SETF=/tmp/fmload_set.txt
-awk '
-  /localNamespace:=/ { ns=$0; sub(/.*localNamespace:="/,"",ns); sub(/".*/,"",ns) }
-  /processName:=/     { pn=$0; sub(/.*processName:="/,"",pn); sub(/".*/,"",pn); sub(/^~\//,"",pn); have=1 }
-  /imagePath:=/ && have { ip=$0; sub(/.*\\/,"",ip); sub(/".*/,"",ip); print ns"/"pn"|/tmp/b/"ip; have=0 }
-' "$BATCH" > "$SETF"
-echo "  full-set file $SETF: $(wc -l < "$SETF") FmLoadProcess entries (head: $(head -1 "$SETF"))"
+# (full-set file /tmp/fmload_set.txt + /tmp/fmload_images.txt generated in section [1], main scope)
 # Writable SYS mirror: real config/batch (RO source) + a writable runtime. AppStartMP reads
 # SYS:\config\*.cfg + SYS:\batch\TNC640heros.txt and writes SYS:\runtime\AppStartFinishCounter.txt.
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
