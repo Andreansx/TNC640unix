@@ -82,6 +82,45 @@
 > step 2 (the documented multi-process ceiling), NOT the X/WM expose layer. **XQuartz won't help at this gate**
 > (no window is created to expose). Run: `emulator/run_2proc_hrmmi.sh` (EVT_ACK=1 default; `EVT_ACK=0` for A/B).
 
+> ## ★★★ FEX-NATIVE FRONTIER (2026-06-24, cont.) — the operational-peer connect REPLIES delivered + consumed (INJECT_PEER_ACK); the startup COORDINATOR fully RE'd
+> The render gate above ("blocks on the operational peers IPO/PLC/CM/AppStartMaster") is now advanced one concrete
+> layer: HrMmi RECEIVES + CONSUMES the peer connect replies and runs their handlers, via a 3rd INJECT facility.
+> **The startup coordinator is fully RE'd (idalib on HrMmi.elf):** HrMmi's bring-up is a **request-counter handshake**
+> — a counter at **HrModule+59 (0xEC)**; each outstanding request `++`s it, each reply handler `--`s it via
+> **`HrModule::OneRequestDone@0x347c0`**, and when it hits 0 OneRequestDone calls **`HrModule::MoveActiveStateTowards
+> Target@0x33a60`** (the active-state machine: states 0=none..1=asleep..2=active..3=ncstart..4=plc; transitions
+> `Activate@0x2cb00`→`SubscribeNcStart`→… and on reaching target → `UpdateEnable`+`HRDATAIF::UpdateDisplay` = the
+> render). So draining the counter to 0 is what fires window/display creation. `HrModule::DispatchMessage@0x3d060`
+> routes each peer reply: **OnIpoSrvConnected@0x35ca0 (IpoSrvLoginQuit 0x41a90080)**, **OnPlcSrvConnected@0x35260
+> (PlcSrvConnected 0x012f0180)**, **OnCmGrantControl@0x35f50 (CmGrantControl 0x41cc05e1)** — each calls OneRequestDone.
+>
+> **INJECT_PEER_ACK (new, `emulator/heros_rtos.c`, env `HEROSCALL_INJECT_PEER_ACK`, default OFF, ON in
+> run_2proc_hrmmi.sh as `PEER_ACK`):** when HrMmi sends a peer connect (IpoSrvLogin 0x01a90040→IPO 0x310 / 0x012f0160
+> →Q_PLC_FRONTSTAGE 0x30f / CmConnect 0x03340040→CM 0x311), synthesize the matching reply and post it to the reply
+> queue (the request's leading GMsgString reply-to `.QueueHrMmi`→**QueueHrMmi 0x30e**, same as INJECT_ACK). Reply
+> wire = `[reply-type-id][per-schema-field ABSENT tag (0x80000000|code)]` → the deserializer builds a default/zeroed
+> struct. **Schemas RE'd from the `libGMessage*.so` schema tables** (`.rodata` arrays `[type-id][field-codes…]`,
+> e.g. libGMessageIpo @0x1d6230, libGMessagePlc @0x05b08c, libGMessageGeo @0x243d8c) — IpoSrvLoginQuit
+> `[0x01a9006b,0x63,0xe7,0x63]`, PlcSrvConnected `[0x012f0024,0x012f006b,0x84]`, CmGrantControl
+> `[0x01c20503,0x01c20503,0x01cc058b,0x01cc058b,0x01ad,0xc6]`. (Wire-tag encoding cracked from the captured request
+> wire: present=`0x000000CC`+payload, absent=`0x800000CC`, enum/submsg=`0x<family>00CC`.)
+> **VERIFIED A/B (`run_2proc_hrmmi.sh`):** PEER_ACK=1 → the 3 replies post to QueueHrMmi (16/28/20B), HrMmi **reads all
+> 3 (no crash), 0x30e reads 8→11**, and runs the peer-reply HANDLERS — emitting **2 NEW EvtSendEvent publishes (437B
+> +644B → QEvtServer)** ABSENT in the PEER_ACK=0 baseline (which reads only the 28B Cfg/Evt ACK, never the 16/20B peer
+> replies, and sends 0 of the 437/644B events); ConfigServer crash-free, /etc GUARD OK. (TR_en / IPO_SHARED_MEMORY
+> attaches occur in BOTH — config-driven, not peer-specific.)
+> **★ NEW GATE (precisely pinned): the startup request-counter is NOT fully drained to 0**, so MoveActiveStateTowards
+> Target → Activate → UpdateDisplay (window creation) never fires (Xvfb screenshot still 1-colour/blank; no
+> XCreateWindow). The remaining counted requests need their replies' SUCCESS-SEMANTICS fields set (not just an
+> all-absent/zeroed reply): (a) **OnEvtConnected's EvtErrorRequest polling loop** — `OnEvtAnsErrorRequest@0x34c50`
+> calls OneRequestDone ONLY when `body+20 (result)==1` (else it re-polls); (b) **OnCmGrantControl** grants control
+> (→ HRMENUTREE::ActivateDo) only when `body+12 && body+20 != 0`. So the next step is a 2nd-round of INJECT replies
+> with the right PRESENT field values (CmGrantControl grant, EvtAnsErrorRequest result=1) to fully drain the counter
+> → fire the state machine → Activate (WritePlc + HRDATAIF::SetActive) → UpdateDisplay. This is the documented
+> multi-round/multi-field constellation handshake — now with the DELIVERY mechanism + the coordinator fully solved,
+> and the remaining gate reduced to the per-reply success-field values (and ultimately, live peer DATA for the
+> display). Run: `emulator/run_2proc_hrmmi.sh` (PEER_ACK=1 default; `PEER_ACK=0` for the A/B).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

@@ -440,6 +440,29 @@ static int inject_ack=0;
  * branch (body+20==0) and continues the MMI bring-up. Schema RE'd from libGMessageMisc .rodata
  * 0x23ce80 (type id 0x3200a0 + 3×0x63) + HrModule::DispatchMessage (OnEvtConnected ← 3276960=0x3200a0). */
 static int inject_evt_ack=0;
+/* HEROSCALL_INJECT_PEER_ACK=1: the SAME connect-ACK pattern as INJECT_ACK/INJECT_EVT_ACK, but for the
+ * OPERATIONAL-PEER constellation (IPO/NCK, PLC, ChannelManager). After config + the QEvtServer connect,
+ * HrMmi's startup state machine (HrModule::MoveActiveStateTowardsTarget@0x33a60) issues connect/login
+ * requests to its peers and BLOCKS at Ev_receive(0x03011001) until each is answered. The coordinator is a
+ * REQUEST COUNTER at HrModule+59 (0xEC): each request `++`s it; each reply handler `--`s it via
+ * HrModule::OneRequestDone@0x347c0, and when it hits 0 OneRequestDone calls MoveActiveStateTowardsTarget,
+ * advancing the active state (Activate→SubscribeNcStart→…) toward UpdateDisplay (the render). Every peer
+ * handler (OnIpoSrvConnected@0x35ca0 / OnPlcSrvConnected@0x35260 / OnCmGrantControl@0x35f50) calls
+ * OneRequestDone in BOTH success and failure branches, but the SUCCESS branch (body+off==0) keeps the
+ * target state high, so we want a zeroed reply. The reply messages are flat GMessage structs (QuickConstr4)
+ * whose wire = [type-id][per-schema-field tag]; an ABSENT tag (0x80000000|code) leaves that field at its
+ * default 0 in the (default-constructed/zeroed) body, so an all-absent reply deserializes to an all-zero
+ * struct → the handler's success branch. Request→reply map + schemas RE'd from the libGMessage* .so schema
+ * tables (the [type-id][field-codes…] arrays) + the captured request wire:
+ *   IPO  req IpoSrvLogin     0x01a90040(->IPO 0x310)  => reply IpoSrvLoginQuit 0x41a90080
+ *        schema [0x01a9006b,0x63,0xe7,0x63]           (libGMessageIpo @0x1d6230, body size 0x54)
+ *   PLC  req PlcSrvLogin?     0x012f0160(->Q_PLC..0x30f)=> reply PlcSrvConnected 0x012f0180
+ *        schema [0x012f0024,0x012f006b,0x84]          (libGMessagePlc @0x05b08c)
+ *   CM   req CmConnect?       0x03340040(->CM 0x311)   => reply CmGrantControl  0x41cc05e1
+ *        schema [0x01c20503,0x01c20503,0x01cc058b,0x01cc058b,0x01ad,0xc6] (libGMessageGeo @0x243d8c)
+ * The reply-to is the request's leading GMsgString (".QueueHrMmi", same as INJECT_ACK) → QueueHrMmi 0x30e
+ * (the queue HrMmi waits on; its notify bit 0x02000000 is in the 0x03011001 wait mask). */
+static int inject_peer_ack=0;
 /* HEROSCALL_INJECT_REREAD=1: ConfigServer loads its config DATA files (tnc.cfg → the "NC" channel
  * group etc.) only on a CfgRereadData message (id 0x170640 → CfgServer::OnRereadData@0x18f550 →
  * RereadData → ReadDataFiles). The MMI/constellation normally sends it at startup; standalone nobody
@@ -1175,6 +1198,54 @@ static void inject_evt_connect_ack(uint32_t target_qid,const void*msg,uint32_t s
     LOG("INJECT_EVT_ACK: posted EvtClientIsConnected(success) to \"%s\" (0x%x), %u bytes\n",C->queues[rs].name,rqid,p);
 }
 
+/* INJECT_PEER_ACK: synthesize the operational-peer connect replies (IPO/PLC/CM) and post them to the
+ * client's reply queue, draining HrMmi's request counter -> MoveActiveStateTowardsTarget. See the
+ * HEROSCALL_INJECT_PEER_ACK note above. Reply = [reply-type-id][per-schema-field ABSENT tag]. */
+static uint32_t peer_acked[64]; static int n_peer_acked=0;   /* dedup per (reply-queue<<8 | peer) */
+static void inject_peer_connect_ack(uint32_t target_qid,const void*msg,uint32_t size){
+    if(!inject_peer_ack||!msg||size<16) return;
+    const unsigned char*m=msg;
+    uint32_t hdr=(m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24))&0x7fffffff;
+    /* request type-id -> (peer tag, reply type-id, ABSENT field tags). Fields RE'd from the lib schemas. */
+    struct { uint32_t req, reply; uint8_t peer; uint32_t f[8]; int nf; } P[]={
+      { 0x01a90040, 0x41a90080, 'I', {0x81a9006b,0x80000063,0x800000e7,0x80000063}, 4 },          /* IpoSrvLoginQuit */
+      { 0x012f0160, 0x012f0180, 'P', {0x812f0024,0x812f006b,0x80000084}, 3 },                       /* PlcSrvConnected */
+      { 0x03340040, 0x41cc05e1, 'C', {0x81c20503,0x81c20503,0x81cc058b,0x81cc058b,0x800001ad,0x800000c6}, 6 }, /* CmGrantControl */
+    };
+    int pi=-1; for(int i=0;i<(int)(sizeof P/sizeof P[0]);i++) if(P[i].req==hdr){ pi=i; break; }
+    if(pi<0) return;
+    /* leading GMsgString = reply-to (".QueueHrMmi"), same encoding as INJECT_ACK */
+    uint32_t tag=m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24);
+    if(tag!=0xe7) return;
+    uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
+    if(nlen==0||nlen>64||12+nlen>size) return;
+    char name[80]; memcpy(name,m+12,nlen); name[nlen]=0;
+    int rs=q_find_slot(name);
+    if(rs<0){
+        int best=-1; size_t bestlen=0; int best_n=-1; size_t bestlen_n=0;
+        for(int qi=0;qi<MAXQ;qi++){ struct queue*q=&C->queues[qi];
+            if(q->used && q->name[0] && strlen(q->name)>=4 && strstr(name,q->name)){
+                size_t l=strlen(q->name);
+                if(l>bestlen){ bestlen=l; best=qi; }
+                if(q->notify_bits && l>bestlen_n){ bestlen_n=l; best_n=qi; } } }
+        if(best_n>=0){ best=best_n; }
+        if(best>=0){ rs=best;
+            LOG("INJECT_PEER_ACK: matched embedded reply queue \"%s\" (notify %08x) in field0 \"%s\"\n",
+                C->queues[best].name,C->queues[best].notify_bits,name); }
+    }
+    if(rs<0){ LOG("INJECT_PEER_ACK: reply queue \"%s\" not found\n",name); return; }
+    uint32_t rqid=C->queues[rs].id;
+    uint32_t key=(rqid<<8)|(uint8_t)P[pi].peer;
+    for(int i=0;i<n_peer_acked;i++) if(peer_acked[i]==key) return;   /* one reply per (peer,reply-queue) */
+    if(n_peer_acked<64) peer_acked[n_peer_acked++]=key;
+    unsigned char ack[64]; uint32_t p=0;
+    put32(ack+p,P[pi].reply); p+=4;                                 /* reply header (e.g. IpoSrvLoginQuit) */
+    for(int i=0;i<P[pi].nf;i++){ put32(ack+p,P[pi].f[i]); p+=4; }    /* each schema field ABSENT -> default 0 */
+    q_send(rqid,ack,p,0);
+    LOG("INJECT_PEER_ACK: posted peer reply 0x%08x (%c, %d absent fields) to \"%s\" (0x%x), %u bytes\n",
+        P[pi].reply,P[pi].peer,P[pi].nf,C->queues[rs].name,rqid,p);
+}
+
 /* ---------------- regions (named shared memory) ---------------- */
 #define REGION_BYTES (64u*1024u*1024u)
 static uint32_t reg_ident(const char*name){
@@ -1247,6 +1318,7 @@ static void ensure_init(void){
         const char *iu=getenv("HEROSCALL_INJECT_UPD"); inject_upd=iu&&iu[0]=='1';
         const char *ia=getenv("HEROSCALL_INJECT_ACK"); inject_ack=ia&&ia[0]=='1';
         const char *iea=getenv("HEROSCALL_INJECT_EVT_ACK"); inject_evt_ack=iea&&iea[0]=='1';
+        const char *ipa=getenv("HEROSCALL_INJECT_PEER_ACK"); inject_peer_ack=ipa&&ipa[0]=='1';
         const char *ir=getenv("HEROSCALL_INJECT_REREAD"); inject_reread=ir&&ir[0]=='1';
         const char *ep=getenv("HEROS_EVENTS_PIPE"); events_bridge=ep&&ep[0]=='1';
         ctl_init();
@@ -1452,6 +1524,7 @@ long syscall(long n,...){
         hws_autoreply(p[4], (const void*)(uintptr_t)p[0], p[2]);   /* HWS_STUB: synth QHWServer reply */
         inject_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_ACK: synth IPO connect-ACK */
         inject_evt_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_EVT_ACK: synth QEvtServer connect-ACK */
+        inject_peer_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_PEER_ACK: synth IPO/PLC/CM connect replies */
         return r;
     }
     case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], hdr/base@p[4], timeout@p[6], qid@p[7]).

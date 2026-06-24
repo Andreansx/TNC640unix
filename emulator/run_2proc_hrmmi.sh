@@ -52,7 +52,7 @@ sudo rm -f /tmp/c2_cfg.log /tmp/c2_mmi.log /tmp/c2_strace.log
 sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/tmp/b EXECDIR=/tmp/b EXECBAT=/mnt/sys/batch/heros5 \
   SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC: CFGFIX_SYS=/mnt/sys/ CFGFIX_OEM=/mnt/plc/ \
   HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 HEROSCALL_TIMERS=1 \
-  HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_EVT_ACK="${EVT_ACK:-1}" HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
+  HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_EVT_ACK="${EVT_ACK:-1}" HEROSCALL_INJECT_PEER_ACK="${PEER_ACK:-1}" HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
   HEROS_CFG_REPLY_ROUTE="${CFG_REPLY_ROUTE:-1}" \
   HEROS_EVT_RELAY="${RELAY-}" HEROSCALL_DUMPQ="${DUMPQ:-0}" DISP="$DISP" CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" \
   LANG=C LC_ALL=C \
@@ -91,5 +91,12 @@ echo "  0x30e reads: $(sudo grep -acE "Q_read <- queue 0x30e" /tmp/c2_mmi.log 2>
 # INJECT_EVT_ACK advance markers: EvtClientIsConnected posted -> OnEvtConnected success -> HrMmi
 # subscribes to the operational peers (IPO/NCK 0x310, Q_PLC_FRONTSTAGE 0x30f, CM 0x311, AppStartMaster 0x308).
 echo "  EVT_ACK posted: $(sudo grep -acE "INJECT_EVT_ACK: posted" /tmp/c2_mmi.log 2>/dev/null)  peer subscribes (IPO/PLC/CM/AppStartMaster): $(sudo grep -acE "Q_ident \"(IPO|Q_PLC_FRONTSTAGE|CM|AppStartMaster)\"" /tmp/c2_mmi.log 2>/dev/null)"
-echo "  HrMmi last RTOS:"; sudo grep -aE "^\[t[0-9]+ hc" /tmp/c2_mmi.log 2>/dev/null | tail -5
+echo "=== INJECT_PEER_ACK: did HrMmi advance the startup state machine? ==="
+echo "  PEER_ACK posted (IPO/PLC/CM): $(sudo grep -acE "INJECT_PEER_ACK: posted" /tmp/c2_mmi.log 2>/dev/null)"
+sudo grep -aE "INJECT_PEER_ACK: posted" /tmp/c2_mmi.log 2>/dev/null | sed 's/^/    /'
+echo "  0x30e reads total (peer replies add +3 vs PEER_ACK=0): $(sudo grep -acE "Q_read <- queue 0x30e" /tmp/c2_mmi.log 2>/dev/null)  16/20B peer-reply reads: $(sudo grep -acE "Q_read <- queue 0x30e size (16|20)" /tmp/c2_mmi.log 2>/dev/null)"
+echo "  NEW peer-driven publishes (437/644B -> QEvtServer): $(sudo grep -acE "Q_send -> queue 0x307 size (437|644)" /tmp/c2_mmi.log 2>/dev/null)   X11 connects: $(sudo grep -acE "X11-unix" /tmp/c2_strace.log 2>/dev/null)"
+# WINDOW oracle = the Xvfb screenshot colour count (blank root = 1 colour; a real window adds colours)
+echo "  screenshot unique colours (1 = blank, no window yet): $(DISPLAY=$DISP convert /tmp/c2_screen.xwd -format "%k" info: 2>/dev/null || echo n/a)"
+echo "  HrMmi last RTOS:"; sudo grep -aE "^\[t[0-9]+ hc" /tmp/c2_mmi.log 2>/dev/null | tail -8
 echo "logs: /tmp/c2_cfg.log /tmp/c2_mmi.log /tmp/c2_strace.log"
