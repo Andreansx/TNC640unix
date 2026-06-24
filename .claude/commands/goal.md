@@ -1,5 +1,5 @@
 ---
-description: The current autonomous goal for TNC640unix — crack HrMmi's X/WM expose-render handshake so it draws its first real frame FEX-native, then surface the HrMmi window to the Mac; pushing toward the 92-process constellation + the MMI as a Mac window.
+description: The current autonomous goal for TNC640unix — get HrMmi to CREATE + render its first window FEX-native by satisfying the operational-peer constellation handshake it blocks on, then surface that window to the Mac as a STANDALONE NATIVE XQuartz window (no VNC); pushing toward the 92-process constellation + the live MMI as a Mac window.
 ---
 
 # /goal — TNC640unix FEX-native next objective
@@ -23,75 +23,91 @@ up the chain below, then update `CLAUDE.md` + the relevant memory with the preci
 ---
 
 ## CURRENT OBJECTIVE (the immediate, well-scoped step — a long climb, expect multiple sessions)
-**Crack HrMmi's X/WM expose-render handshake so HrMmi DRAWS its first real frame FEX-native, then
-surface that HrMmi window to the Mac.** This is the half of the ultimate goal that produces a visible
-MMI: getting a real HrMmi window onto the Mac screen — even standalone (2-proc ConfigServer+HrMmi),
-before the full constellation — is the milestone. Fill the constellation in around it afterward.
+**Get `HrMmi.elf` to CREATE + render its first real window FEX-native by satisfying the
+operational-peer constellation handshake it currently blocks on, then surface that window to the Mac
+as a STANDALONE NATIVE XQuartz window (no VNC).** Producing a real HrMmi top-level window on the Mac
+screen — even standalone (2-proc ConfigServer+HrMmi, peers stubbed/injected), before the full
+constellation — is the milestone. Fill the constellation in around it afterward.
 
-### Where it stands (verified last session — commit `9cef6fe`, config-reply routing SOLVED)
+### Where it stands (verified — HEAD `d440cc1`, QEvtServer connect-ACK + render gate RE-PINNED)
 - `HrMmi.elf` runs FEX-native, passes argv/RTOS/heuserver-auth, connects via `CfgConnectClient`
   (`0x1700c0`, reply-to `".QueueHrMmi"`), `INJECT_ACK` answers `CfgClientIsConnected` (`0x170100`).
-- **Config now fully arrives:** `HEROS_CFG_REPLY_ROUTE` (heros_rtos.c q_send, ON in
-  `run_2proc_hrmmi.sh`) redirects the empty-named (`""`/`0x30b`) reply to the queue named by the
-  reply's leading GMsgString → the **2711B config reply lands on `QueueHrMmi` (`0x30e`)**, HrMmi
-  reads it clean (buffer doubling 128→2048→2711, `0x2100018=0`, Unhandled=0, crash=0), M_attaches a
-  region, sends follow-up config requests (served directly on `0x316/0x317`), subscribes to
-  QEvtServer, and **connects to X** (`connect(AF_UNIX "/tmp/.X11-unix/X99")=0`, Fontconfig active).
-- **THE GATE (this objective):** after the X connect HrMmi re-blocks on
-  **`Ev_receive(0x03011001, forever)`** = the GUI-render / X-WM expose handshake — the documented
-  multi-thread FModule render layer. This is structurally the SAME frontier as AppStartMP's logo
-  `0x1000` ping-pong, which was cracked via the `/dev/events` event→fd bridge (commit `bf0b579`).
-  ConfigServer stays crash-free; `/etc` guard OK. Clean A/B exists: `CFG_REPLY_ROUTE=0` → 2711B →
-  `0x30b`, HrMmi blocked forever, X11=0.
+- **Config fully arrives:** `HEROS_CFG_REPLY_ROUTE` (heros_rtos.c q_send, ON in `run_2proc_hrmmi.sh`)
+  redirects the empty-named (`""`/`0x30b`) reply to the queue named by the reply's leading
+  GMsgString → the **2711B config reply lands on `QueueHrMmi` (`0x30e`)**, HrMmi reads it clean
+  (buffer doubling 128→2048→2711, `0x2100018=0`, crash=0), M_attaches a region, sends follow-up
+  config requests (served on `0x316/0x317`), and **connects to X** (`connect(AF_UNIX
+  "/tmp/.X11-unix/X99")=0`, Fontconfig active).
+- **QEvtServer connect-ACK SOLVED** (`HEROSCALL_INJECT_EVT_ACK`, ON in the script): `EvtConnectClient`
+  (`0x320081`) → synth `EvtClientIsConnected` (`0x3200A0`, 3 GMsgInt all-0) → `OnEvtConnected@0x324e0`
+  success → HrMmi sends `EvtErrorRequest` + a follow-on config request. Crash-free, `/etc` guard OK.
+- **THE GATE (this objective) — CORRECTED by RE this session, NOT an X expose:** HrMmi connects to X
+  but **blocks BEFORE creating any window** (Xvfb screenshot = 1 flat colour, blank; no
+  `XCreateWindow`/`XMapWindow` in the X traffic). It blocks at **`Ev_receive(0x03011001, forever)`**
+  waiting on its **operational peers** — it subscribes to **AppStartMaster (`0x308`), IPO/NCK
+  (`0x310`), Q_PLC_FRONTSTAGE (`0x30f`), CM/ChannelManager (`0x311`)** and waits for THEIR replies.
+  None of those processes run in the 2-proc setup, so the replies never come. The peer subscribes are
+  **parallel to** (not gated by) the Cfg/Evt connect-ACKs — so satisfying the connect-ACKs is
+  necessary-but-not-sufficient; HrMmi never reaches window creation. ⇒ the FEX-native HrMmi first
+  frame is gated on the **constellation peers (IPO/PLC/CM/AppStartMaster)**, not the X/WM layer.
+  **XQuartz alone will NOT crack this gate** (no window is created to expose). Clean A/B exists:
+  `CFG_REPLY_ROUTE=0` → 2711B → `0x30b`, blocked, X11=0.
 
-### The task (two phases — do phase A first; A is the hard RE, B is the payoff)
-**Phase A — make HrMmi render its first frame.** RE exactly what `Ev_receive(0x03011001)` is waiting
-on. Compare to the cracked logo handshake: the logo thread blocked in `select()` on `/dev/events`
-because the emulator's `ev_send` woke `Ev_receive` blockers but not `select()` blockers — the fix was
-the faithful event→fd bridge (`heros_rtos.c` + `herosapi_shim.c` `evdev_reconcile`: make the
-`/dev/events` pipe readable exactly when the kernel would signal). Determine whether HrMmi's render
-block is (1) the same missing select()-trigger / event→fd reconciliation on its render thread's
-waitables, (2) a genuine X **Expose/MapNotify/ConfigureNotify** the headless Xvfb+openbox never
-delivers (HrMmi may wait for the WM to map+expose its top-level window — a real WM mapping/synthetic
-expose, or `xdotool`-forced expose, may be needed), or (3) an FModule inter-thread `0x1000`-style
-USEREVMASK ping-pong between HrMmi's GUI threads. Use `HEROSCALL_HSTRACE=1` to see which
-thread/queue/waitable is involved, IDA (idalib headless: `scratchpad/idalibvenv` +
-`work/re/scripts/idadecompile.py`; MCP also available) on `HrMmi.elf` / `libbackend.so` / PLib for
-the render dispatcher, and host `strace -f` for the X-socket traffic (writev to X = drawing). Prefer
-the faithful RTOS/X fix; if an inject/stub is the only tractable step, gate it behind a default-OFF
-`HEROS_*`/`HEROSCALL_*` env knob (like the existing ones) and document it.
+### The task (two phases — A is the hard RE that makes a window exist; B surfaces it to the Mac)
+**Phase A — make HrMmi CREATE its first window by satisfying the operational-peer handshake.** RE
+exactly which reply(s) on `0x308/0x310/0x30f/0x311` HrMmi's `Ev_receive(0x03011001)` is waiting on,
+and which gate `XCreateWindow`. This is the constellation-peer frontier (roadmap step 2 brought
+forward, because it gates the *first frame*). Two viable approaches, pick per what the RE shows:
+  1. **Synthetic peer replies (INJECT-style, the proven pattern).** Like `INJECT_ACK` (Cfg) and
+     `INJECT_EVT_ACK` (Evt): RE the message schema each peer would send back to HrMmi's subscribe
+     (the "you are subscribed / here is initial state" reply for AppStartMaster/IPO/PLC/CM), build it
+     from the `.rodata` schema templates, and post it to `QueueHrMmi`. Gate behind a default-OFF
+     `HEROSCALL_INJECT_PEER_ACK`-style env knob (ON in the run script), documented.
+  2. **Bring up the minimal real peers.** Launch the actual peer processes (IPO/NCK, a PLC stub, CM,
+     AppStartMaster) under FEX via the proven GMessage `FmLoadProcess` injection +
+     `HEROS_PCREATE_FEX=1` so they answer HrMmi's subscribes for real. Heavier (VM RAM — use the
+     `MAX` guard), but more faithful and reusable for the constellation step.
+Use `HEROSCALL_HSTRACE=1` to see the exact thread/queue/waitable, IDA (idalib headless:
+`scratchpad/idalibvenv` + `work/re/scripts/idadecompile.py`; MCP also available) on `HrMmi.elf` /
+`libbackend.so` / `HrModule::DispatchMessage@0x3d060` for the subscribe→reply→render path, and host
+`strace -f -e trace=network,writev` for X traffic (`writev` to the X socket = drawing). Prefer the
+faithful fix; if an inject/stub is the only tractable step, gate it default-OFF and document it.
 
 **Phase B — surface the HrMmi window to the Mac as a STANDALONE NATIVE WINDOW (NO VNC — user
-directive).** The target is a real macOS window per the user's explicit preference, NOT a VNC
-desktop-in-a-box. Use **XQuartz in rootless mode**: run XQuartz on the Mac (each X11 top-level
-becomes its own native Quartz window), and point HrMmi's `DISPLAY` at the Mac's X server over the
-lima SSH tunnel (X11-forward the X socket; e.g. `ssh -Y` via `limactl`-exposed SSH, or tunnel TCP
-6000+display to XQuartz with `xhost`/`X -listen tcp`). Then HrMmi draws straight onto the Mac
-desktop as a rootless window — no Xvfb framebuffer, no VNC. IMPORTANT SYNERGY: a real X server +
-WM (XQuartz) sends genuine `Expose`/`MapNotify`/`ConfigureNotify`, so running HrMmi against XQuartz
-may itself help clear the Phase-A render gate if that gate is "an X expose the headless
-Xvfb+openbox never delivers" — so try the XQuartz target EARLY, not only as the final step. Qt/X
-clients render fonts client-side (XRender glyphs), so Mac-side fonts are not a blocker; MIT-SHM
-won't apply cross-host (X falls back automatically — fine for a UI). Keep the Xvfb+VNC path ONLY as
-a debugging fallback, never the deliverable. Even a partial-but-real HrMmi top-level window as a
-native Mac window is the deliverable for this objective.
+directive).** The target is a real macOS window, NOT a VNC desktop-in-a-box. Use **XQuartz in
+rootless mode**: install XQuartz on the Mac (`brew install --cask xquartz`; **not currently
+installed** — needs a one-time install + maybe a logout), each X11 top-level becomes its own native
+Quartz window. Point HrMmi's `DISPLAY` at the Mac's X server over the lima→Mac path: enable XQuartz
+TCP (`defaults write org.xquartz.X11 nolisten_tcp 0`, restart, `xhost +`) and tunnel `localhost:6000`
+from the VM to the Mac (reverse SSH tunnel via the lima SSH, or `socat`), OR X11-forward. Then HrMmi
+draws straight onto the Mac desktop as a rootless window — no Xvfb framebuffer, no VNC. SYNERGY: a
+real X server + WM (XQuartz) sends genuine `Expose`/`MapNotify`/`ConfigureNotify` — **once Phase A
+makes a window exist**, XQuartz is what shows it natively; and if any *secondary* render step later
+turns out to wait on a real expose, XQuartz delivers it where headless Xvfb+openbox does not. So set
+up XQuartz EARLY (it's needed regardless), but expect Phase A (the peer handshake) to be what
+actually unblocks window creation. Qt/X clients render fonts client-side (XRender glyphs), so
+Mac-side fonts are not a blocker; MIT-SHM won't apply cross-host (X falls back automatically — fine
+for a UI). Keep the Xvfb path ONLY as a debugging framebuffer for screenshots, never the deliverable.
+Even a partial-but-real HrMmi top-level window as a native Mac window is the deliverable.
 
 ### How to run / reproduce
 ```
 bash emulator/run_2proc_hrmmi.sh        # clean 2-proc: ConfigServer + HrMmi (CFG_REPLY_ROUTE=1 default)
-# knobs: CFG_REPLY_ROUTE=0 for the A/B baseline; DUMPQ=1 hex-dumps payloads; HEROSCALL_HSTRACE=1 trace
-# the script starts Xvfb :99 + openbox in the VM; screenshot the framebuffer with `import -window root`
+# knobs: CFG_REPLY_ROUTE=0 = A/B baseline; EVT_ACK=0 = QEvtServer-ACK A/B; DUMPQ=1 hex-dumps payloads
+# the script starts Xvfb :99 + openbox in the VM + xwd-screenshots the root at +150s (/tmp/c2_screen.xwd)
+# add HEROSCALL_HSTRACE=1 to the MMI env for the compact event/queue/thread trace
 ```
 Build the i386 preloads in the lima VM `tnc` (`i686-linux-gnu-gcc`); the script builds them. The FEX
 rootfs is `/var/tmp/lr`. Host `strace -f -e trace=network,writev` is non-invasive (guest open-loggers
-perturb timing). Screenshot the Xvfb root window to confirm what HrMmi actually drew.
+perturb timing). Screenshot the X root to confirm what HrMmi actually drew (blank = no window yet).
 
 ### Done when (verification criteria)
 - HrMmi **advances past** `Ev_receive(0x03011001)` — visible in the trace as it leaving that wait and
-  issuing X drawing traffic (`writev` to the X socket).
-- An Xvfb screenshot (`import -window root` on `:99`) shows a **real HrMmi top-level window** (MMI
-  chrome/widgets, not just the AppStartMP "Startup Status" splash or a blank root).
-- That window is **visible on the Mac** via the VNC tunnel (`open vnc://…`).
+  issuing **`XCreateWindow` + `XMapWindow`** then drawing traffic (`writev` to the X socket).
+- A screenshot of the X server (Xvfb root via `xwd`, or the XQuartz window) shows a **real HrMmi
+  top-level window** (MMI chrome/widgets, not just the AppStartMP "Startup Status" splash or a blank
+  root).
+- That window appears **on the Mac as a native XQuartz (rootless) window** — NOT a VNC desktop.
 - ConfigServer stays crash-free; the real `/etc/passwd` md5 guard is unchanged.
 - Then: update `CLAUDE.md` (the HrMmi FEX-NATIVE FRONTIER section + blocker chain) and the memory
   `project-hrmmi-executes-under-fex` with the new precise frontier, and **commit + push**.
