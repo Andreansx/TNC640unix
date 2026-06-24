@@ -67,8 +67,8 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     echo "  ConfigServer serve-loop reached: $(grep -acE "Ev_receive .*0101100" /tmp/c2_cfg.log 2>/dev/null)"
     sleep 8
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) ###"
-    ( sleep 60; rm -f /tmp/c2_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/c2_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/c2_screen.xwd 2>/dev/null)" ) &
-    timeout -s KILL 75 /usr/bin/strace -f -qq -e trace=openat,connect -o /tmp/c2_strace.log \
+    ( sleep 150; rm -f /tmp/c2_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/c2_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/c2_screen.xwd 2>/dev/null)" ) &
+    timeout -s KILL "${MMI_TIMEOUT:-180}" /usr/bin/strace -f -qq -e trace=openat,connect -o /tmp/c2_strace.log \
       env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/HrMmi.elf" -p=~/hrmmi hrmmi -k=NC > /tmp/c2_mmi.log 2>&1 || true
     echo "### HrMmi done ###"

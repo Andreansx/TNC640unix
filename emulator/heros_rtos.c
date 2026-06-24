@@ -719,7 +719,7 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     return 0;
 }
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
-    int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); return -9; }
+    int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); errno=EINVAL; return -9; }  /* errno!=ENOMEM: wrapper -> 0, not "grow" */
     if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap ALL forever-waits */
     if(timeout==0xffffffff && sync_timeout && strstr(C->queues[s].name,"Sync")){ /* cap only *Sync handshakes */
         /* NB: capping the HwsM* HWS reply mailslots does NOT help — the run-up's SyncMessage
@@ -732,25 +732,31 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
         if(q->tail!=q->head){
             uint32_t slot=q->head%QSLOTS;
             uint32_t full=q->msg[slot].len;                       /* the REAL message length */
-            /* Deliver the FULL message. The p[2]=maxsize arg is NOT a hard buffer cap here — the
-             * GMessage receivers (ConfigServer's FMailslotQueue) allocate a receive buffer to the
-             * kernel's max message size (0x8000) and reuse one fixed buffer across reads, so a 193B
-             * CfgGetData fits. The OLD code truncated to maxsize (0x80=128) -> the GMessage deserializer
-             * parsed a cut-off GMsgList(count=9) -> wild free(): invalid pointer (the HrMmi-context
-             * ConfigServer crash). Return the full size + dequeue, as for any fitting message. */
-            uint32_t copied=(maxsize&&full>maxsize)?maxsize:full;
+            /* TOO-BIG contract — FAITHFUL to heros.ko Q_read_ex @0x10c510 (decompiled): if the caller's
+             * buffer is smaller than the message (maxsize=p[2] < msglen) the real kernel does NOT dequeue
+             * and RETURNS 0xfffffff4 (=-12). HrMmi's FMailslotQueue::ReadMessageNoAlert/ReadQueue then
+             * DOUBLES its buffer (128->256->512...) and re-reads until it fits (asm @0x21f60: `js` on the
+             * NEGATIVE return -> GMsgStreamBase::allocate(cap*2) -> q_read again -> success when eax>0).
+             * The OLD code returned the POSITIVE full size, so HrMmi's `js` (sign test) was NEVER taken:
+             * it fell through to the success path and parsed the TRUNCATED 128B buffer -> GMessage::Read
+             * abort "message error 0x2100018 at offset 0x80" (a GMsgString-field fread underflow at the
+             * 128-byte boundary). ConfigServer is unaffected: it reads with a 0x8000 buffer (full<=maxsize). */
+            if(maxsize && full>maxsize){
+                unlock();
+                /* The libheros.so q_read wrapper (@0xbfb0) maps the heroscall return to the value the
+                 * FMailslotQueue receive checks: it ONLY treats the read as "too big, grow+re-read" when
+                 * the syscall returns NEGATIVE *AND* errno==ENOMEM (12) (`jns`+`cmp [errno],0xc`->neg ->
+                 * returns -1); any other negative -> 0 (= "no message"). So returning -12 alone is NOT
+                 * enough — without errno==ENOMEM the wrapper returns 0 and the caller never grows
+                 * (it deadlocks on the un-dequeued head message). Set errno=ENOMEM so the wrapper yields
+                 * -1 -> ReadQueue doubles its buffer (128->256->512...) and re-reads until it fits. */
+                LOG("Q_read <- queue 0x%x size %u (TOO BIG for buf %u: ret -12 errno=ENOMEM; not dequeued; caller doubles+re-reads)\n",id,full,maxsize);
+                errno=ENOMEM;                                     /* set LAST: LOG()/fprintf may clobber errno */
+                return -12;                                       /* 0xfffffff4 + errno ENOMEM: real-kernel "buffer too small" */
+            }
+            uint32_t copied=full;
             if(buf&&copied) memcpy(buf,q->msg[slot].data,copied);
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
-            if(maxsize&&full>maxsize){
-                /* TWO-PHASE read: the caller buffer (HrMmi/ConfigServer libGMessage use 0x80=128) is too
-                 * small. Copy what FITS, LEAVE the message queued, and return the FULL size so the caller
-                 * reallocs + re-reads. Delivering the full message into the 128B buffer OVERFLOWS it and the
-                 * GMessage deserializer aborts at the buffer boundary (msg error 0x2100018 at offset 0x80). */
-                qhex("Q_read[big]",id,buf,copied);
-                unlock();
-                LOG("Q_read <- queue 0x%x size %u (TOO BIG for buf %u: not dequeued, caller re-reads)\n",id,full,maxsize);
-                return (int)full;
-            }
             uint32_t len=copied;
             qhex("Q_read",id,buf,len);
             uint32_t qowner=q->owner, qnotify=q->notify_bits;
@@ -811,11 +817,14 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             return (int)len;                              /* message size in eax */
         }
         uint32_t t=q->tail; unlock();
-        if(timeout==0) return -0x35;                      /* empty, no-wait */
+        /* empty/timeout => "no message". errno MUST NOT be ENOMEM here, or the libheros q_read
+         * wrapper would misread this negative return as "too big" and the caller would grow+spin
+         * on an empty queue. EAGAIN (!=12, !=4) makes the wrapper return 0 = clean "no message". */
+        if(timeout==0){ errno=EAGAIN; return -0x35; }     /* empty, no-wait */
         struct timespec ts,*tp=0;
         if(timeout!=0xffffffff){ ts.tv_sec=timeout/1000; ts.tv_nsec=(timeout%1000)*1000000L; tp=&ts; }
         futex(&q->tail,FUTEX_WAIT,t,tp);
-        if(timeout!=0xffffffff && q->tail==q->head) return -0x35;   /* timed out */
+        if(timeout!=0xffffffff && q->tail==q->head){ errno=EAGAIN; return -0x35; }   /* timed out */
     }
 }
 
