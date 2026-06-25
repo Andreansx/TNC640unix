@@ -250,6 +250,39 @@
 > `HWFORCE=1 FORCE_MOVE=1 INJECT_ACTIVE_HW=1 ACTIVE_HW_FILE=/tmp/cfgactivehandwheel.bin bash emulator/run_2proc_hrmmi.sh`.
 > (Clean default `run_2proc_hrmmi.sh` = the known-good baseline: config served, peer handshake, X connect, GUARD OK.)
 
+> ## ★★★★★ TARGET CORRECTION (2026-06-25) — HrMmi is the HANDWHEEL MMI; the main TNC screen is **Guppy.elf** (which RUNS FEX-native)
+> The objective "get `HrMmi.elf` to render its first window = the main MMI on the Mac" rested on a premise that is
+> **factually wrong on both counts**: the tracker has repeatedly called HrMmi "the main Qt MMI" — it is neither the
+> main screen nor Qt. RE this session (idalib on HrMmi.elf + ELF/closure analysis) establishes:
+> **HrMmi.elf = the HANDWHEEL-unit (HR420/520/550) MMI.** NEEDED = `libplibpp` (PLib small-display toolkit), **no
+> Qt/GTK/libX11 direct**; symbols `HR420_KEY_DOWN/NCSTART/ENACHG`, `HR550SetPower/SetChannel`, `HRAXSEL`,
+> `HRDISPLAYDATA` (the HR520/550 **4×20-char** display), config `state\handwheelRev`/`param\handwheelRatio`; its
+> whole `HrMmiCfgGlobal` is handwheel config (CfgActiveHandwheel/CfgChanHandwheel/CfgHandWheelDisp/Factor); queues
+> `HRMMI-IN`/**`HRDRV-IN`**(HR driver)/`HrMmiAnswer`. It drives the handwheel unit's onboard display; on a prog
+> station with **no handwheel it has nothing to show**. ★ The render-gate hunt dead-ended for the right reason:
+> `OnHrMmiCfgGlobal@0x360e0` **runs to completion UNCONDITIONALLY** (the prior "bails before the target write on
+> incomplete config" was a MISREAD of `.cold` exception-landing edges — there is NO config-completeness bail). It
+> sets `target = 1 + HandwheelUsesHrMmi@0x298f0`; the served demo `CfgActiveHandwheel` has **all-absent HR_TYPE
+> entries** → HandwheelUsesHrMmi=**0** → **target=1**. `MoveActiveStateTowardsTarget@0x33a60` only calls
+> `Activate@0x2cb00` (WritePlc `hrMmiControlled` + `HRDATAIF::SetActive(true)`) on the **state 2→3** transition
+> (needs target≥3 from `OnCmGrantControl@0x35f50`, which promotes 2→3 **only from an already-2 target**). So the
+> served `HrMmiCfgGlobal` is **already COMPLETE** (channels/axes/display/softkeys all parse) and HrMmi's idle,
+> windowless 2-proc state is **CORRECT** — NOT a config-completeness gate. ⇒ the task framing "make ConfigServer
+> serve a complete HrMmiCfgGlobal" is moot: the config is complete; HrMmi is not the main screen.
+> **★★ THE REAL MAIN-MMI TARGET = `Guppy.elf`** (the `~/mmi`/`~/Guppy` subsystem; batch args
+> `-R=UnloadOEM -v=c -i=Nc -s=Sim`): `WndFullScreen::Create()`, `GuppyRuntimeGtk`/`GuppyGtkActivate`,
+> `GUPPYSKMGR`, **GTK2 + Python2.7 + libX11 directly** (72 NEEDED / 100-lib closure); heuserver grants
+> `Guppy*.elf` priv 0x120. ★★★ **Guppy RUNS FEX-NATIVE** (new `emulator/run_2proc_guppy.sh`, reuses the
+> ConfigServer+X harness): all 100 closure libs (GTK2/Python2.7 + HeROS libs) resolve from `/var/tmp/lr`, **ZERO
+> crashes**, RTOS init clean, **GUARD OK**, connects to ConfigServer (config served, 8 broadcasts). ★ NEW FRONTIER
+> (precisely pinned): Guppy then enters an **unbounded `Q_ident "PLC<taskid>N<seq>"` loop** — libPlcCtrl's
+> PLC-client init (`GdPlcCtrlPlcSrv*`/`PLCSRV_HANDLE`) enumerates PLC notify queues `PLC00000106N000,N001,…`; the
+> emulator's **auto-create-on-Q_ident** returns a fresh valid queue for EVERY name, so the enumeration never gets
+> the "not-found" that ends it (climbed past N3e7 = 1000+ and kept going) → never reaches X (X11 connect=0, blank).
+> NEXT: make `Q_ident` return not-found for never-`Q_create`'d `PLC*N*` probe names (terminate the loop), OR bring
+> up the real PLC peer (plc.elf) so the queue set is bounded → Guppy proceeds toward its GTK fullscreen window =
+> the actual main MMI on the Mac. Findings: `scratchpad/guppy_is_the_main_mmi.md`. Run: `emulator/run_2proc_guppy.sh`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

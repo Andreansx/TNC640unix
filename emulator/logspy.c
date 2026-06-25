@@ -11,12 +11,13 @@
  * how far HrModule::OnHrMmiCfgGlobal gets and whether
  * HrModule::MoveActiveStateTowardsTarget advances ("HrModule state: Adjusting...").
  *
- * ** KNOWN LIMITATION (verified 2026-06-25): the non-chaining no-op BREAKS HrMmi early **
- * — some early-startup code depends on SendData2Logger's side effects, so loading logspy
- * (LOGSPY=1) makes HrMmi SIGSEGV before config arrives. Also, most HrModule LOGSEND
- * messages are severity-FILTERED before SendData2Logger, so the trace is incomplete.
- * To make this useful, CHAIN to the real SendData2Logger (resolve it past this preload).
- * Left in the tree as a starting point; do NOT enable in a run that must reach config.
+ * ** KNOWN LIMITATION (verified 2026-06-25): loading logspy BREAKS HrMmi early — even CHAINED. **
+ * The no-op version SIGSEGV'd HrMmi before config. This version CHAINS to the real SendData2Logger
+ * (resolved via dl_iterate_phdr + a manual DT_HASH scan — NOT dlsym, which is dlsym@GLIBC_2.34 and
+ * silently breaks FEX preloads, same lesson as cfgfix), yet loading logspy STILL SIGSEGVs HrMmi early
+ * (the crash is a deeper interposition side effect, not the missing chain). ⇒ logspy is a DEAD
+ * diagnostic for HrMmi under FEX; do not enable it in a run that must reach config. (Moot anyway:
+ * HrMmi is the HANDWHEEL MMI, not the main screen — the real main MMI is Guppy.elf.)
  *
  * Memory safety: the HELOGGING layout is not fully known, so we scan its first
  * words for pointers to printable text. Every candidate pointer is validated with
@@ -91,14 +92,56 @@ static void dump_helogging(const void *hel){
     fflush(stderr);
 }
 
+/* CHAIN to the real SendData2Logger so the control's startup side effects still
+ * happen (the non-chaining no-op SIGSEGV'd HrMmi before config). dlsym(RTLD_NEXT)
+ * is dlsym@GLIBC_2.34 which silently breaks the FEX preload (same lesson as cfgfix),
+ * so resolve the real symbol via dl_iterate_phdr (GLIBC_2.2.4, always present) +
+ * a manual DT_HASH symbol scan, skipping our own definition. */
+#include <link.h>
+#include <elf.h>
+typedef void (*sd2l_t)(void*, const void*);
+static sd2l_t real_sd2l = 0;
+static const char *WANT = "_ZN9HeLogging15SendData2LoggerERK9HELOGGING";
+
+struct findctx { void *self; sd2l_t found; };
+static int phdr_cb(struct dl_phdr_info *info, size_t sz, void *arg){
+    (void)sz; struct findctx *c = (struct findctx*)arg;
+    const ElfW(Dyn) *dyn = 0;
+    for(int i=0;i<info->dlpi_phnum;i++)
+        if(info->dlpi_phdr[i].p_type == PT_DYNAMIC)
+            dyn = (const ElfW(Dyn)*)(info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
+    if(!dyn) return 0;
+    const ElfW(Sym) *symtab=0; const char *strtab=0; const ElfW(Word) *hash=0;
+    for(const ElfW(Dyn)*d=dyn; d->d_tag!=DT_NULL; d++){
+        if(d->d_tag==DT_SYMTAB) symtab=(const ElfW(Sym)*)d->d_un.d_ptr;
+        else if(d->d_tag==DT_STRTAB) strtab=(const char*)d->d_un.d_ptr;
+        else if(d->d_tag==DT_HASH) hash=(const ElfW(Word)*)d->d_un.d_ptr;
+    }
+    if(!symtab||!strtab||!hash) return 0;
+    ElfW(Word) nchain = hash[1];                 /* nchain == number of dynsyms */
+    for(ElfW(Word) k=0;k<nchain;k++){
+        const ElfW(Sym)*s=&symtab[k];
+        if(!s->st_value || ELF32_ST_TYPE(s->st_info)!=STT_FUNC) continue;
+        if(strcmp(strtab + s->st_name, WANT)) continue;
+        void *addr = (void*)(info->dlpi_addr + s->st_value);
+        if(addr == c->self) continue;            /* skip our own interposed copy */
+        c->found = (sd2l_t)addr; return 1;
+    }
+    return 0;
+}
+
+void _ZN9HeLogging15SendData2LoggerERK9HELOGGING(void *thisp, const void *data);
+
 __attribute__((constructor)) static void logspy_ctor(void){
     init_once();
-    if(enabled) fprintf(stderr, "[logspy] loaded (interposing HeLogging::SendData2Logger)\n");
+    struct findctx c = { (void*)&_ZN9HeLogging15SendData2LoggerERK9HELOGGING, 0 };
+    dl_iterate_phdr(phdr_cb, &c);
+    real_sd2l = c.found;
+    if(enabled) fprintf(stderr, "[logspy] loaded (interposing+chaining HeLogging::SendData2Logger, real=%p)\n", (void*)real_sd2l);
 }
 
 /* void HeLogging::SendData2Logger(HeLogging *this, const HELOGGING *data) — i386 member ABI: stack args. */
 void _ZN9HeLogging15SendData2LoggerERK9HELOGGING(void *thisp, const void *data){
-    (void)thisp;
     if(on()) dump_helogging(data);
-    /* no-op: do not chain (no logger peer in the standalone setup) */
+    if(real_sd2l) real_sd2l(thisp, data);   /* chain: keep the real side effects */
 }
