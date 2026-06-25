@@ -476,7 +476,7 @@ static volatile int reread_injected=0;
 static struct { uint32_t len; uint8_t data[CFGQ_MSG]; } cfgq_rec[CFGQ_CAP];
 static volatile int cfgq_n=0;
 static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
-    if(!qdump||!p) return; if(n>112)n=112;
+    if(!qdump||!p) return; if(n>1024)n=1024;
     fprintf(stderr,"   %s[0x%x]:",tag,id);
     for(uint32_t k=0;k<n;k++) fprintf(stderr,"%02x",((const uint8_t*)p)[k]); fprintf(stderr,"\n");
 }
@@ -1202,18 +1202,31 @@ static void inject_evt_connect_ack(uint32_t target_qid,const void*msg,uint32_t s
  * client's reply queue, draining HrMmi's request counter -> MoveActiveStateTowardsTarget. See the
  * HEROSCALL_INJECT_PEER_ACK note above. Reply = [reply-type-id][per-schema-field ABSENT tag]. */
 static uint32_t peer_acked[64]; static int n_peer_acked=0;   /* dedup per (reply-queue<<8 | peer) */
+static int cm_grant=-1;                                       /* HEROSCALL_CM_GRANT (default ON) */
 static void inject_peer_connect_ack(uint32_t target_qid,const void*msg,uint32_t size){
     if(!inject_peer_ack||!msg||size<16) return;
+    if(cm_grant<0){ const char*e=getenv("HEROSCALL_CM_GRANT"); cm_grant=(!e||e[0]!='0'); } /* default ON */
     const unsigned char*m=msg;
     uint32_t hdr=(m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24))&0x7fffffff;
-    /* request type-id -> (peer tag, reply type-id, ABSENT field tags). Fields RE'd from the lib schemas. */
-    struct { uint32_t req, reply; uint8_t peer; uint32_t f[8]; int nf; } P[]={
-      { 0x01a90040, 0x41a90080, 'I', {0x81a9006b,0x80000063,0x800000e7,0x80000063}, 4 },          /* IpoSrvLoginQuit */
-      { 0x012f0160, 0x012f0180, 'P', {0x812f0024,0x812f006b,0x80000084}, 3 },                       /* PlcSrvConnected */
-      { 0x03340040, 0x41cc05e1, 'C', {0x81c20503,0x81c20503,0x81cc058b,0x81cc058b,0x800001ad,0x800000c6}, 6 }, /* CmGrantControl */
+    /* request type-id -> (peer, reply type-id, field codes[], present?[], values[]). Codes carry NO top
+     * bit; ABSENT field = 0x80000000|code (leaves it 0), PRESENT field = [code][value]. Schemas RE'd from
+     * the lib schema tables + each reply handler's body reads (HrModule::On*@HrMmi.elf, idalib). */
+    struct { uint32_t req, reply; uint8_t peer; uint32_t code[8]; uint8_t pres[8]; uint32_t val[8]; int nf; } P[]={
+      /* IpoSrvLoginQuit: OnIpoSrvConnected@0x35ca0 needs body+4(field0)==0 (else target->0) -> all absent */
+      { 0x01a90040, 0x41a90080, 'I', {0x01a9006b,0x63,0xe7,0x63}, {0,0,0,0}, {0,0,0,0}, 4 },
+      /* PlcSrvConnected: OnPlcSrvConnected@0x35260 needs body+32==0 (else target->0) -> all absent */
+      { 0x012f0160, 0x012f0180, 'P', {0x012f0024,0x012f006b,0x84}, {0,0,0}, {0,0,0}, 3 },
+      /* CmGrantControl (flat 0x20 Data body; codes+sequential offsets from schema table
+       * @libGMessageGeo .rodata 0x243d8c): field2 code 0x01cc058b -> body+12 (v3[3]); field4 code
+       * 0x01ad -> body+20 (v3[5]). OnCmGrantControl@0x35f50 GRANTS control (HRMENUTREE::ActivateDo +
+       * raise the active-state target) only when v3[3]!=0 && v3[5]!=0 -> make field2 & field4 PRESENT=1
+       * (gated HEROSCALL_CM_GRANT, default ON; =0 reverts to all-absent for an A/B). */
+      { 0x03340040, 0x41cc05e1, 'C', {0x01c20503,0x01c20503,0x01cc058b,0x01cc058b,0x01ad,0xc6},
+            {0,0,1,0,1,0}, {0,0,1,0,1,0}, 6 },
     };
     int pi=-1; for(int i=0;i<(int)(sizeof P/sizeof P[0]);i++) if(P[i].req==hdr){ pi=i; break; }
     if(pi<0) return;
+    if(P[pi].peer=='C' && !cm_grant){ for(int i=0;i<P[pi].nf;i++) P[pi].pres[i]=0; }  /* A/B: all-absent Cm */
     /* leading GMsgString = reply-to (".QueueHrMmi"), same encoding as INJECT_ACK */
     uint32_t tag=m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24);
     if(tag!=0xe7) return;
@@ -1238,12 +1251,94 @@ static void inject_peer_connect_ack(uint32_t target_qid,const void*msg,uint32_t 
     uint32_t key=(rqid<<8)|(uint8_t)P[pi].peer;
     for(int i=0;i<n_peer_acked;i++) if(peer_acked[i]==key) return;   /* one reply per (peer,reply-queue) */
     if(n_peer_acked<64) peer_acked[n_peer_acked++]=key;
-    unsigned char ack[64]; uint32_t p=0;
+    unsigned char ack[64]; uint32_t p=0; int npres=0;
     put32(ack+p,P[pi].reply); p+=4;                                 /* reply header (e.g. IpoSrvLoginQuit) */
-    for(int i=0;i<P[pi].nf;i++){ put32(ack+p,P[pi].f[i]); p+=4; }    /* each schema field ABSENT -> default 0 */
+    for(int i=0;i<P[pi].nf;i++){
+        if(P[pi].pres[i]){ put32(ack+p,P[pi].code[i]); p+=4; put32(ack+p,P[pi].val[i]); p+=4; npres++; } /* PRESENT [code][value] */
+        else { put32(ack+p,0x80000000u|P[pi].code[i]); p+=4; }      /* ABSENT -> field default 0 */
+    }
     q_send(rqid,ack,p,0);
-    LOG("INJECT_PEER_ACK: posted peer reply 0x%08x (%c, %d absent fields) to \"%s\" (0x%x), %u bytes\n",
-        P[pi].reply,P[pi].peer,P[pi].nf,C->queues[rs].name,rqid,p);
+    LOG("INJECT_PEER_ACK: posted peer reply 0x%08x (%c, %d fields, %d present) to \"%s\" (0x%x), %u bytes\n",
+        P[pi].reply,P[pi].peer,P[pi].nf,npres,C->queues[rs].name,rqid,p);
+}
+
+/* INJECT_EVT_ERR (part of the PEER_ACK render-drive set): OnEvtConnected@0x324e0 (success branch) issues
+ * an EvtErrorRequest(msg type-id 0x3205C0) poll to QEvtServer and ++the startup request counter (HrModule
+ * +59). With no QEvtServer the reply never comes, so the counter never drains to 0 -> the state machine
+ * (MoveActiveStateTowardsTarget = the render) never fires. Synthesize the reply EvtAnsErrorRequest
+ * (msg/body type-id 0x320841, dispatch->OnEvtAnsErrorRequest@0x34c50):
+ *   field0 EvtRequestResult (GMsgEnum, wire code 0x3205eb) PRESENT = 1  -> body+20 (result). The handler
+ *          calls HrModule::OneRequestDone ONLY when result==1 (else it re-polls with a fresh EvtErrorRequest).
+ *   field1 GMsgList<EvtEvent> PRESENT-empty {code 0x18c, count 0}        -> body+24 (not read for result==1).
+ * Post it to the recorded Evt reply queue (the one INJECT_EVT_ACK used = QueueHrMmi 0x30e). */
+static int n_evterr_replied=0;
+static void inject_evt_error_reply(uint32_t target_qid,const void*msg,uint32_t size){
+    if(!inject_peer_ack||!msg||size<4) return;                       /* gated with PEER_ACK (the render set) */
+    int ts=q_slot(target_qid); if(ts<0||strcmp(C->queues[ts].name,"QEvtServer")) return;
+    const unsigned char*m=msg;
+    uint32_t hdr=(m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24))&0x7fffffff;
+    if(hdr!=0x3205c0) return;                                        /* not an EvtErrorRequest poll */
+    if(n_evt_acked<=0){ LOG("INJECT_EVT_ERR: no Evt reply queue recorded yet\n"); return; }
+    if(n_evterr_replied>=8) return;                                  /* result=1 ends the poll; cap runaway */
+    uint32_t rqid=evt_acked_qids[0]; int rs=q_slot(rqid);
+    unsigned char ack[32]; uint32_t p=0;
+    /* EvtAnsErrorRequest MESSAGE type-id = 0x320601 (EvtAnsErrorRequest::C2Ev GMessage::GMessage(this,0x320601);
+     * = the factory key GMessage::ReadMessageRaw looks up AND the dispatch id 3278337==0x320601 routing to
+     * OnEvtAnsErrorRequest). NOT 0x320841 — sending the wrong header => factory miss => null msg =>
+     * fmailslotqueue.cpp:324 inPlaceMem assert. (schema table @libGMessageMisc .rodata 0x23ae80.) */
+    put32(ack+p,0x00320601u); p+=4;                                  /* EvtAnsErrorRequest header */
+    put32(ack+p,0x003205ebu); p+=4; put32(ack+p,1); p+=4;            /* attr0 EvtRequestResult enum (kind 11) present = 1 (result) */
+    /* attr1 GMsgList<EvtEvent> (code 0x18c, kind 12 = sub-message list): GMessage::Read@0x3b5a0 case 12 reads
+     * [code][count]; an EMPTY list is count 0 -> GMessage::Initialise(0). (0xFFFFFFFF is the GMsgArray<int>
+     * empty form, a different kind, and would make case 12 read 0xFFFFFFFF elements -> parse fail.) */
+    put32(ack+p,0x0000018cu); p+=4; put32(ack+p,0); p+=4;
+    q_send(rqid,ack,p,0);
+    n_evterr_replied++;
+    LOG("INJECT_EVT_ERR: posted EvtAnsErrorRequest(result=1) to \"%s\" (0x%x), %u bytes (#%d)\n",
+        rs>=0?C->queues[rs].name:"?",rqid,p,n_evterr_replied);
+}
+
+/* INJECT_BCAST_ACK (part of the PEER_ACK render-drive set): HrMmi sends GmBroadcastRegisterReq (msg type-id
+ * 0x3340261) to AppStartMaster (0x308) to register for broadcasts — each ++the startup request counter and
+ * is answered by GmBroadcastRegisterResp (msg type-id 0x43340280; HrModule::DispatchMessage routes 0x43340280
+ * straight to OneRequestDone). With no AppStartMaster the reply never comes, so those counted requests never
+ * drain. Synthesize the resp (flat-Data 16B body: 3 fields code 0x334020b/0x63/0x63 from the schema table
+ * @libGMessageGeo .rodata 0x255e4c; OneRequestDone reads no fields -> all-absent) and post it to the request's
+ * reply queue (leading GMsgString reply-to like INJECT_PEER_ACK, else QueueHrMmi). */
+static int n_bcast_replied=0;
+static void inject_broadcast_register_reply(uint32_t target_qid,const void*msg,uint32_t size){
+    (void)target_qid;
+    if(!inject_peer_ack||!msg||size<8) return;
+    const unsigned char*m=msg;
+    uint32_t hdr=(m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24))&0x7fffffff;
+    if(hdr!=0x03340261) return;                                     /* not a GmBroadcastRegisterReq */
+    if(n_bcast_replied>=8) return;                                  /* HrMmi sends a fixed few; cap runaway */
+    int rs=-1;
+    uint32_t tag=(size>=8)?(m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24)):0;
+    if(tag==0xe7&&size>=12){                                        /* leading GMsgString reply-to */
+        uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
+        if(nlen>0&&nlen<=64&&12+nlen<=size){
+            char name[80]; memcpy(name,m+12,nlen); name[nlen]=0;
+            rs=q_find_slot(name);
+            if(rs<0){ int best=-1; size_t bl=0;
+                for(int qi=0;qi<MAXQ;qi++){ struct queue*q=&C->queues[qi];
+                    if(q->used&&q->name[0]&&q->notify_bits&&strlen(q->name)>=4&&strstr(name,q->name)){
+                        size_t l=strlen(q->name); if(l>bl){bl=l;best=qi;} } }
+                rs=best; }
+        }
+    }
+    if(rs<0) rs=q_find_slot("QueueHrMmi");                          /* fallback: HrMmi's main dispatch queue */
+    if(rs<0){ LOG("INJECT_BCAST_ACK: no reply queue\n"); return; }
+    uint32_t rqid=C->queues[rs].id;
+    unsigned char ack[24]; uint32_t p=0;
+    put32(ack+p,0x43340280u); p+=4;                                 /* GmBroadcastRegisterResp header */
+    put32(ack+p,0x8334020bu); p+=4;                                 /* field0 absent */
+    put32(ack+p,0x80000063u); p+=4;                                 /* field1 absent */
+    put32(ack+p,0x80000063u); p+=4;                                 /* field2 absent */
+    q_send(rqid,ack,p,0);
+    n_bcast_replied++;
+    LOG("INJECT_BCAST_ACK: posted GmBroadcastRegisterResp to \"%s\" (0x%x), %u bytes (#%d)\n",
+        C->queues[rs].name,rqid,p,n_bcast_replied);
 }
 
 /* ---------------- regions (named shared memory) ---------------- */
@@ -1525,6 +1620,8 @@ long syscall(long n,...){
         inject_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_ACK: synth IPO connect-ACK */
         inject_evt_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_EVT_ACK: synth QEvtServer connect-ACK */
         inject_peer_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_PEER_ACK: synth IPO/PLC/CM connect replies */
+        inject_evt_error_reply(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_EVT_ERR: answer the EvtErrorRequest poll (drain counter) */
+        inject_broadcast_register_reply(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_BCAST_ACK: answer GmBroadcastRegisterReq (drain counter) */
         return r;
     }
     case 0x0e: /* Q_read(outbuf@p[0], maxsize@p[2], hdr/base@p[4], timeout@p[6], qid@p[7]).

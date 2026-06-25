@@ -1,5 +1,8 @@
 # TNC640unix — project tracker
 
+## Commit message format (2026-06-24, user preference)
+**DO NOT add "Claude-Session:" trailers to commit messages.** Write only the commit message body and subject—no trailing URLs or session identifiers. The git user is already configured, so attribution is clear from `git log --format=fuller`.
+
 > ## ★ GROUND TRUTH + FRAMING (2026-06-24, user-set — read before writing "this is impossible")
 > Two corrections to how this tracker has been talking about the work. They are durable; apply them going forward.
 >
@@ -144,6 +147,51 @@
 > multi-round/multi-field constellation handshake — now with the DELIVERY mechanism + the coordinator fully solved,
 > and the remaining gate reduced to the per-reply success-field values (and ultimately, live peer DATA for the
 > display). Run: `emulator/run_2proc_hrmmi.sh` (PEER_ACK=1 default; `PEER_ACK=0` for the A/B).
+
+> ## ★★★★ FEX-NATIVE FRONTIER (2026-06-25) — the 2nd-round replies LAND + drain the counter; HrMmi advances PAST the constellation handshake (no crash); render gate now = the active-state TARGET bootstrap
+> The "2nd-round of INJECT replies with the right PRESENT field values" above is now IMPLEMENTED + WORKING.
+> Three pieces (all in `emulator/heros_rtos.c`, gated with PEER_ACK, default ON in `run_2proc_hrmmi.sh`):
+> (1) **CmGrantControl grant** — `inject_peer_connect_ack` now sends the CmGrantControl reply (0x41cc05e1) with
+>     **field2 (code 0x01cc058b → body+12 = v3[3]) and field4 (code 0x01ad → body+20 = v3[5]) PRESENT=1** (was
+>     all-absent) so OnCmGrantControl's grant branch can fire (HEROSCALL_CM_GRANT, default ON; offsets+codes from
+>     the schema table @libGMessageGeo .rodata 0x243d8c; flat-Data field_i → body+4+4i).
+> (2) **INJECT_EVT_ERR** (`inject_evt_error_reply`) — OnEvtConnected (success) issues an **EvtErrorRequest (msg
+>     type-id 0x3205C0 → QEvtServer) and ++the request counter**; with no QEvtServer it never gets answered so the
+>     counter never reaches 0. Synthesize **EvtAnsErrorRequest** and post it to QueueHrMmi: OnEvtAnsErrorRequest@
+>     0x34c50 calls OneRequestDone only when result==1.
+> (3) **INJECT_BCAST_ACK** (`inject_broadcast_register_reply`) — answers GmBroadcastRegisterReq (0x3340261) with
+>     GmBroadcastRegisterResp (0x43340280 → dispatch routes straight to OneRequestDone). (No-op in this config —
+>     HrMmi's 2 sends to AppStartMaster 0x308 are FmProcessState logo/status notifications "hrmmi: New start of
+>     HrMmi loggin", NOT counted requests — but the reply is correct + ready if it ever sends the Req.)
+> ★★ THE EvtAnsErrorRequest WIRE FORMAT — fully cracked (the hard part, deep GMessage RE in libgmsglib). The msg
+> deserialized via **`GMessage::ReadMessageRaw`** → **`GMsgEntityBody::Read@0x39140`** (binary branch: iterate
+> NrOfAttributes, `GMessage::Read@0x3b5a0` per attribute in order). The fmailslotqueue.cpp:324 `inPlaceMem` assert
+> = a message that **fails to deserialize** (factory miss / bad attr). The bug was a **decimal→hex misconversion**:
+> the dispatch decimal `3278337` = **0x320601** (NOT 0x320841). EvtAnsErrorRequest::C2Ev = `GMessage::GMessage(this,
+> 0x320601)` → 0x320601 is the **wire header / factory key AND the dispatch id**. Wire (20B, verified asserts→0):
+> `320601 | 3205eb 00000001 | 0000018c 00000000` = header + EvtRequestResult enum(kind 11, code 0x3205eb)=1 +
+> **GMsgList<EvtEvent> (code 0x18c, kind 12 sub-message list) EMPTY = count 0** (case 12 in GMessage::Read; the
+> 0xFFFFFFFF empty form is for GMsgArray<int>, a DIFFERENT kind — using it makes case 12 read 4G elements → assert).
+> Calibrated against real wire captures (DUMPQ): EvtClientIsConnected `[0x63][v]`×3, CfgClientIsConnected enum
+> `[0x1700eb][0]`, EvtErrorRequest `[0xc6][1][0x63][0][0x63][0]`. Schema tables: EvtAnsErrorRequest @0x23ae80,
+> EvtClientIsConnected @0x23ce84.
+> **VERIFIED (`run_2proc_hrmmi.sh`, clean):** HrMmi reads ALL 6 small replies (28/34/16/36/20/20 = EVT_ACK / Cfg
+> connect-ACK / Plc / Cm(grant 36B) / Ipo / EvtAns) **+ the 2711B config DATA (buffer-doubling 128→2711)**, runs
+> every handler, **ZERO asserts/crashes**, /etc GUARD OK — a clean advance PAST the multi-process handshake that
+> previously blocked/crashed. (Baseline / EvtAns header 0x320841: fmailslotqueue.cpp:324 assert.)
+> ★ NEW GATE (precisely pinned): the counter DRAINS (5 OneRequestDone) but the **active-state TARGET (HrModule+57
+> / off 0xE4) stays 0**, so MoveActiveStateTowardsTarget@0x33a60 (`if target>active advance else …`) never advances
+> 0→2 → never calls **Activate@0x2cb00 (WritePlc "system\omg\0\param\hrMmiControlled" + HRDATAIF::SetActive(true) +
+> SubscribeNcStart)** → no UpdateDisplay → no XCreateWindow (Xvfb still 1 colour). Found via `ida_xref_off.py`:
+> EVERY write to this+57 sets it to **0** (Initialize@0x2be39, OnEvtConnected/OnPlcSrvConnected failure branches,
+> the OnCfg* config handlers); OnCmGrantControl raises it to 2/3/4 ONLY when it's ALREADY in {2,3,4} (v2==0 → no-op).
+> So something must bootstrap target 0→2 first (likely a CmRequestControl HrMmi sends, or a mode/NcStart trigger;
+> a config handler may also reset it → a RACE: the DUMPQ-slow run momentarily fired Activate's 0x30f WritePlc, the
+> clean run does not). ALSO downstream: the all-absent peer replies leave the handles 0 — PlcSrvConnected body+20
+> →HrModule+65 (SubscribePlc gates on `a1[65]!=0`), IpoSrvLoginQuit body+8→+64, EvtClientIsConnected
+> viewerHandle@body+44→+63 — round-2 (SubscribePlc/SubscribeNcStart) needs these non-zero. NEXT: find the
+> target-bootstrap (the HrModule singleton + what sets target≥2) + set the peer handles, to drive Activate→render.
+> Run: `emulator/run_2proc_hrmmi.sh` (DUMPQ=1 for wire bytes). Findings: `scratchpad/hrmmi_first_window_findings.md`.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
