@@ -179,19 +179,32 @@
 > connect-ACK / Plc / Cm(grant 36B) / Ipo / EvtAns) **+ the 2711B config DATA (buffer-doubling 128→2711)**, runs
 > every handler, **ZERO asserts/crashes**, /etc GUARD OK — a clean advance PAST the multi-process handshake that
 > previously blocked/crashed. (Baseline / EvtAns header 0x320841: fmailslotqueue.cpp:324 assert.)
-> ★ NEW GATE (precisely pinned): the counter DRAINS (5 OneRequestDone) but the **active-state TARGET (HrModule+57
-> / off 0xE4) stays 0**, so MoveActiveStateTowardsTarget@0x33a60 (`if target>active advance else …`) never advances
-> 0→2 → never calls **Activate@0x2cb00 (WritePlc "system\omg\0\param\hrMmiControlled" + HRDATAIF::SetActive(true) +
-> SubscribeNcStart)** → no UpdateDisplay → no XCreateWindow (Xvfb still 1 colour). Found via `ida_xref_off.py`:
-> EVERY write to this+57 sets it to **0** (Initialize@0x2be39, OnEvtConnected/OnPlcSrvConnected failure branches,
-> the OnCfg* config handlers); OnCmGrantControl raises it to 2/3/4 ONLY when it's ALREADY in {2,3,4} (v2==0 → no-op).
-> So something must bootstrap target 0→2 first (likely a CmRequestControl HrMmi sends, or a mode/NcStart trigger;
-> a config handler may also reset it → a RACE: the DUMPQ-slow run momentarily fired Activate's 0x30f WritePlc, the
-> clean run does not). ALSO downstream: the all-absent peer replies leave the handles 0 — PlcSrvConnected body+20
-> →HrModule+65 (SubscribePlc gates on `a1[65]!=0`), IpoSrvLoginQuit body+8→+64, EvtClientIsConnected
-> viewerHandle@body+44→+63 — round-2 (SubscribePlc/SubscribeNcStart) needs these non-zero. NEXT: find the
-> target-bootstrap (the HrModule singleton + what sets target≥2) + set the peer handles, to drive Activate→render.
-> Run: `emulator/run_2proc_hrmmi.sh` (DUMPQ=1 for wire bytes). Findings: `scratchpad/hrmmi_first_window_findings.md`.
+> ★ RENDER GATE (precisely pinned to the active-state TARGET bootstrap + an ordering RACE fixed):
+> The counter DRAINS (5 OneRequestDone) but **MoveActiveStateTowardsTarget@0x33a60 never advances** because the
+> **active-state TARGET (HrModule+57 / off 0xE4) is 0** when it fires. The target is bootstrapped ONLY by config
+> handlers: **OnHrMmiCfgGlobal@0x360e0** (the 2711B HrMmiCfgGlobal, msg type-id 0x290081; **target = 1 +
+> HandwheelUsesHrMmi**, written at 0x3711d) and **OnCfgActiveHandwheel@0x37580** (target 1/2, also calls Move...
+> Target itself). EVERY other write to this+57 is 0 (Initialize, the *SrvConnected failure branches, the OnCfg*
+> handlers); OnCmGrantControl raises 2/3/4 ONLY from an already-≥2 target. (target≥1 is enough: target=1 →
+> active 0→1 WakeUp → UpdateEnable+HRDATAIF::UpdateDisplay = the render. **No window is created standalone**:
+> X connects but xlsclients=0 / 0 child windows / 1 colour throughout.)
+> ★ ORDERING RACE — FIXED (`HEROSCALL_EVTERR_DEFER`, default ON): on the wire the FAST in-process injected EvtAns
+> arrived BEFORE the SLOW cross-process 2711B HrMmiCfgGlobal, so the counter drained (Move...Target fired) with
+> target STILL 0, then the target was set too late. FIX: DEFER the EvtAns (q_read releases it when HrMmi READS the
+> HrMmiCfgGlobal 0x290081) so the order is target-set THEN counter-drain. VERIFIED: read order is now …Ipo, **2711
+> HrMmiCfgGlobal, then EvtAns** (`EVTERR_DEFER: …releasing deferred…`). But STILL no window → so even with the
+> right order, the target isn't set ≥1: **OnHrMmiCfgGlobal BAILS before its target write** — the block has many
+> `jz loc_374xx` (all addrs > 0x3711d = forward, PAST the target write) taken when a config sub-field
+> (CfgChannelGroup / CfgAxes / CfgDisplayData / CfgHandwheelGlobal / CfgActiveHandwheel) is INVALID/missing. So
+> the render gate = the **HrMmiCfgGlobal config must be COMPLETE+VALID** for OnHrMmiCfgGlobal to reach 0x3711d =
+> the documented config-DATA-completeness frontier (the same "live peer DATA" gate). NEXT (two concrete paths):
+> (a) make ConfigServer serve a complete HrMmiCfgGlobal (all sub-msgs valid → OnHrMmiCfgGlobal sets target →
+> render); (b) inject a STANDALONE valid CfgActiveHandwheel (0x660801) after the counter drains — OnCfgActiveHandwheel
+> needs GMessage::IsValid(msg)+a GMsgArray<HR_TYPE>@body+72 → sets target=1 + Move...Target → render (bypasses the
+> incomplete HrMmiCfgGlobal). ALSO downstream: the all-absent peer replies leave the handles 0 (PlcSrvConnected
+> body+20→+65 gates SubscribePlc `a1[65]!=0`, IpoSrvLoginQuit body+8→+64, EvtClientIsConnected viewerHandle@+44→+63).
+> Run: `emulator/run_2proc_hrmmi.sh` (DUMPQ=1 wire bytes; EVTERR_DEFER=0 / CM_GRANT=0 for A/B).
+> Findings: `scratchpad/hrmmi_first_window_findings.md`.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under

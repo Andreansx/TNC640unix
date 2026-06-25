@@ -780,6 +780,10 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     }
     return 0;
 }
+/* fwd-decls (defined in the INJECT_EVT_ERR section): release the deferred EvtAns when HrMmi reads
+ * the HrMmiCfgGlobal (0x290081), so the active-state target is bootstrapped BEFORE the counter drains. */
+static uint32_t deferred_evterr_rqid;
+static void post_evt_ans_error(uint32_t rqid);
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
     int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); errno=EINVAL; return -9; }  /* errno!=ENOMEM: wrapper -> 0, not "grow" */
     if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap ALL forever-waits */
@@ -835,7 +839,14 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
                     qnotify,qowner,id,q->tail-q->head,task_self()); }
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
             { uint32_t mtag = (buf && len>=4) ? *(const uint32_t*)buf : 0;
-              HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len)); }
+              HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len));
+              /* EVTERR_DEFER release: HrMmi just read the HrMmiCfgGlobal (type 0x290081 = the active-state
+               * target bootstrap, OnHrMmiCfgGlobal). Now post the deferred EvtAns so its OneRequestDone fires
+               * MoveActiveStateTowardsTarget AFTER the target is set -> Activate -> UpdateDisplay -> window. */
+              if(deferred_evterr_rqid && (mtag&0x7fffffff)==0x290081){
+                  uint32_t rq=deferred_evterr_rqid; deferred_evterr_rqid=0;
+                  LOG("EVTERR_DEFER: HrMmiCfgGlobal(0x290081) read -> releasing deferred EvtAnsErrorRequest to 0x%x\n",rq);
+                  post_evt_ans_error(rq); } }
             /* REPLAY_TRIGGER: the first post-runup 69-byte read from CfgServerQueue is IPO's
              * connect; it's now dequeued+about-to-be-registered-pending. Re-inject the recorded
              * startup self-messages so a SIK handler re-runs SendConnected and flushes IPO's ACK.
@@ -1272,6 +1283,32 @@ static void inject_peer_connect_ack(uint32_t target_qid,const void*msg,uint32_t 
  *   field1 GMsgList<EvtEvent> PRESENT-empty {code 0x18c, count 0}        -> body+24 (not read for result==1).
  * Post it to the recorded Evt reply queue (the one INJECT_EVT_ACK used = QueueHrMmi 0x30e). */
 static int n_evterr_replied=0;
+/* The EvtAns is the LAST counter-drainer; its OneRequestDone fires MoveActiveStateTowardsTarget. But the
+ * active-state TARGET (HrModule+57) is bootstrapped ONLY by OnHrMmiCfgGlobal (from the 2711B HrMmiCfgGlobal
+ * config, msg type-id 0x290081, target = 1 + HandwheelUsesHrMmi). That config comes from ConfigServer (slow,
+ * cross-process) and on the wire arrives AFTER the fast in-process injected EvtAns -> the counter drains with
+ * target STILL 0 -> Move...Target makes no advance -> no render, and the late target-set never re-fires it.
+ * FIX (HEROSCALL_EVTERR_DEFER, default ON): DEFER posting the EvtAns until HrMmi has READ the HrMmiCfgGlobal
+ * (released in q_read) so the order is target-set THEN counter-drain -> Activate -> UpdateDisplay -> window. */
+static int evterr_defer=-1; static uint32_t deferred_evterr_rqid=0;
+static void post_evt_ans_error(uint32_t rqid){
+    if(n_evterr_replied>=8) return;                                  /* result=1 ends the poll; cap runaway */
+    int rs=q_slot(rqid);
+    unsigned char ack[32]; uint32_t p=0;
+    /* EvtAnsErrorRequest MESSAGE type-id = 0x320601 (EvtAnsErrorRequest::C2Ev GMessage::GMessage(this,0x320601);
+     * = the factory key GMessage::ReadMessageRaw looks up AND the dispatch id 3278337==0x320601 routing to
+     * OnEvtAnsErrorRequest). NOT 0x320841 — wrong header => factory miss => fmailslotqueue.cpp:324 assert. */
+    put32(ack+p,0x00320601u); p+=4;                                  /* EvtAnsErrorRequest header */
+    put32(ack+p,0x003205ebu); p+=4; put32(ack+p,1); p+=4;            /* attr0 EvtRequestResult enum (kind 11) present = 1 (result) */
+    /* attr1 GMsgList<EvtEvent> (code 0x18c, kind 12 = sub-message list): GMessage::Read@0x3b5a0 case 12 reads
+     * [code][count]; EMPTY = count 0 -> GMessage::Initialise(0). (0xFFFFFFFF is the GMsgArray<int> empty form,
+     * a different kind, and would make case 12 read 0xFFFFFFFF elements -> parse fail.) */
+    put32(ack+p,0x0000018cu); p+=4; put32(ack+p,0); p+=4;
+    q_send(rqid,ack,p,0);
+    n_evterr_replied++;
+    LOG("INJECT_EVT_ERR: posted EvtAnsErrorRequest(result=1) to \"%s\" (0x%x), %u bytes (#%d)\n",
+        rs>=0?C->queues[rs].name:"?",rqid,p,n_evterr_replied);
+}
 static void inject_evt_error_reply(uint32_t target_qid,const void*msg,uint32_t size){
     if(!inject_peer_ack||!msg||size<4) return;                       /* gated with PEER_ACK (the render set) */
     int ts=q_slot(target_qid); if(ts<0||strcmp(C->queues[ts].name,"QEvtServer")) return;
@@ -1279,23 +1316,14 @@ static void inject_evt_error_reply(uint32_t target_qid,const void*msg,uint32_t s
     uint32_t hdr=(m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24))&0x7fffffff;
     if(hdr!=0x3205c0) return;                                        /* not an EvtErrorRequest poll */
     if(n_evt_acked<=0){ LOG("INJECT_EVT_ERR: no Evt reply queue recorded yet\n"); return; }
-    if(n_evterr_replied>=8) return;                                  /* result=1 ends the poll; cap runaway */
-    uint32_t rqid=evt_acked_qids[0]; int rs=q_slot(rqid);
-    unsigned char ack[32]; uint32_t p=0;
-    /* EvtAnsErrorRequest MESSAGE type-id = 0x320601 (EvtAnsErrorRequest::C2Ev GMessage::GMessage(this,0x320601);
-     * = the factory key GMessage::ReadMessageRaw looks up AND the dispatch id 3278337==0x320601 routing to
-     * OnEvtAnsErrorRequest). NOT 0x320841 — sending the wrong header => factory miss => null msg =>
-     * fmailslotqueue.cpp:324 inPlaceMem assert. (schema table @libGMessageMisc .rodata 0x23ae80.) */
-    put32(ack+p,0x00320601u); p+=4;                                  /* EvtAnsErrorRequest header */
-    put32(ack+p,0x003205ebu); p+=4; put32(ack+p,1); p+=4;            /* attr0 EvtRequestResult enum (kind 11) present = 1 (result) */
-    /* attr1 GMsgList<EvtEvent> (code 0x18c, kind 12 = sub-message list): GMessage::Read@0x3b5a0 case 12 reads
-     * [code][count]; an EMPTY list is count 0 -> GMessage::Initialise(0). (0xFFFFFFFF is the GMsgArray<int>
-     * empty form, a different kind, and would make case 12 read 0xFFFFFFFF elements -> parse fail.) */
-    put32(ack+p,0x0000018cu); p+=4; put32(ack+p,0); p+=4;
-    q_send(rqid,ack,p,0);
-    n_evterr_replied++;
-    LOG("INJECT_EVT_ERR: posted EvtAnsErrorRequest(result=1) to \"%s\" (0x%x), %u bytes (#%d)\n",
-        rs>=0?C->queues[rs].name:"?",rqid,p,n_evterr_replied);
+    uint32_t rqid=evt_acked_qids[0];
+    if(evterr_defer<0){ const char*e=getenv("HEROSCALL_EVTERR_DEFER"); evterr_defer=(!e||e[0]!='0'); } /* default ON */
+    if(evterr_defer){
+        deferred_evterr_rqid=rqid;                                   /* released in q_read on the HrMmiCfgGlobal read */
+        LOG("INJECT_EVT_ERR: DEFERRED EvtAnsErrorRequest to 0x%x until HrMmiCfgGlobal (target bootstrap) is read\n",rqid);
+    } else {
+        post_evt_ans_error(rqid);
+    }
 }
 
 /* INJECT_BCAST_ACK (part of the PEER_ACK render-drive set): HrMmi sends GmBroadcastRegisterReq (msg type-id
