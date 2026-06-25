@@ -17,12 +17,13 @@ DISP=:99
 CFGPRE="/lib/noopfree.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 # HrMmi also over-frees a corrupted-header chunk under FEX (same class as ConfigServer) while processing
 # the relayed config -> guardfree skips the bad free so HrMmi survives + advances past Ev_receive(0x03011001).
-MMIPRE="${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
+# HWFORCE=1 prepends hwforce.so (patches HandwheelUsesHrMmi->return 1 => active-state target=2) — a render diagnostic
+MMIPRE="${HWFORCE:+/lib/hwforce.so:}${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 
 echo "=== build preloads ==="
 $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $REPO/emulator/cfgfix.c -ldl || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/arena.map -o $R/lib/arena_stub.so $REPO/emulator/arena_stub.c || exit 1
-for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
+for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree hwforce; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
 
 # writable SYS mirror with resources (PLIB++ keymap) so HrMmi GUI init can load them after config
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW"

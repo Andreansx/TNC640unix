@@ -197,7 +197,13 @@
 > `jz loc_374xx` (all addrs > 0x3711d = forward, PAST the target write) taken when a config sub-field
 > (CfgChannelGroup / CfgAxes / CfgDisplayData / CfgHandwheelGlobal / CfgActiveHandwheel) is INVALID/missing. So
 > the render gate = the **HrMmiCfgGlobal config must be COMPLETE+VALID** for OnHrMmiCfgGlobal to reach 0x3711d =
-> the documented config-DATA-completeness frontier (the same "live peer DATA" gate). NEXT (two concrete paths):
+> the documented config-DATA-completeness frontier (the same "live peer DATA" gate). ★ CONFIRMED by the HWFORCE
+> diagnostic (`emulator/hwforce.c`, run `HWFORCE=1 bash run_2proc_hrmmi.sh`): patching the static
+> `HandwheelUsesHrMmi@0x298f0 -> mov eax,1;ret` (so target would be 1+1=2=active wherever it's evaluated) made
+> NO difference — `[hwforce] patched` but STILL xlsclients=0 / 0 windows / 1 colour. So the gate is NOT the
+> handwheel VALUE (target 1 vs 2); OnHrMmiCfgGlobal genuinely **does not reach** its handwheel call (0x370fd) /
+> target write (0x3711d) — it bails in an EARLIER config sub-field block (CfgChannelGroup/CfgAxes/CfgDisplayData).
+> NEXT (two concrete paths):
 > (a) make ConfigServer serve a complete HrMmiCfgGlobal (all sub-msgs valid → OnHrMmiCfgGlobal sets target →
 > render); (b) inject a STANDALONE valid CfgActiveHandwheel (0x660801) after the counter drains — OnCfgActiveHandwheel
 > needs GMessage::IsValid(msg)+a GMsgArray<HR_TYPE>@body+72 → sets target=1 + Move...Target → render (bypasses the
