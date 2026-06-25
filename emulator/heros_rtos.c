@@ -661,6 +661,7 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
  * graceful "service absent" degradation. e.g. HeLogging::CheckHeloggerIsRunning does
  * q_ident("QueueHeLogger") and, on failure, logs locally instead of blocking on the
  * logger handshake (ConnectToHelogger). So these must report "not found". */
+static int hr_ishex(char c){ return (c>='0'&&c<='9')||(c>='a'&&c<='f')||(c>='A'&&c<='F'); }
 static int q_is_probe_name(const char*base){
     static const char*const probe[]={ "QueueHeLogger", 0 };
     for(int i=0;probe[i];i++) if(!strcmp(base,probe[i])) return 1;
@@ -670,6 +671,23 @@ static int q_is_probe_name(const char*base){
      * makes the scan never terminate — an unbounded loop (120MB+ log, starves peers
      * on the global lock). Report absent so the scan ends. */
     if(!strncmp(base,"HwsM",4)) return 1;
+    /* PLC client notification-queue probes ("PLC<taskid>N<seq>", both hex, e.g.
+     * PLC00000106N3dc): libPlcCtrl's PLC-client init (GdPlcCtrlPlcSrv*, PLCSRV_HANDLE)
+     * enumerates the PLC server's per-client notify queues by scanning the sequence
+     * until Q_ident reports "not found". With plc.elf absent NONE of these exist;
+     * auto-creating each returns a fresh valid queue so the scan never terminates
+     * (Guppy.elf looped 645991 idents, N000..N3de+, never reaching X). Report absent for
+     * never-created PLC<hex>N<hex> names so the enumeration ends (the same bounded-scan
+     * semantics as HwsM). A genuinely Q_create'd PLC queue is still found by q_find_slot,
+     * which runs before this check, so this only suppresses the unbacked probe names. */
+    if(base[0]=='P'&&base[1]=='L'&&base[2]=='C'){
+        const char*p=base+3; const char*d=p;
+        while(*p&&hr_ishex(*p)) p++;
+        if(p>d && *p=='N'){ const char*e=++p;
+            while(*p&&hr_ishex(*p)) p++;
+            if(p>e && *p==0) return 1;
+        }
+    }
     return 0;
 }
 static uint32_t q_ident(const char*nm){

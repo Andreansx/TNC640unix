@@ -283,6 +283,38 @@
 > up the real PLC peer (plc.elf) so the queue set is bounded → Guppy proceeds toward its GTK fullscreen window =
 > the actual main MMI on the Mac. Findings: `scratchpad/guppy_is_the_main_mmi.md`. Run: `emulator/run_2proc_guppy.sh`.
 
+> ## ★★★★★ FEX-NATIVE FRONTIER (2026-06-25, cont.) — the `PLC*N*` unbounded loop SOLVED; Guppy ADVANCES to X + GuppyRuntime; new gate = the GuppyRuntime boot-script + the operational-peer handshake
+> The unbounded `Q_ident "PLC<taskid>N<seq>"` enumeration above is **FIXED** — a clean emulator-correctness fix,
+> NOT a hack (no env gate, same class as the existing `QueueHeLogger`/`HwsM*` probe handling). `q_is_probe_name`
+> (`emulator/heros_rtos.c`) now also reports **not-found for never-`Q_create`'d `PLC<hex>N<hex>` names**:
+> libPlcCtrl's PLC-client init (`GdPlcCtrlPlcSrv*`/`PLCSRV_HANDLE`) enumerates the PLC server's per-client notify
+> queues by scanning the sequence until `Q_ident` reports "not found"; with `plc.elf` absent NONE exist, and the
+> emulator's auto-create-on-`Q_ident` returned a fresh valid queue for every name → the scan never terminated. A
+> genuinely `Q_create`'d PLC queue is still found by `q_find_slot` (which runs BEFORE the probe check), so this only
+> suppresses the unbacked probe names. **VERIFIED (`run_2proc_guppy.sh`):** the loop drops from **645,991 idents →
+> 3** (`PLC00000106N000/N001/N002 → 0x0`), the MMI log shrinks **167 MB → 45 KB** (562 lines), no new unbounded
+> loop, HwsM still bounded. Guppy.elf then ADVANCES FEX-native from "stuck in the loop, X11 connect=0, blank":
+> it subscribes to **QEvtServer** (618B → 0x307), probes its operational peers **Q_PLC_FRONTSTAGE / QProMRequest /
+> AppStartMaster**, **CONNECTS TO X** (`connect(AF_UNIX "/tmp/.X11-unix/X99")=0`, 59 writev = initial X handshake),
+> brings up its **GuppyRuntime (Python 2.7 GTK) layer** (`PYTHON` banner, `GuppyRuntimeGtk`), then blocks cleanly —
+> **no crash** (sig6/11 = 0; the SIGBUS `BUS_ADRALN` flood is FEX's HANDLED unaligned-atomic emulation, not a
+> fault), /etc GUARD OK, screenshot still blank (no GTK window yet). ★ NEW GATE (precisely pinned) — TWO parallel
+> gates, same family as HrMmi's first-frame gate:
+> (1) **GuppyRuntime needs its boot SCRIPT.** Guppy.elf is a script-driven runtime (strings `GuppyRuntimeGtk`,
+>     `no script name given`, `terminate: reinterpret/exit/leaving script`, `GuppyRuntime::ReStartNcProgram`); it
+>     received a runtime command (Q_read 0x318, 611B, notify→task 0x107) with **no script name** → it logs
+>     **`PYTHON … terminate: no script`**. The main TNC-screen MMI logic is the GuppyRuntime/Python script that
+>     drives `WndFullScreen::Create()`; it must be provided/loaded (RE the script-load command on 0x318 / the
+>     script path).
+> (2) **Operational-peer/event handshake.** Guppy then blocks at `Ev_receive(0x03011000, forever)` waiting on its
+>     peers (Q_PLC_FRONTSTAGE/AppStartMaster/QProMRequest — exactly HrMmi's `0x03011001` peer gate), which don't
+>     run in the 2-proc setup.
+> NEXT: RE what `GuppyRuntime`'s `no script name given` parses (where the boot-script name/path comes from — a
+> config field, a command on 0x318, or a staged script) and/or satisfy the peer handshake (INJECT-style peer
+> replies, or bring up the minimal real peers) → drive Guppy to `WndFullScreen::Create` → the GTK fullscreen
+> window = the actual main MMI on the Mac (then surface via XQuartz). Findings: `scratchpad/guppy_is_the_main_mmi.md`.
+> Run: `emulator/run_2proc_guppy.sh` (DUMPQ=1 hex-dumps the 0x318 payloads).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
