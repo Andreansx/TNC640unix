@@ -480,6 +480,19 @@ static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
     fprintf(stderr,"   %s[0x%x]:",tag,id);
     for(uint32_t k=0;k<n;k++) fprintf(stderr,"%02x",((const uint8_t*)p)[k]); fprintf(stderr,"\n");
 }
+/* CAPTURE_MSG: dump the FULL bytes of the first message whose (header & 0x7fffffff) matches
+ * HEROSCALL_CAPTURE_TYPE (hex) to /tmp/cap_<type>.bin — used to extract the real CfgActiveHandwheel
+ * sub-message embedded in the 2711B HrMmiCfgGlobal (0x290081). Gated; one capture per type. */
+static uint32_t capture_type=0; static int capture_done=0; static int capture_init=0;
+static void capture_msg(const void*p,uint32_t n){
+    if(!capture_init){ capture_init=1; const char*e=getenv("HEROSCALL_CAPTURE_TYPE"); capture_type=e?(uint32_t)strtoul(e,0,16):0; }
+    if(!capture_type||capture_done||!p||n<4) return;
+    uint32_t h=*(const uint32_t*)p & 0x7fffffff;
+    if(h!=capture_type) return;
+    char path[64]; snprintf(path,sizeof path,"/tmp/cap_%x.bin",capture_type);
+    FILE*f=fopen(path,"wb"); if(f){ fwrite(p,1,n,f); fclose(f); capture_done=1;
+        fprintf(stderr,"[rtos] CAPTURE_MSG: wrote %u bytes of type 0x%x to %s\n",n,capture_type,path); }
+}
 
 /* raise SIGUSR1 (and optionally 18) on the task's OS thread to invoke its ASR */
 static void as_kick(int32_t tgid,int32_t tid,uint32_t trig){
@@ -712,6 +725,7 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     q->msg[slot].hdr[2]=(mode&0xffff)|((size&0xffff)<<16);/* mode | size    (kernel node +0x28) */
     if(msg&&size) memcpy(q->msg[slot].data,msg,size);
     qhex("Q_send",id,msg,size);
+    capture_msg(msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
     uint32_t owner=q->owner, nbits=q->notify_bits;
     /* (the AppStartMP notify-bit-match heuristic was reverted: it didn't crack the logo handshake
@@ -1291,6 +1305,7 @@ static int n_evterr_replied=0;
  * FIX (HEROSCALL_EVTERR_DEFER, default ON): DEFER posting the EvtAns until HrMmi has READ the HrMmiCfgGlobal
  * (released in q_read) so the order is target-set THEN counter-drain -> Activate -> UpdateDisplay -> window. */
 static int evterr_defer=-1; static uint32_t deferred_evterr_rqid=0;
+static void inject_active_handwheel(uint32_t rqid);   /* render trigger, defined just below */
 static void post_evt_ans_error(uint32_t rqid){
     if(n_evterr_replied>=8) return;                                  /* result=1 ends the poll; cap runaway */
     int rs=q_slot(rqid);
@@ -1308,6 +1323,48 @@ static void post_evt_ans_error(uint32_t rqid){
     n_evterr_replied++;
     LOG("INJECT_EVT_ERR: posted EvtAnsErrorRequest(result=1) to \"%s\" (0x%x), %u bytes (#%d)\n",
         rs>=0?C->queues[rs].name:"?",rqid,p,n_evterr_replied);
+    inject_active_handwheel(rqid);                                  /* render-trigger: standalone CfgActiveHandwheel AFTER the drainer */
+}
+
+/* INJECT_ACTIVE_HW (HEROSCALL_INJECT_ACTIVE_HW, default OFF; ON in run_2proc_hrmmi.sh): the render trigger.
+ * Called from post_evt_ans_error AFTER the EvtAns (the last counter-drainer) is posted — FIFO order means
+ * HrMmi reads the EvtAns first (counter -> 0, Move fires but target still 0 = no advance), THEN this
+ * standalone CfgActiveHandwheel (type 0x660801). HrModule::DispatchMessage@0x3d060 routes 0x660801 ->
+ * OnCfgActiveHandwheel@0x37580: if GMessage::IsValid(msg,0) it sets the active-state TARGET (HrModule+57)
+ * to 1 (or 2 if HandwheelUsesHrMmi) and calls MoveActiveStateTowardsTarget itself. With the counter now 0,
+ * Move advances current 0 -> target -> WakeUp/Activate -> HRDATAIF::UpdateDisplay = the FIRST WINDOW. This
+ * BYPASSES the incomplete HrMmiCfgGlobal (whose OnHrMmiCfgGlobal bails on a missing/invalid config
+ * sub-message BEFORE its own target write at 0x3711d). IsValid(msg,0) = body!=null &&
+ * GMsgEntityBody::IsValid(body,false) (a shallow structural check), so an all-default deserialized body
+ * passes; body+72 (GMsgArray<HR_TYPE>) defaults to an empty array -> OnCfgActiveHandwheel's copy-ctor is safe.
+ * Wire: HEROSCALL_ACTIVE_HW_FILE=<path> replays exact captured bytes (the CfgActiveHandwheel embedded in the
+ * 2711B HrMmiCfgGlobal, extracted offline); else synthesize from the schema @libGMessageConfig 0x2a9d48. */
+static int inject_active_hw=-1; static int active_hw_done=0;
+static void inject_active_handwheel(uint32_t rqid){
+    if(inject_active_hw<0){ const char*e=getenv("HEROSCALL_INJECT_ACTIVE_HW"); inject_active_hw=e&&e[0]=='1'; }
+    if(!inject_active_hw||active_hw_done) return;
+    unsigned char buf[1024]; uint32_t p=0;
+    const char*ff=getenv("HEROSCALL_ACTIVE_HW_FILE");
+    if(ff&&ff[0]){ FILE*f=fopen(ff,"rb"); if(f){ p=(uint32_t)fread(buf,1,sizeof buf,f); fclose(f);
+        LOG("INJECT_ACTIVE_HW: loaded %u wire bytes from %s\n",p,ff); } }
+    if(p==0){
+        /* synthesize all-default: header + schema attributes (scalar -> absent [0x80000000|code];
+         * list/array (66008b/18c/a5) -> present-empty [code][count=0], since an absent top-bit on a
+         * list position confuses the deserializer). Codes from the 0x2a9d48 schema, in order. */
+        static const uint32_t codes[]={0xe7,0xe7,0x63,0x63,0x66008b,0x66008b,0x1ad,0xe7,0x1ad,
+                                       0x66008b,0x1ad,0x84,0x63,0x63,0x63,0x63,0x18c,0xa5,0x18c,0xa5};
+        put32(buf+p,0x00660801u); p+=4;
+        for(unsigned i=0;i<sizeof codes/sizeof codes[0];i++){
+            uint32_t c=codes[i];
+            if(c==0x66008b||c==0x18c||c==0xa5){ put32(buf+p,c); p+=4; put32(buf+p,0); p+=4; }
+            else { put32(buf+p,0x80000000u|c); p+=4; }
+        }
+    }
+    q_send(rqid,buf,p,0);
+    active_hw_done=1;
+    int rs=q_slot(rqid);
+    LOG("INJECT_ACTIVE_HW: posted CfgActiveHandwheel(0x660801) to \"%s\" (0x%x), %u bytes\n",
+        rs>=0?C->queues[rs].name:"?",rqid,p);
 }
 static void inject_evt_error_reply(uint32_t target_qid,const void*msg,uint32_t size){
     if(!inject_peer_ack||!msg||size<4) return;                       /* gated with PEER_ACK (the render set) */

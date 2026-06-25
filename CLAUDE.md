@@ -212,6 +212,44 @@
 > Run: `emulator/run_2proc_hrmmi.sh` (DUMPQ=1 wire bytes; EVTERR_DEFER=0 / CM_GRANT=0 for A/B).
 > Findings: `scratchpad/hrmmi_first_window_findings.md`.
 
+> ## ★★★★ FEX-NATIVE FRONTIER (2026-06-25, cont.) — CfgActiveHandwheel INJECTED + render REFRAMED: the active-state TARGET is NECESSARY-BUT-INSUFFICIENT; the first frame needs the HRDATAIF display-state from a COMPLETE config
+> Both `/goal` tasks were implemented; the verified result **REFUTES** the roadmap hypothesis that "a standalone
+> valid CfgActiveHandwheel → OnCfgActiveHandwheel sets the target and fires the render itself." The render also
+> needs HRDATAIF display state (channels/axes/display-mode) — the handwheel/active-state target alone is not enough.
+> **TASK 2 — INJECT_ACTIVE_HW (new, `emulator/heros_rtos.c`, env `HEROSCALL_INJECT_ACTIVE_HW`, default OFF, ON via
+> `run_2proc_hrmmi.sh` knob INJECT_ACTIVE_HW=1):** captures the REAL CfgActiveHandwheel and injects it standalone.
+> `capture_msg` (env `HEROSCALL_CAPTURE_TYPE=290081`) dumped the full 2711B HrMmiCfgGlobal → the embedded
+> CfgActiveHandwheel is at **byte 43 (type-id 0x660801), len 140** (bounded by the next sub-msg 0x6607c1 at byte 183);
+> extracted to `scratchpad/cfgactivehandwheel.bin` (replayed via `ACTIVE_HW_FILE`). `inject_active_handwheel` posts it
+> to QueueHrMmi (0x30e) right after `post_evt_ans_error` (FIFO: EvtAns drains the counter first, then the handwheel).
+> **VERIFIED:** delivered + READ (`Q_read 0x30e size 140`) + DISPATCHED to `OnCfgActiveHandwheel@0x37580`, crash-free.
+> But the **demo prog-station CfgActiveHandwheel is MINIMAL → fails `GMessage::IsValid(msg,0)`** (= `body!=null &&
+> GMsgEntityBody::IsValid(body,false)@libgmsglib 0x39fd0`, which requires EACH attribute to validate; the served
+> handwheel has mostly-absent fields) → OnCfgActiveHandwheel takes the **FAILURE branch**: `announce_event` (the 554B
+> EvtSendEvent → QEvtServer, observable right after the 140B read) + **target=0** (no render). The 2711B HrMmiCfgGlobal
+> itself is minimal (only ~6 config-family type-ids present: 0x660801/0x6607c1/0x6600ab/0x2a00c1/0x2a0101/0x2a01e0).
+> **TASK 1 — make ConfigServer serve it complete (the true gate), isolated by binary forcing** (HeLogging tracing is
+> a dead end: `emulator/logspy.c` interposes `HeLogging::SendData2Logger` but most HrModule LOGSEND are severity-
+> dropped before it AND its non-chaining no-op SIGSEGVs HrMmi before config — left in-tree with that caveat, do NOT
+> enable in a run that must reach config). `emulator/hwforce.c` (gated `HWFORCE=1`) now applies 3 patches:
+> (1) `HandwheelUsesHrMmi@0x298f0`→ret 1; (2) **`FORCE_AHW_VALID`** — OnCfgActiveHandwheel IsValid-branch (0x375b3
+> jnz) → `jmp 0x37782` = `mov [this+0xE4],2 (target=2); jmp Move`, skipping IsValid + the throwing
+> `HrMailer::Configure@0x376dc` + the GMsgArray<HR_TYPE> copy from body+72; (3) **`FORCE_MOVE`** — NOP the 4
+> `MoveActiveStateTowardsTarget` request-counter checks (`mov reg,[eax+0xEC]; test; jnz loc_3443F` @ 0x33a82/0x33f9a/
+> 0x3440d/0x3447e) so Move advances regardless of the +59 counter.
+> **★ RESULT (DEFINITIVE): even with target=2 forced + the counter bypassed + Move called, there is NO Activate** —
+> NO `WritePlc` (the Q_send `Activate@0x2cb00` does: `WritePlc` + `HRDATAIF::SetActive(true)`→`UpdateDisplay`), NO
+> `writev` to X, Xvfb screenshot still 1 colour. ⇒ the active-state machine does NOT drive the render in the 2-proc
+> setup; the render (`HRDATAIF::UpdateDisplay` → window) needs the HRDATAIF DISPLAY STATE that a COMPLETE
+> `OnHrMmiCfgGlobal` populates from a COMPLETE HrMmiCfgGlobal config. ⇒ **RENDER GATE (re-pinned): config-DATA-
+> completeness of the FULL HrMmiCfgGlobal** — ConfigServer must serve a complete HrMmiCfgGlobal (all sub-messages
+> valid) so OnHrMmiCfgGlobal fully populates HRDATAIF AND sets the target → the natural counter-drain fires Move →
+> Activate/WakeUp → UpdateDisplay → window. Same family as config #6 / the documented live-DATA frontier, now proven
+> to gate the FIRST FRAME (not just the constellation peers). NEXT: stage/augment a complete machine config so the
+> served HrMmiCfgGlobal is complete, OR RE how the full constellation's ConfigServer assembles it. Run:
+> `HWFORCE=1 FORCE_MOVE=1 INJECT_ACTIVE_HW=1 ACTIVE_HW_FILE=/tmp/cfgactivehandwheel.bin bash emulator/run_2proc_hrmmi.sh`.
+> (Clean default `run_2proc_hrmmi.sh` = the known-good baseline: config served, peer handshake, X connect, GUARD OK.)
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

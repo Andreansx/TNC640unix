@@ -18,12 +18,13 @@ CFGPRE="/lib/noopfree.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so
 # HrMmi also over-frees a corrupted-header chunk under FEX (same class as ConfigServer) while processing
 # the relayed config -> guardfree skips the bad free so HrMmi survives + advances past Ev_receive(0x03011001).
 # HWFORCE=1 prepends hwforce.so (patches HandwheelUsesHrMmi->return 1 => active-state target=2) — a render diagnostic
-MMIPRE="${HWFORCE:+/lib/hwforce.so:}${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
+# LOGSPY=1 prepends logspy.so (interposes HeLogging::SendData2Logger -> HrMmi's internal log to stderr) — a render diagnostic
+MMIPRE="${LOGSPY:+/lib/logspy.so:}${HWFORCE:+/lib/hwforce.so:}${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 
 echo "=== build preloads ==="
 $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $REPO/emulator/cfgfix.c -ldl || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/arena.map -o $R/lib/arena_stub.so $REPO/emulator/arena_stub.c || exit 1
-for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree hwforce; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
+for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree hwforce logspy; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
 
 # writable SYS mirror with resources (PLIB++ keymap) so HrMmi GUI init can load them after config
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW"
@@ -55,7 +56,8 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 HEROSCALL_TIMERS=1 \
   HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_EVT_ACK="${EVT_ACK:-1}" HEROSCALL_INJECT_PEER_ACK="${PEER_ACK:-1}" HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
   HEROS_CFG_REPLY_ROUTE="${CFG_REPLY_ROUTE:-1}" \
-  HEROS_EVT_RELAY="${RELAY-}" HEROSCALL_DUMPQ="${DUMPQ:-0}" DISP="$DISP" CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" \
+  HEROS_EVT_RELAY="${RELAY-}" HEROSCALL_DUMPQ="${DUMPQ:-0}" LOGSPY="${LOGSPY:-0}" LOGSPY_RAW="${LOGSPY_RAW:-0}" HEROSCALL_CAPTURE_TYPE="${CAPTURE_TYPE:-}" FORCE_AHW_VALID="${FORCE_AHW_VALID:-1}" FORCE_MOVE="${FORCE_MOVE:-1}" \
+  HEROSCALL_INJECT_ACTIVE_HW="${INJECT_ACTIVE_HW:-0}" HEROSCALL_ACTIVE_HW_FILE="${ACTIVE_HW_FILE:-}" DISP="$DISP" CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" \
   LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
@@ -76,7 +78,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     echo "### HrMmi.elf (fg, -k=NC, DISPLAY=$DISP) ###"
     ( sleep 150; rm -f /tmp/c2_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/c2_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/c2_screen.xwd 2>/dev/null)" ) &
     timeout -s KILL "${MMI_TIMEOUT:-180}" /usr/bin/strace -f -qq -e trace=openat,connect -o /tmp/c2_strace.log \
-      env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="$MMIPRE" \
+      env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" LOGSPY="$LOGSPY" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/HrMmi.elf" -p=~/hrmmi hrmmi -k=NC > /tmp/c2_mmi.log 2>&1 || true
     echo "### HrMmi done ###"
     pkill -KILL -x strace 2>/dev/null; kill $CFGPID 2>/dev/null
