@@ -800,9 +800,13 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
      * seq at msg+4, then BLOCK reading that reply queue (WMQ<task>) for winmgr's reply. With no winmgr (or
      * winmgr stuck in its own logo-render handshake) the reply never comes and skmgr never reaches its
      * softkey serve loop, so a client's SkMgrLogin on Q_SkMgr is never processed. winmgr's
-     * HandleMessage@winmgr.elf 0x29f00 answers 0x3037 with a 208-byte type-0x3037 screen-list reply
-     * (seq echoed @off4; the empty-screen branch is valid). Synthesize+post that reply to the embedded
-     * reply-q so the client's WM bring-up advances — same INJECT_ACK class as Cfg/Evt/Peer. */
+     * HandleMessage@winmgr.elf 0x29f00 answers 0x3037 with a 208-byte type-0x3037 screen-list reply.
+     * FAITHFUL LAYOUT (RE'd from the decompile, the empty-screen else-branch @0x29f00:1159-1168; dest base
+     * ebp-0x434): *(u32*)dest=12343(0x3037)@off0; v273=a1[1](=request seq@off4) written @REPLY off8 (NOT off4!);
+     * v274/v275@off12/16=0 (screenNum/screenId); v276@off20=0 (name); v283@off68=0 (name2); v285@off196=0
+     * (flag); v287(_BOOL4 is-last)@off204=TRUE. The client's WaitForExpectedMessage correlates on the seq at
+     * REPLY off8 — the prior version wrote it at off4 (seq mismatch → discarded → skmgr spun) and never set
+     * the is-last @off204. Reproduce winmgr's bytes exactly. Same INJECT_ACK class as Cfg/Evt/Peer. */
     { static int inject_wmgr_ack=-1;
       if(inject_wmgr_ack<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_ACK"); inject_wmgr_ack=e&&e[0]=='1'; }
       if(inject_wmgr_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
@@ -811,10 +815,11 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
           uint32_t rq =*(const uint32_t*)((const char*)msg+24);
           if(rq && q_slot(rq)>=0){
               unsigned char rep[208]; memset(rep,0,sizeof rep);
-              put32(rep+0,0x3037u);   /* reply type = GetScreens reply */
-              put32(rep+4,seq);       /* echo the request seq so the client's wait matches */
-              /* empty-screen-list reply (winmgr's else-branch): screen fields zeroed */
-              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u, 208B) to WM reply-q 0x%x\n",seq,rq);
+              put32(rep+0,0x3037u);   /* dest off0:  reply type 12343 = GetScreens reply */
+              put32(rep+8,seq);       /* dest off8:  v273 = request seq (winmgr writes a1[1] HERE, not off4) */
+              /* off12 v274 / off16 v275 / off20 v276 / off68 v283 / off196 v285 = 0 (empty-screen branch) */
+              put32(rep+204,1u);      /* dest off204: v287 _BOOL4 is-last = TRUE (empty-screen else-branch) */
+              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u@off8, is-last@off204, 208B) to WM reply-q 0x%x\n",seq,rq);
               q_send(rq,rep,sizeof rep,0);
           }
       }
@@ -958,7 +963,26 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
         /* empty/timeout => "no message". errno MUST NOT be ENOMEM here, or the libheros q_read
          * wrapper would misread this negative return as "too big" and the caller would grow+spin
          * on an empty queue. EAGAIN (!=12, !=4) makes the wrapper return 0 = clean "no message". */
-        if(timeout==0){ errno=EAGAIN; return -0x35; }     /* empty, no-wait */
+        if(timeout==0){
+            /* DIAG: reveal the non-blocking poll set (which empty queues a busy-spinning client polls).
+             * HEROSCALL_EMPTYPOLL_DIAG=1 -> log a per-queue running count every 100000 empties. */
+            static int diag=-1; if(diag<0){ const char*e=getenv("HEROSCALL_EMPTYPOLL_DIAG"); diag=e&&e[0]=='1'; }
+            if(diag){ static unsigned long ec[1024]; static unsigned long tot;
+                if(s>=0&&s<1024) ec[s]++; if((++tot%2000UL)==0){
+                    LOG("EMPTYPOLL_DIAG: %lu empty no-wait reads; per-queue:",tot);
+                    for(int i=0;i<1024;i++) if(ec[i]) fprintf(stderr," 0x%x(\"%s\")=%lu",C->queues[i].id,C->queues[i].name,ec[i]);
+                    fprintf(stderr,"\n"); }
+            }
+            /* EMPTYPOLL_YIELD: a WM client (skmgr) whose window-manager peer is absent busy-spins a
+             * non-blocking Q_read on its (empty) WM event queue, pegging a core and STARVING the
+             * co-resident Guppy FEX process so Guppy never reaches its SkMgrLogin send. Throttle the
+             * empty no-wait read with a short usleep so the OS scheduler gives Guppy CPU. Faithful: a
+             * genuinely-empty non-blocking poll returns "no message" either way; only the spin rate
+             * changes (the real system never spins this tight because winmgr feeds events). */
+            static int yld=-1; if(yld<0){ const char*e=getenv("HEROSCALL_EMPTYPOLL_YIELD"); yld=e?atoi(e):0; }
+            if(yld>0) usleep((useconds_t)yld);
+            errno=EAGAIN; return -0x35;
+        }     /* empty, no-wait */
         struct timespec ts,*tp=0;
         if(timeout!=0xffffffff){ ts.tv_sec=timeout/1000; ts.tv_nsec=(timeout%1000)*1000000L; tp=&ts; }
         futex(&q->tail,FUTEX_WAIT,t,tp);
