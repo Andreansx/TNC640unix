@@ -532,6 +532,36 @@
 > `WmRootWindow::Create` returns 0 + the sub-thread crash) so it stays up + serves skmgr's Q_WMGR in a 4-proc run
 > → skmgr's PLib gets the VSoftKeyArea window → draws the loaded .bmx → the bar renders. Run:
 > `scratchpad/run_wmdiag.sh` (winmgr-only diag); `WINMGR=1 … bash emulator/run_3proc_skmgr_guppy.sh` (4-proc).
+> ★★ 4-PROC INTEGRATION (8 runs) — winmgr STAYS UP + creates its windows, but the bar still does NOT draw; the
+> gate is an INJECT-vs-winmgr CHICKEN-AND-EGG + winmgr's render-thread busy-spin (committed d1a76df). Findings:
+> (1) **INJECT_WMGR_ACK=1 + winmgr:** winmgr stays up (crash=0), creates **5 XCreateWindow + MapWindow**
+> (FullArea/ClientArea/VSoftKeyArea/OpModeArea/ClockArea — the bottom softkey strip goes 1->**2 colours**, the
+> VSoftKeyArea window is present), skmgr serves **1385** softkey reads — BUT INJECT answers skmgr's Q_WMGR with a
+> SYNTHETIC reply (NO real VSoftKeyArea window id), and winmgr ALSO answers -> a `WmRecvReplyEx` serial-gap (821)
+> duplicate-reply conflict; skmgr never learns the real softkey-area window -> **PutImage=0, no bar**.
+> (2) **INJECT_WMGR_ACK=0:** skmgr/Guppy block waiting for the REAL winmgr's Q_WMGR replies, but winmgr serves
+> only ~4 reads + creates 0 windows in that config -> the whole constellation barely starts (skmgr 228 / Guppy
+> 261 lines, screen blank). Root of the spin: winmgr's render thread does `Ev_receive(0x00011004, forever)` and
+> unlimited `SYSEVENT_AUTOFIRE` re-fires the 0x00010000 render bit every iteration -> **800K-1M-fire busy-spin**
+> that starves the Q_WMGR serve thread. **`HEROSCALL_SYSEVENT_FIRE_LIMIT` (new per-task cap, d1a76df)** kills the
+> spin (1M->8K fires) BUT then the render thread blocks -> winmgr still creates 0 windows + serves only 4 (the
+> render handshake must complete for `WmModule::Initialize` to run on the sibling thread). ⇒ **PRECISE GATE:
+> winmgr's render-thread GUI handshake** (the `0x00011004`/`0x00010000` render-sysevent wait, the SAME class as
+> the AppStartMP logo `0x1000` ping-pong) must complete FAITHFULLY (not via blind autofire) so the main thread
+> reaches `WmModule::Initialize` AND winmgr serves skmgr the REAL VSoftKeyArea — with INJECT_WMGR_ACK OFF (no
+> duplicate-reply conflict). The faithful fix is the **/dev/events event->fd bridge for winmgr's render thread**
+> (fire the render sysevent on a REAL X event, not always — exactly the AppStartMP logo fix bf0b579), NOT
+> autofire. Then skmgr's PLib `PSoftkeyControl::BuildSoftkeyBar` (gated on `PWindow::IsValidWindow`) gets a valid
+> softkey-area window -> draws the 19 loaded .bmx -> the bar renders. Run: `WINMGR=1 INJECT_WMGR_ACK=0 SYSFIRE=1
+> WM_FIRE_LIMIT=<n> bash emulator/run_3proc_skmgr_guppy.sh`.
+> ★ ARCHITECTURE PROVEN (Model A — skmgr is the SOLE bar drawer): `libSkMgrCtrl.so` (Guppy's client) has **0
+> X11/GTK/draw imports** — it only forwards metadata (SkMgrSetMenu/ShowMenu/Activate/ImageStrip/CreateImageList/
+> InfoRequest). **skmgr** does the drawing (`SkMgrResource::LoadImage`->`PBmxImage`/`PBitmap`, links libplibpp/
+> libgui; opens all 19 `.bmx` in sk_strace). `PSoftkeyControl::BuildSoftkeyBar@libplibpp 0x2e7bf0` is gated on
+> `PWindow::IsValidWindow(this)` -> no valid softkey-area window => the whole bar build (per-button
+> `BuildSoftkeyWidget`) is skipped. `PFrame::GetSoftkeyRootId@libgui 0xd940` is a base stub returning 0 (no
+> override). ⇒ Guppy will NEVER open the .bmx; the DONE-condition's `g_strace .bmx` check is a process-assumption
+> error (the bitmaps load in skmgr's strace, where .bmx=19).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
