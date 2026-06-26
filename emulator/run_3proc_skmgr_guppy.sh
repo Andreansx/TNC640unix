@@ -133,7 +133,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     echo "### Guppy ($GUPPY_BIN $GUPPY_ARGS, DISPLAY=$GDISP) ###"
     [ "$USE_XVFB" = "1" ] && ( sleep "${SHOT_AT:-150}"; rm -f /tmp/g_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/g_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/g_screen.xwd 2>/dev/null)" ) &
     timeout -s KILL "${MMI_TIMEOUT:-200}" /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/g_strace.log \
-      env DISPLAY="$GDISP" HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" HWVIEWER_GEOMETRY="$HWVIEWER_GEOMETRY" LD_PRELOAD="$MMIPRE" \
+      env DISPLAY="$GDISP" HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" HWVIEWER_GEOMETRY="$HWVIEWER_GEOMETRY" HEROSCALL_WMQ_BREAK="${WMQ_BREAK:-0}" HEROSCALL_WMQ_BREAK_N="${WMQ_BREAK_N:-2000}" HEROSCALL_EMPTYPOLL_YIELD="${EMPTYPOLL_YIELD:-0}" HEROSCALL_WMGR_ROOT="${WMGR_ROOT:-0}" LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/$GUPPY_BIN" -p=~/Guppy Guppy $GUPPY_ARGS > /tmp/g_mmi.log 2>&1 || true
     echo "### Guppy done ###"
     pkill -KILL -x strace 2>/dev/null; kill $CFGPID $SKPID ${WMPID:-} 2>/dev/null

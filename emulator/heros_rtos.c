@@ -897,6 +897,30 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
      * the is-last @off204. Reproduce winmgr's bytes exactly. Same INJECT_ACK class as Cfg/Evt/Peer. */
     { static int inject_wmgr_ack=-1;
       if(inject_wmgr_ack<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_ACK"); inject_wmgr_ack=e&&e[0]=='1'; }
+      /* 0x3001 = WM CONNECT/RegisterClient (GuppyRuntimeGtk's WM-init, taken on the FAITHFUL gdk-internal
+       * path that DISPLAY=:0.0 enables; the gate-forced gdk-external path skips it). winmgr HandleMessage@
+       * 0x29f00 case 0x3001 builds a 16-byte reply: *(dest+0)=12289(0x3001); v273=a1[1](req seq)@dest+8;
+       * v274=GetRootWindow(a1[4])@dest+12; v272=0@dest+4 — then SendReply(client,dest,16) / WmSendEvent(a1[5],
+       * dest,16). The WM msgs are RAW dword structs (a1[i]=*(u32*)(msg+4i)); the reply target is a1[5]=msg+20
+       * (the client's reply queue, Guppy's 0x31d). Without this, Guppy blocks reading 0x31d for the connect
+       * reply BEFORE it creates its window / reaches softkey.Register, so the bar never renders even though the
+       * softkey CONTENT routes fine (1904110). RootWindow defaults 0 (env HEROSCALL_WMGR_ROOT overrides w/ the
+       * real Xvfb root id if Guppy validates/reparents). Same INJECT_ACK class as 0x3037 below. */
+      if(inject_wmgr_ack && msg && size>=24 && !strcmp(C->queues[s].name,"Q_WMGR")
+         && *(const uint32_t*)msg==0x3001u){
+          uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t rq =*(const uint32_t*)((const char*)msg+20);   /* a1[5] = reply queue (Guppy 0x31d) */
+          if(rq && q_slot(rq)>=0){
+              static uint32_t wroot=0xffffffffu;
+              if(wroot==0xffffffffu){ const char*e=getenv("HEROSCALL_WMGR_ROOT"); wroot=e?(uint32_t)strtoul(e,0,0):0u; }
+              unsigned char rep[16]; memset(rep,0,sizeof rep);
+              put32(rep+0,0x3001u);   /* reply type 12289 = WM connect reply */
+              put32(rep+8,seq);       /* v273 = request seq @off8 */
+              put32(rep+12,wroot);    /* v274 = RootWindow @off12 */
+              LOG("INJECT_WMGR_ACK: posting 0x3001 connect-reply (seq %u@off8, root 0x%x, 16B) to WM reply-q 0x%x\n",seq,wroot,rq);
+              q_send(rq,rep,sizeof rep,0);
+          }
+      }
       if(inject_wmgr_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
          && *(const uint32_t*)msg==0x3037u){
           uint32_t seq=*(const uint32_t*)((const char*)msg+4);
