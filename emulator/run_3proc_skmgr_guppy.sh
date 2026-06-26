@@ -136,7 +136,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
 
     echo "### skmgr (bg, -p=~/skmgr skmgr $SK_ARGS) ###"
     ( env HEROSCALL_VERBOSE="${SK_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_EMPTYPOLL_DIAG="${EMPTYPOLL_DIAG:-0}" HEROSCALL_EMPTYPOLL_YIELD="${EMPTYPOLL_YIELD:-0}" HEROSCALL_WMGR_SCREEN="${WMGR_SCREEN:-0}" HEROSCALL_WMQ_BREAK="${WMQ_BREAK:-0}" HEROSCALL_WMQ_BREAK_N="${WMQ_BREAK_N:-2000}" HEROSCALL_SELECT_CAP_MS="${SELECT_CAP_MS:-0}" HEROSCALL_PPOLL_DBG="${PPOLL_DBG:-0}" HEROSCALL_SYSEVENT_AUTOFIRE="${SK_SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${SK_SYSFIRE_MASK:-00010000}" HEROSCALL_EV_TIMEOUT_CAP_MS="${SK_EVCAP:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
-        LD_PRELOAD="$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/sk_strace.log \
+        LD_PRELOAD="$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/sk_strace.log \
         FEXInterpreter "$R/heros5/bin/skmgr.elf" -p=~/skmgr skmgr $SK_ARGS > /tmp/sk.log 2>&1 ) &
     SKPID=$!
     i=0; while [ $i -lt 120 ]; do

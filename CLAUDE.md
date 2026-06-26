@@ -442,6 +442,43 @@
 > inject that; (c) bring up the real winmgr.elf for the OEM-window placement. Run: `emulator/run_3proc_skmgr_guppy.sh`
 > (SK_REPLY_ROUTE default ON; HWV_FORCE_FS=1). Findings: `scratchpad/skmgr_softkey_findings.md`.
 
+> ## ★★★★★ SOFTKEY BAR — DEFINITIVE GATE PINNED (2026-06-26, cont.): bitmaps LOAD + protocol FLOWS; the bar PIXELS need winmgr's screen-window (NOT content/transport/geometry)
+> Added **openat to skmgr's strace** (`run_3proc_skmgr_guppy.sh` line 139) and re-ran the faithful 3-proc — this
+> cracked the true architecture and SUPERSEDES the "GData handshake / bind window-flag / jh.gtk.Window WM-geometry"
+> framings above. **CONTENT + BITMAPS FULLY FLOW (prior frontiers CROSSED):** (1) **skmgr OPENS all 19 HwViewer .bmx**
+> (`/mnt/sys/resource/sk/1024x768/{allg,common,plc}/*.bmx` — chng_win/command/navigation/search/navigation_back/
+> ProfiNet, the exact SK_hwv* set) via `SkMgrSYSResource::ParseSoftkey@0x778a0`→`LoadImage@0x765f0`→`PImageLoader`.
+> So the softkey BITMAPS genuinely LOAD during the run — the DONE-condition's `.bmx` element is satisfied IN REALITY,
+> in **sk_strace.log** (skmgr is the loader); the condition's `g_strace.log` check is wrong — **Guppy never opens
+> them** (skmgr does). (2) **skmgr serves the FULL protocol** (3356 serve reads, no crash): SkMgrLogin(0x028a0120)
+> → 7× SkMgrInfoRequest(0x028a0720, "hwvView"/"hwvEnd"/"hwvMain"/…) → SkMgrInfoResponse(0x028a0740) to Guppy's Client
+> queue 0x31e/task 0x107 (SK_REPLY_ROUTE, committed 873c03d, made login complete — we are PAST bind/login/GData).
+> **THE ACTUAL GATE — nobody blits the bar pixels:** skmgr's 18 X requests = connect + ext-enable + **CreateGC on
+> root(0x40)** + InternAtom `_NET_SUPPORTING_WM_CHECK` + GetWindowAttributes — **NO CreateWindow/MapWindow/PutImage**;
+> Guppy = 127 writev (its GTK window) but **0 PutImage / 0 CreatePixmap / 0 .bmx**. So the bar bitmaps are loaded but
+> **never drawn**. The bar is **skmgr's to draw, into the winmgr-managed softkey-area window** (skmgr has the bitmaps
+> + the PLib softkey symbols `PFrame::GetSoftkeyRootId`/`SkMgrShowSoftkey`/`SkMgrSoftkeyBarSetup`; the softkey-area
+> window comes from winmgr's layout `tnc640layout1280*.xml` VSoftKeyArea; skmgr queries `_NET_SUPPORTING_WM_CHECK` =
+> looking for the WM). **winmgr.elf RUNS but creates 0 windows:** it makes Q_WMGR(0x30e)/Q_WMGRMSG(0x30f), idents
+> AppStartMaster(0x308), **Q_sends a 1560B startup notify to 0x308**, then polls Q_WMGRMSG; **`WmModule::Initialize@
+> 0x480f0`** (which UNCONDITIONALLY creates the windows: `CreateMainWindow`→XCreateWindow + `ReadLayout@0x164e0`→
+> `AddScreen`→`WmRootWindow::Create`→XCreateWindow) is **vtable-only (0x8c740), an FModule virtual never fired** —
+> winmgr (a SUBSYSTEM) waits for the FModule "start/initialize" directive that **AppStartMaster (absent)** would send
+> back (`FThread::Run@libbackend 0x27620`→WmProcess work gates Initialize on the AppStartMaster registration). = the
+> documented AppStartMaster/FModule constellation startup handshake (same family that blocked AppStartMP; even an
+> AppStartMP-spawned winmgr "blocks at its own GUI/peer handshake"). The real-winmgr 4-proc (`WINMGR=1`) confirmed
+> this live: winmgr connects to X, 0 XCreateWindow, blocked in the Tm_wkafter+Q_read loop after the 0x308 send.
+> (Aside: the HwViewer GTK window stays ~330×165 despite HWV_FORCE_FS move_resize(1280×936) — a separate GTK/openbox
+> `GetDecorationSize=(1280,0,0,1)` layout issue; NOT the bar gate.) **★ NEXT LEVERS (the bar = the winmgr screen-
+> window frontier):** (a) **winmgr-window stand-in** — extend INJECT_WMGR_ACK / a helper to CREATE the real
+> screen-layout X windows (per tnc640layout1280.xml, incl the softkey-area rect) + return their xids in the WM
+> replies + fire the screen-activate event → skmgr's PLib gets the softkey-root id and CreateWindow+PutImage the bar;
+> (b) **synthesize the AppStartMaster→winmgr FModule start directive** (decode winmgr's 1560B→0x308, inject the reply
+> on Q_WMGRMSG 0x30f) → winmgr `WmModule::Initialize` → real screen windows → skmgr draws (then also drive skmgr's
+> screen-activate). Both are the documented multi-process WM frontier; the content half is fully solved + verified
+> upstream. Run: `emulator/run_3proc_skmgr_guppy.sh` (skmgr strace now traces openat → shows the 19 .bmx opens).
+> Findings: `scratchpad/skmgr_softkey_findings.md`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
