@@ -75,7 +75,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_EVT_ACK=1 HEROSCALL_INJECT_PEER_ACK=1 HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
   HEROS_CFG_REPLY_ROUTE=1 HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_HSTRACE="${HSTRACE:-0}" DISP="$DISP" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" NO_NCK_WINMGR="${NO_NCK_WINMGR:-}" WMFORCE="${WMFORCE:-}" SKFORCE="${SKFORCE:-}" \
-  HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" \
+  HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" WINMGR="${WINMGR:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" \
   GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
@@ -95,6 +95,23 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       grep -qE "HWS stub: replied|RUNUP_COMPLETE" /tmp/g_cfg.log 2>/dev/null && { echo "  ConfigServer run-up at ${i}*0.5s"; break; }
       sleep 0.5; i=$((i+1)); done
     sleep 8
+
+    if [ "${WINMGR:-0}" = "1" ]; then
+      echo "### winmgr (bg, the window manager — owns Q_WMGR; serves skmgr+Guppy WM handshake) ###"
+      WM_LAYOUT="${WM_LAYOUT:-%SYS%/resource/tnc640layout1280.xml}"
+      WM_SIZE="${WM_SIZE:-1280x1024}"
+      ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
+          LD_PRELOAD="$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/wm_strace.log \
+          FEXInterpreter "$R/heros5/bin/winmgr.elf" -p=~/winmgr winmgr \
+          -m=5 -i=$WM_LAYOUT -o=afk -s=$WM_SIZE \
+          -k=%SYS%/resource/keymap_us101.xml -c=%SYS%/resource/charmap_us101.xml -f=%SYS%/resource/functionkeymap_us101.xml \
+          > /tmp/wm.log 2>&1 ) &
+      WMPID=$!
+      i=0; while [ $i -lt 160 ]; do
+        grep -qaE "Q_create .Q_WMGR" /tmp/wm.log 2>/dev/null && { echo "  winmgr created Q_WMGR at ${i}*0.5s"; break; }
+        sleep 0.5; i=$((i+1)); done
+      sleep 6
+    fi
 
     echo "### skmgr (bg, -p=~/skmgr skmgr $SK_ARGS) ###"
     ( env HEROSCALL_VERBOSE="${SK_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
@@ -117,7 +134,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/$GUPPY_BIN" -p=~/Guppy Guppy $GUPPY_ARGS > /tmp/g_mmi.log 2>&1 || true
     echo "### Guppy done ###"
-    pkill -KILL -x strace 2>/dev/null; kill $CFGPID $SKPID 2>/dev/null
+    pkill -KILL -x strace 2>/dev/null; kill $CFGPID $SKPID ${WMPID:-} 2>/dev/null
   '
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null
 G2=$(md5sum /etc/passwd | awk '{print $1}'); [ "$GUARD" = "$G2" ] && echo "GUARD OK" || echo "*** /etc CHANGED ***"
