@@ -315,6 +315,41 @@
 > window = the actual main MMI on the Mac (then surface via XQuartz). Findings: `scratchpad/guppy_is_the_main_mmi.md`.
 > Run: `emulator/run_2proc_guppy.sh` (DUMPQ=1 hex-dumps the 0x318 payloads).
 
+> ## ★★★★★★ FEX-NATIVE MILESTONE (2026-06-26) — a REAL TNC640 GTK WINDOW RENDERS FEX-native on Apple Silicon (`run_guppy_window.sh`)
+> **A genuine HEIDENHAIN TNC640 GTK2 window — the HwViewer hardware-commissioning screen — is drawn by the
+> proprietary `Guppy.elf` running FEX-native (i386→ARM64) on the Mac** (`emulator/run_guppy_window.sh`; screenshot
+> **`docs/img/guppy-hwviewer-fex-native.png`**: "Last accepted configuration"/"Current configuration" panes + status line;
+> 359 unique colours, 122 writev→X, 386 .py opens, GUARD OK, sig6/11=0). The first real proprietary-control GUI
+> window via the **pure FEX-native path** (not yeen/VirtualBox).
+> ★ TARGET RE-CORRECTION (the prior "Guppy is the main MMI" / "0x318 boot-script" framing was imprecise):
+> **Guppy.elf is the OEM/Python *script-runtime launcher*, NOT the main operator screen.** RE (IDA on Guppy.elf):
+> `GuppyOemThread@0x908b0` reads cmdline option **67='C'** → `configurationKey`; `GuppyOemModule::GetConfiguration
+> @0x85930` does `CfgMailslotQueue::GetData(CfgOemScript,key)`→script path→`this+292`; `Execute@0x89120` (empty →
+> "terminate: no script") → `PyJHKernel::Execute@0xc13c0`→`fopen64(script)`→`PyRun_FileExFlags`. The batch default
+> `-R=UnloadOEM` (no `-C`) is the OEM custom screen — **a demo station has NONE → "terminate: no script" was CORRECT,
+> not a gate** (the 0x318 GuppyRuntime hunt was chasing the OEM-script thread, not the window). Each Guppy invocation
+> runs a different GTK Python script per `-C=<key>`. The REAL operator MMI (`~/mmi`) is `machoper.elf`(Manual op) /
+> `Fred.elf`(Programming) / `simulo.elf`(Sim) — separate binaries = the next target.
+> ★ HOW (Phase A, all faithful fixes): (1) launch `-C=HwSetup` → jh.cfg `CfgOemScript key:"HwSetup" path:"SYS:/
+> Python/HwViewer/HwViewer.py HwSetup"`; (2) stage the Python2.7+pygtk+pyjh runtime (dlopened, not in the NEEDED
+> closure) into `/var/tmp/lr` + the script tree under SYS:=/mnt/sys, PYTHONHOME=/usr (FEX-native GTK2 proven: a
+> standalone gtk.Window creates+shows); (3) **`emulator/nolimit.c`** no-ops `p_rsslimit@HEROSLIB_500.0` — the HeROS
+> per-process RSS *quota* (sized for real HW) was killing the GTK+Python process BEFORE the script ran ("Process
+> exits through p_rsslimit", 0 .py opens) → no-op'd → **HwViewer.py executes**; (4) created the `/tmp/__helogpipe_
+> {py,nc}std{out,err}` FIFOs (libheros `sys_redirect_log` Python-stdio redirect, made by the central HeLogger in
+> the full constellation) + readers; (5) staged `usr/lib/gdk-pixbuf-2.0` loaders (dlopened; without them gdk-pixbuf
+> can't decode the UI bitmaps → "Couldn't recognize image format") → **the window draws**; (6) `/mnt/plc/service`
+> writable (traceback log). Remaining 2-proc gaps (EXPECTED, not render gaps): `jh.softkey.Register` needs the
+> SkManager peer ("Binding softkey resource to window failed"); HardwareServer absent → "Commissioning could not be
+> started". The render path (GTK2+Python2.7+X11 FEX-native) is SOLVED.
+> ★ Phase B (surface to Mac, NO VNC): `run_guppy_window.sh` is now `XDISPLAY`-aware (skips Xvfb, renders to an
+> external X server); `emulator/guppy_xquartz_mac.sh` (run ON THE MAC) opens a reverse SSH tunnel VM:6000→Mac
+> XQuartz:0 + launches Guppy with DISPLAY=localhost:0. Prereq (user, one-time, admin): `brew install --cask xquartz`
+> + logout + `defaults write org.xquartz.X11 nolisten_tcp -bool false` + `open -a XQuartz` + `xhost +localhost`.
+> ★ NEXT: (a) surface via XQuartz once installed; (b) the real operator screen `machoper.elf`/`Fred.elf` (scout
+> under FEX like Guppy); (c) bring up the SkManager/HardwareServer peers so HwViewer fully populates. Findings:
+> `scratchpad/guppy_is_the_main_mmi.md`. Run: `emulator/run_guppy_window.sh` (GUPPY_C=HwSetup|HwViewer|SParDialog).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
