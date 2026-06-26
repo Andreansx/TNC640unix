@@ -408,10 +408,11 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
          * Emulate the sysevent firing: when a forever-blocking Ev_receive wants a sysevent bit, set
          * those wanted sysevent bits in this task's own event word so the next loop iteration catches
          * them (the FModule code then proceeds as if the sysevent arrived). Gated (winmgr-only env). */
-        { static int sysfire=-1; static uint32_t firemask=0; static long firelimit=-1;
+        { static int sysfire=-1; static uint32_t firemask=0; static long firelimit=-1; static long fireyield=-1;
           if(sysfire<0){ const char*e=getenv("HEROSCALL_SYSEVENT_AUTOFIRE"); sysfire=e&&e[0]=='1';
               const char*m=getenv("HEROSCALL_SYSEVENT_FIRE_MASK"); firemask=m?(uint32_t)strtoul(m,0,16):0x00ff0000u; }
           if(firelimit<0){ const char*l=getenv("HEROSCALL_SYSEVENT_FIRE_LIMIT"); firelimit=l?atol(l):0; }
+          if(fireyield<0){ const char*y=getenv("HEROSCALL_SYSEVENT_FIRE_YIELD_US"); fireyield=y?atol(y):0; }
           /* FIRE_LIMIT (per task): unlimited autofire makes a render thread that does
            * Ev_receive(forever, sysevent) in a tight loop busy-SPIN (819K fires) — it clears its OWN
            * waits but STARVES the sibling Q_WMGR serve thread (CPU + lock contention) so winmgr never
@@ -434,6 +435,13 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
                * returns garbage/-1 ("Operating system could not create thread"). */
               uint32_t sysbits = want & 0x00ff0000u & firemask & ~0x00080000u;
               if(sysbits && (cur & sysbits)==0){
+                  /* FIRE_YIELD_US: a render thread that does Ev_receive(forever, render-sysevent) in a
+                   * tight loop would busy-SPIN on unlimited autofire (~4000 fires/s), starving the sibling
+                   * Q_WMGR serve thread so winmgr never answers skmgr. Sleep N us BEFORE firing -> the
+                   * render thread runs at a bounded frame rate (its handshake/window-create still completes,
+                   * unlike FIRE_LIMIT which blocks it) while the serve thread gets the CPU. More faithful
+                   * than the spin: a real render thread renders at a frame rate, not as fast as possible. */
+                  if(fireyield>0) usleep((useconds_t)fireyield);
                   if(s>=0&&s<MAXTASK) C->tasks[s].autofire_n++;
                   __atomic_or_fetch(ev,sysbits,__ATOMIC_ACQ_REL);
                   continue;                       /* re-check: now catches the fired sysevent bit(s) */
