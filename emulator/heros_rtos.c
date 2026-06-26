@@ -334,11 +334,18 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
          * Emulate the sysevent firing: when a forever-blocking Ev_receive wants a sysevent bit, set
          * those wanted sysevent bits in this task's own event word so the next loop iteration catches
          * them (the FModule code then proceeds as if the sysevent arrived). Gated (winmgr-only env). */
-        { static int sysfire=-1; if(sysfire<0){ const char*e=getenv("HEROSCALL_SYSEVENT_AUTOFIRE"); sysfire=e&&e[0]=='1'; }
+        { static int sysfire=-1; static uint32_t firemask=0;
+          if(sysfire<0){ const char*e=getenv("HEROSCALL_SYSEVENT_AUTOFIRE"); sysfire=e&&e[0]=='1';
+              const char*m=getenv("HEROSCALL_SYSEVENT_FIRE_MASK"); firemask=m?(uint32_t)strtoul(m,0,16):0x00ff0000u; }
           if(sysfire && timeout==0xffffffff){
-              uint32_t sysbits = want & 0x00ff0000u;
+              /* Fire ONLY the sysevent bits in firemask (default all 16-23). Firing a thread's logic-
+               * coupling sysevent (e.g. main's "logo-done" 0x00080000) directly makes it skip the step
+               * that produces that signal (T_starting + waiting for the logo thread) -> a phantom path.
+               * Restrict to the RENDER-side bit (0x00010000) so the LOGO thread proceeds + signals the
+               * coupling bit to its peer NATURALLY. */
+              uint32_t sysbits = want & 0x00ff0000u & firemask;
               if(sysbits && (cur & sysbits)==0){
-                  LOG("SYSEVENT_AUTOFIRE: task 0x%x blocked on sysevent want %08x -> firing %08x\n",self,want,sysbits);
+                  LOG("SYSEVENT_AUTOFIRE: task 0x%x blocked on sysevent want %08x mask %08x -> firing %08x\n",self,want,firemask,sysbits);
                   __atomic_or_fetch(ev,sysbits,__ATOMIC_ACQ_REL);
                   continue;                       /* re-check: now catches the fired sysevent bit(s) */
               }
@@ -883,6 +890,8 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
  * the HrMmiCfgGlobal (0x290081), so the active-state target is bootstrapped BEFORE the counter drains. */
 static uint32_t deferred_evterr_rqid;
 static void post_evt_ans_error(uint32_t rqid);
+/* WMQ_BREAK per-queue consecutive-empty-no-wait-read counter (slot-indexed; reset on a real read). */
+static unsigned long wmq_empty_streak[1024];
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
     int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); errno=EINVAL; return -9; }  /* errno!=ENOMEM: wrapper -> 0, not "grow" */
     if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap ALL forever-waits */
@@ -920,6 +929,7 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
                 return -12;                                       /* 0xfffffff4 + errno ENOMEM: real-kernel "buffer too small" */
             }
             uint32_t copied=full;
+            if(s>=0&&s<1024) wmq_empty_streak[s]=0;   /* WMQ_BREAK: a real read resets the empty streak */
             if(buf&&copied) memcpy(buf,q->msg[slot].data,copied);
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
             uint32_t len=copied;
@@ -1010,6 +1020,26 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
              * changes (the real system never spins this tight because winmgr feeds events). */
             static int yld=-1; if(yld<0){ const char*e=getenv("HEROSCALL_EMPTYPOLL_YIELD"); yld=e?atoi(e):0; }
             if(yld>0) usleep((useconds_t)yld);
+            /* WMQ_BREAK: a PLib WM-event drain (WmRecvReplyEx->WmRead@libwinmgrlib 0x3cc0) busy-polls a
+             * "WMQ<task>" reply queue with NOWAIT q_read, looping WHILE errno==EAGAIN(11). With no live
+             * winmgr the next WM event never comes, so it spins forever and STARVES the FThread dispatch
+             * from servicing Q_SkMgr (the softkey-login serve queue). WmRead TERMINATES its loop (returns
+             * 0 = "no message") when errno is NEITHER EAGAIN(11) NOR EINTR(4) — e.g. ETIMEDOUT(110). After
+             * N consecutive empty no-wait reads on a WMQ* queue, return ETIMEDOUT so WmRead returns 0, the
+             * WM-drain loop ends, and the dispatch regains control to check Q_SkMgr (and block/cycle on its
+             * full waitable mask incl. the Q_SkMgr notify 0x02000000). Faithful: the real WM drain returns
+             * "no more events" on an empty queue; the emulator's perpetual-EAGAIN turned that into a
+             * livelock. Counter resets on a real read (above). */
+            { static int wmq_break=-1; static long wmq_thresh=0;
+              if(wmq_break<0){ const char*e=getenv("HEROSCALL_WMQ_BREAK"); wmq_break=e&&e[0]=='1';
+                  const char*t=getenv("HEROSCALL_WMQ_BREAK_N"); wmq_thresh=t?atol(t):2000; }
+              if(wmq_break && s>=0 && s<1024 && !strncmp(C->queues[s].name,"WMQ",3)){
+                  if(++wmq_empty_streak[s] >= (unsigned long)wmq_thresh){
+                      wmq_empty_streak[s]=0;
+                      errno=ETIMEDOUT; return -0x6e;   /* 110: WmRead -> return 0 = drain done; dispatch regains control */
+                  }
+              }
+            }
             errno=EAGAIN; return -0x35;
         }     /* empty, no-wait */
         struct timespec ts,*tp=0;
