@@ -326,6 +326,24 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
             return caught;
         }
         if(timeout==0){ evdev_reconcile(self); return 0; }  /* poll miss -> drain stale signal */
+        /* HEROSCALL_SYSEVENT_AUTOFIRE=1: the reserved SYSEVENT bits (16-23, mask 0x00ff0000) are set
+         * by the real kernel's Ev_sendtcb when a hardware/system sysevent fires (timer, X readable,
+         * input). The emulator generates no such sysevents, so a thread that BLOCKS on a sysevent bit
+         * (e.g. winmgr's logo thread Ev_receive(0x00011004) / main Ev_receive(0x05011001), bit 16)
+         * waits forever -> the FModule logo-render handshake deadlocks BEFORE winmgr serves Q_WMGR.
+         * Emulate the sysevent firing: when a forever-blocking Ev_receive wants a sysevent bit, set
+         * those wanted sysevent bits in this task's own event word so the next loop iteration catches
+         * them (the FModule code then proceeds as if the sysevent arrived). Gated (winmgr-only env). */
+        { static int sysfire=-1; if(sysfire<0){ const char*e=getenv("HEROSCALL_SYSEVENT_AUTOFIRE"); sysfire=e&&e[0]=='1'; }
+          if(sysfire && timeout==0xffffffff){
+              uint32_t sysbits = want & 0x00ff0000u;
+              if(sysbits && (cur & sysbits)==0){
+                  LOG("SYSEVENT_AUTOFIRE: task 0x%x blocked on sysevent want %08x -> firing %08x\n",self,want,sysbits);
+                  __atomic_or_fetch(ev,sysbits,__ATOMIC_ACQ_REL);
+                  continue;                       /* re-check: now catches the fired sysevent bit(s) */
+              }
+          }
+        }
         if(hstrace && !hst_waited){ hst_waited=1; HST(self,0,"EV< t%x WAIT want=%08x c=%u to=%s (have=%08x)\n",
             self,want,cond,timeout==0xffffffff?"inf":"fin",cur); }
         struct timespec rel,*tp=0;
@@ -1799,8 +1817,16 @@ long syscall(long n,...){
                 * p[4]!=0 (q_receive) -> kernel writes a 12-byte sender header there. */
         if(p) return q_read(p[7], (void*)(uintptr_t)p[0], p[2], p[6], (uint32_t*)(uintptr_t)p[4]);
         return -9;
-    case 0x1a:{ /* Tm_wkafter(ms@p[0]) — sleep, then return 0 */
-        if(p&&p[0]){ struct timespec ts={p[0]/1000,(long)(p[0]%1000)*1000000L};
+    case 0x1a:{ /* Tm_wkafter(@p[0]) — sleep, then return 0. The arg UNIT is ambiguous (HeROS ev-timers
+                 * are microseconds — cf. Tm_evafter "delay_us"); winmgr passes 0x989680 (=10s if us, but
+                 * =10000s if treated as ms) as a startup delay. Treating it as ms hangs winmgr for ~2.7h.
+                 * CAP the sleep at TM_WKAFTER_CAP_MS (default 3000ms) so a long startup delay can't stall
+                 * a bounded run — harmless (only SHORTENS long sleeps; short ConfigServer/HrMmi values are
+                 * unaffected, both tolerated this path before). */
+        if(p&&p[0]){ unsigned long ms=p[0]/1000;
+            static long cap=-1; if(cap<0){ const char*e=getenv("HEROSCALL_TM_WKAFTER_CAP_MS"); cap=e?atol(e):3000; }
+            if(cap>0 && ms>(unsigned long)cap) ms=(unsigned long)cap;
+            struct timespec ts={(long)(ms/1000),(long)(ms%1000)*1000000L};
             raw5(SYS_nanosleep,(long)&ts,0,0,0,0); }
         return 0;
     }
