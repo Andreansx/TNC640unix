@@ -76,8 +76,8 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_INJECT_WMGR_ACK="${INJECT_WMGR_ACK:-0}" EMPTYPOLL_DIAG="${EMPTYPOLL_DIAG:-0}" EMPTYPOLL_YIELD="${EMPTYPOLL_YIELD:-0}" WMGR_SCREEN="${WMGR_SCREEN:-0}" WMQ_BREAK="${WMQ_BREAK:-0}" WMQ_BREAK_N="${WMQ_BREAK_N:-2000}" \
   HEROS_CFG_REPLY_ROUTE=1 HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_HSTRACE="${HSTRACE:-0}" DISP="$DISP" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" NO_NCK_WINMGR="${NO_NCK_WINMGR:-}" WMFORCE="${WMFORCE:-}" SKFORCE="${SKFORCE:-}" \
-  HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" WINMGR="${WINMGR:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" SYSFIRE="${SYSFIRE:-0}" SYSFIRE_MASK="${SYSFIRE_MASK:-00ff0000}" \
-  GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" LANG=C LC_ALL=C \
+  HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" HWVIEWER_GEOMETRY="${HWVIEWER_GEOMETRY:-}" WINMGR="${WINMGR:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" SYSFIRE="${SYSFIRE:-0}" SYSFIRE_MASK="${SYSFIRE_MASK:-00ff0000}" \
+  GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" GUPPY_DISPLAY="${GUPPY_DISPLAY:-}" LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
     mount --make-rprivate /; mount --bind "$R/etc" /etc
@@ -129,10 +129,11 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       ( timeout "${MMI_TIMEOUT:-200}" cat /tmp/__helogpipe_$p > /tmp/g_$p.log 2>/dev/null & )
     done
 
-    echo "### Guppy ($GUPPY_BIN $GUPPY_ARGS, DISPLAY=$DISP) ###"
+    GDISP="${GUPPY_DISPLAY:-$DISP}"   # faithful bind: GUPPY_DISPLAY=:0.0 makes gtk_external_display_active() FALSE (gdk_get_display()==":0.0") -> bind-capable WITHOUT the Guppy_dispatch gate-NOP, keeping proper window geometry
+    echo "### Guppy ($GUPPY_BIN $GUPPY_ARGS, DISPLAY=$GDISP) ###"
     [ "$USE_XVFB" = "1" ] && ( sleep "${SHOT_AT:-150}"; rm -f /tmp/g_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/g_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/g_screen.xwd 2>/dev/null)" ) &
     timeout -s KILL "${MMI_TIMEOUT:-200}" /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/g_strace.log \
-      env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" LD_PRELOAD="$MMIPRE" \
+      env DISPLAY="$GDISP" HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" HWVIEWER_GEOMETRY="$HWVIEWER_GEOMETRY" LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/$GUPPY_BIN" -p=~/Guppy Guppy $GUPPY_ARGS > /tmp/g_mmi.log 2>&1 || true
     echo "### Guppy done ###"
     pkill -KILL -x strace 2>/dev/null; kill $CFGPID $SKPID ${WMPID:-} 2>/dev/null
