@@ -38,6 +38,8 @@
 #include <sys/syscall.h>
 #include <signal.h>
 #include <ucontext.h>
+#include <sched.h>
+#include <pthread.h>
 
 long syscall(long n, ...);
 /* raw 5-arg syscall (i386 int 0x80). All syscalls we issue fit in <=5 args
@@ -228,6 +230,43 @@ static void evdev_reconcile(uint32_t task){              /* find task's pipe (th
     lock();
     for(int i=0;i<n_evdev;i++) if(evdevs[i].task==task){ evdev_reconcile_locked(&evdevs[i]); break; }
     unlock();
+}
+/* ---- CROSS-PROCESS /dev/events wake (watcher thread) -----------------------------------------
+ * evdev_reconcile() pokes a task's /dev/events pipe IN THIS PROCESS only (the wr fd is process-local).
+ * So an ev_send from ANOTHER process (e.g. Guppy's SkMgrLogin notify 0x02000000 -> skmgr's task 0x106)
+ * sets the SHARED event word + cross-process FUTEX_WAKEs it, but cannot poke skmgr's local /dev/events
+ * pipe — so skmgr, blocked in ppoll()/select() on that pipe, never wakes and never services Q_SkMgr.
+ * (The libplibpp FThread waits via ppoll on the X fd + /dev/events; a bare timeout-cap can't help
+ * because the EVHandler only runs Ev_receive when /dev/events is actually READABLE.)
+ * Mirror the real kernel — whose /dev/events driver signals the fd on ANY Ev_sendtcb, cross-process:
+ * spawn ONE lightweight watcher thread per registered evdev that futex-waits on its task's shared event
+ * word and reconciles the LOCAL pipe on every change. A cross-process ev_send FUTEX_WAKEs the word ->
+ * the watcher wakes -> pokes the local pipe -> the target's ppoll/select returns -> the FThread runs
+ * Ev_receive and reads the queue. Idle cost is one blocked futex per GUI thread. Gated HEROS_EVDEV_WATCH
+ * (default ON; =0 disables). */
+static void *evdev_watcher_fn(void *arg){
+    struct evdev *e=(struct evdev*)arg;
+    int s=task_slot(e->task); if(s<0) return 0;
+    volatile uint32_t *ev=&C->tasks[s].events;
+    for(;;){
+        uint32_t cur=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
+        lock(); evdev_reconcile_locked(e); unlock();
+        futex(ev,FUTEX_WAIT,(int)cur,0);   /* block until ANY ev_send to this task (incl. cross-process) */
+    }
+    return 0;
+}
+/* Use pthread_create (NOT raw clone): under FEX the new thread needs its JIT/TLS context set up via
+ * the intercepted pthread path — a raw clone() child bypasses that and dies immediately. Modern i386
+ * glibc folds pthread into libc, so the symbol resolves at runtime without -lpthread. */
+static void evdev_start_watcher(struct evdev *e){
+    static int on=-2; if(on==-2){ const char*s=getenv("HEROS_EVDEV_WATCH"); on=(s&&s[0]=='0')?0:1; }
+    if(!on) return;
+    pthread_t th; pthread_attr_t at;
+    pthread_attr_init(&at); pthread_attr_setdetachstate(&at,PTHREAD_CREATE_DETACHED);
+    int rc=pthread_create(&th,&at,evdev_watcher_fn,e);
+    pthread_attr_destroy(&at);
+    if(rc!=0){ LOG("evdev watcher: pthread_create failed rc=%d\n",rc); return; }
+    LOG("evdev watcher thread started for task 0x%x (cross-process /dev/events wake)\n",e->task);
 }
 
 /* ---------------- events ---------------- */
@@ -1034,6 +1073,17 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
               if(wmq_break<0){ const char*e=getenv("HEROSCALL_WMQ_BREAK"); wmq_break=e&&e[0]=='1';
                   const char*t=getenv("HEROSCALL_WMQ_BREAK_N"); wmq_thresh=t?atol(t):2000; }
               if(wmq_break && s>=0 && s<1024 && !strncmp(C->queues[s].name,"WMQ",3)){
+                  /* RESPONSIVENESS: the WM event-drain found no WM event. If the dispatch task already
+                   * has a PENDING queue-notify for a NON-WM queue (e.g. Q_SkMgr's 0x02000000 softkey
+                   * login from Guppy), break the WM pump IMMEDIATELY so the FThread dispatch returns to
+                   * Ev_receive(0x07011000) and services that queue — instead of busy-draining the empty
+                   * WM queue N more times (which starves the co-registered Q_SkMgr serve queue). The WM
+                   * queue's OWN notify bit is excluded so a genuine pending WM event still drains here.
+                   * Faithful: the real WM drain returns "no more events" and yields to the next waitable;
+                   * the emulator's perpetual-EAGAIN turned that yield into a livelock. */
+                  int ts=task_slot(task_self());
+                  if(ts>=0){ uint32_t pend = C->tasks[ts].events & 0xff000000u & ~C->queues[s].notify_bits;
+                      if(pend){ wmq_empty_streak[s]=0; errno=ETIMEDOUT; return -0x6e; } }
                   if(++wmq_empty_streak[s] >= (unsigned long)wmq_thresh){
                       wmq_empty_streak[s]=0;
                       errno=ETIMEDOUT; return -0x6e;   /* 110: WmRead -> return 0 = drain done; dispatch regains control */
@@ -1655,8 +1705,10 @@ void heros_evdev_register(int rd_fd,int wr_fd){
     if(i>=MAXEVDEV){ unlock(); return; }
     if(i==n_evdev) n_evdev++;
     evdevs[i].task=t; evdevs[i].rd=rd_fd; evdevs[i].wr=wr_fd; evdevs[i].sysmask=0; evdevs[i].signaled=0;
+    struct evdev *ep=&evdevs[i];
     unlock();
     LOG("evdev register task 0x%x rd=%d wr=%d\n",t,rd_fd,wr_fd);
+    evdev_start_watcher(ep);   /* cross-process /dev/events wake (Guppy->skmgr softkey-login notify) */
 }
 void heros_evdev_setmask(int rd_fd,unsigned int mask){
     ensure_init();

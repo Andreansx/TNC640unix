@@ -168,6 +168,36 @@ int select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *to) {
     return (int)syscall(SYS__newselect, nfds, r, w, e, to);
 }
 
+/* ppoll() timeout CAP — SAME rationale as select() above, for the FThread/EVHandler dispatchers that
+ * use ppoll() instead of select() (e.g. skmgr's PLib frame: it blocks in ppoll(fds, nfds, NULL) on the
+ * X display fd + the faked /dev/events pipe). A CROSS-PROCESS queue-notify (Guppy's SkMgrLogin ->
+ * Q_SkMgr 0x313, notify 0x02000000 -> skmgr's task) sets the shared event word + futex-wakes it, but
+ * ppoll waits on the PIPE, not the futex, and heros_rtos's evdev_reconcile can only poke the pipe
+ * IN-PROCESS — so the cross-process notify never wakes skmgr's ppoll and the softkey login is never
+ * serviced. Cap the ppoll timeout when the pollset includes a faked /dev/events fd: the dispatcher then
+ * wakes every SELECT_CAP_MS, re-checks its events via Ev_receive (catching the cross-process 0x313
+ * notify), and reads Q_SkMgr. Same env knob HEROSCALL_SELECT_CAP_MS as select(). */
+#include <poll.h>
+#include <signal.h>
+#ifndef SYS_ppoll
+#define SYS_ppoll 309   /* i386 __NR_ppoll */
+#endif
+int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *to, const sigset_t *sigmask) {
+    if (sel_cap_ms == -2) { const char *s = getenv("HEROSCALL_SELECT_CAP_MS"); sel_cap_ms = s ? atol(s) : -1; }
+    struct timespec cap;
+    if (sel_cap_ms >= 0 && fds) {
+        int hit = 0;
+        for (nfds_t i = 0; i < nfds; i++) if (is_fake(fds[i].fd)) { hit = 1; break; }
+        if (hit) {
+            long cur = to ? (to->tv_sec * 1000L + to->tv_nsec / 1000000L) : -1;
+            if (!to || cur > sel_cap_ms) {
+                cap.tv_sec = sel_cap_ms / 1000; cap.tv_nsec = (sel_cap_ms % 1000) * 1000000L; to = &cap;
+            }
+        }
+    }
+    return (int)syscall(SYS_ppoll, fds, nfds, to, sigmask, 8 /* sigsetsize = sizeof(kernel sigset_t) */);
+}
+
 /* encDir (ConfigServer's encfs config-store layer) does unshare(CLONE_NEWNS) + mount() to mount the
  * jh_int encfs view; both FAIL under FEX (ret=-1) -> encDir retry-loops and ConfigServer never reaches
  * RUNUP_COMPLETE. jh_int is a RED HERRING (config is plaintext /mnt/sys/config; cfgfix reads it directly),
