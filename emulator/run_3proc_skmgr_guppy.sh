@@ -62,12 +62,27 @@ sudo bash -c 'head -c 1048576 /dev/zero > /dev/shm/_heusrv_shm; chmod 0666 /dev/
 if [ "$USE_XVFB" = "1" ]; then
   echo "=== start Xvfb $DISP${NO_OPENBOX:+ (no openbox)}${NO_OPENBOX:- + openbox} ==="
   Xvfb $DISP -screen 0 1280x1024x16 -nolisten tcp >/tmp/x2.log 2>&1 & sleep 2
-  # The real TNC WM (winmgr) places the WndFullScreen at the OEM-screen rect (0,0 fullscreen). openbox is a
-  # stand-in that reparents+places the OEM window off-screen-right -> HwViewer.py:GetDecorationSize reads a
-  # transient geometry[0]=1280 -> decoration[0]=1280 -> the window width collapses to 0/1px (NO bar room).
-  # NO_OPENBOX=1 -> run unmanaged so gtk keeps the window at (0,0) and GetDecorationSize returns (0,0,0,0) =>
-  # HwViewer sizes to the full 1280x936 (fullscreen minus the 88px softkey strip), giving the bar its room.
-  if [ -z "${NO_OPENBOX:-}" ]; then DISPLAY=$DISP openbox >/tmp/ob2.log 2>&1 & sleep 1; fi
+  # The real TNC WM (winmgr) places the WndFullScreen at the OEM-screen rect (0,0 fullscreen) WITHOUT a
+  # frame. A stock openbox instead DECORATES + reparents the OEM window: HwViewer.py:GetDecorationSize then
+  # reads bogus _NET_FRAME_EXTENTS (decoration=(1280,0,0,1)) -> width 1280-1280=0 -> the window collapses to
+  # its glade natural size (~330x165) -> no room for the 88px softkey bar (the bar strip stays blank). skmgr
+  # REQUIRES a running WM (its PLIB++ "waiting for X-WindowManager" aborts without one), so we cannot drop
+  # openbox (NO_OPENBOX=1). Instead run openbox with an UNDECORATE rule (decor=no for every app): frame
+  # extents become 0 -> GetDecorationSize returns ~0 -> the width calc is correct -> the OEM window maps at
+  # the requested 1280x936 (and the separate 1280x88 softkey-bar window at y=936) = the real winmgr's
+  # frameless fullscreen placement. NO_OPENBOX=1 still skips it entirely (but then skmgr aborts).
+  if [ -z "${NO_OPENBOX:-}" ]; then
+    cat > /tmp/openbox-rc.xml <<'OBRC'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <focus><focusNew>no</focusNew></focus>
+  <applications>
+    <application class="*"><decor>no</decor><focus>no</focus></application>
+  </applications>
+</openbox_config>
+OBRC
+    DISPLAY=$DISP openbox --config-file /tmp/openbox-rc.xml >/tmp/ob2.log 2>&1 & sleep 1
+  fi
 else
   echo "=== external X DISPLAY=$DISP (Mac XQuartz) ==="
 fi

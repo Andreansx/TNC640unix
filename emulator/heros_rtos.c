@@ -93,7 +93,8 @@ struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
               volatile uint32_t as_pending;          /* async-signals raised but not yet read (TCB+0x1f0) */
               volatile uint32_t as_mask;             /* enabled async-signal mask          (TCB+0x1f4) */
               volatile uint32_t last_ev_want;        /* most recent Ev_receive want-mask (for queue-notify bit matching) */
-              volatile uint32_t nowait_miss; };      /* consecutive Ev_receive(EV_NOWAIT) misses (for EV_NOWAIT_YIELD spin throttle) */
+              volatile uint32_t nowait_miss;         /* consecutive Ev_receive(EV_NOWAIT) misses (for EV_NOWAIT_YIELD spin throttle) */
+              volatile uint32_t last_req_family; };  /* type-id>>16 of the last request this task sent to a server queue (CfgServerQueue/Q_SkMgr*) — used to route its reply on the SHARED ".Rts" per-process reply queue (RTS_FAMILY_ROUTE) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
 /* one variable-length message + the 12-byte sender header the kernel returns in Q_read's p[4]
  * (from Q_send's message-node fields: source queue id, sender task, mode|size) */
@@ -816,6 +817,7 @@ static uint32_t q_ident(const char*nm){
     return id;                                            /* 0 => not found */
 }
 static int cfg_reply_route=-1;
+static int sk_reply_route=-1;
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x size %u\n",id,size); qhex("Q_FAIL",id,msg,size); return -9; }
     /* CFG_REPLY_ROUTE (HEROS_CFG_REPLY_ROUTE=1): ConfigServer resolves a per-client reply-to of ""
@@ -846,9 +848,45 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
             }
         }
     }
+    /* SK_REPLY_ROUTE (HEROSCALL_SK_REPLY_ROUTE, default ON): skmgr replies to the softkey client's
+     * per-process SYNCHRONOUS reply queue "Rts<X>" (the reply-to embedded in SkMgrLogin, e.g.
+     * "0000107CfgMc.Rtsffffffff" -> Rtsffffffff/0x320). But the softkey API caller (the Python main
+     * thread) reads its OWN "Client<X>" queue ("Clientffffffff"/0x31e, notify 0x02000000) — NOT the
+     * shared "Rts<X>", which the per-process config DISPATCH thread owns/reads and is wedged in the
+     * config-#6 GetData (so it never drains/routes the softkey replies -> SkMgrLoginQuit + the
+     * SkMgrInfoResponses carrying the .bmx softkey-icon paths strand on 0x320 -> the bar never fills).
+     * "Rts<suffix>" and "Client<suffix>" share the per-client <suffix>, so redirect a softkey-family
+     * (type-id>>16 == 0x28a) reply from "Rts<suffix>" to "Client<suffix>" if that queue exists. Same
+     * class as CFG_REPLY_ROUTE (redirect a reply to the queue the waiter actually reads). */
+    if(sk_reply_route<0){ const char*e=getenv("HEROSCALL_SK_REPLY_ROUTE"); sk_reply_route=e?(e[0]=='1'):1; }
+    if(sk_reply_route && msg && size>=4 && !strncmp(C->queues[s].name,"Rts",3)){
+        const unsigned char*m=msg;
+        uint32_t mtype=m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24);
+        if((mtype>>16)==0x28au){
+            char cn[NAMELEN]; snprintf(cn,sizeof cn,"Client%s",C->queues[s].name+3);  /* "Rtsffffffff"+3 -> "Clientffffffff" */
+            int rs=q_find_slot(cn);
+            if(rs>=0 && rs!=s && C->queues[rs].name[0]){
+                LOG("SK_REPLY_ROUTE: redirect softkey reply \"%s\"(0x%x) -> \"%s\"(0x%x) (type %08x, %u bytes)\n",
+                    C->queues[s].name,C->queues[s].id,cn,C->queues[rs].id,mtype,size);
+                s=rs; id=C->queues[rs].id;
+            }
+        }
+    }
     if(size>QMSGCAP){ LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
     uint32_t sender=task_self();
     struct queue*q=&C->queues[s];
+    /* RTS_FAMILY_ROUTE: record this task's request family (type-id>>16) when it sends a REQUEST to a
+     * server queue, so the matching reply can be routed to it on the SHARED ".Rts" per-process reply
+     * queue (config requests = 0x17, softkey requests = 0x28a). Guppy multiplexes BOTH the config
+     * dispatch thread and the Python softkey-login waiter onto one ".Rts" queue; without this the
+     * config reader consumes the softkey replies (wrong family) before the softkey waiter can. */
+    if(msg && size>=4){
+        const char*qn=q->name;
+        if(!strcmp(qn,"CfgServerQueue")||!strcmp(qn,"Q_SkMgr")||!strcmp(qn,"Q_SkMgrCtrl")){
+            int ss=task_slot(sender);
+            if(ss>=0) C->tasks[ss].last_req_family=(*(const uint32_t*)msg)>>16;
+        }
+    }
     lock();
     uint32_t used=q->tail-q->head;
     if(used>=QSLOTS) q->head++;                           /* drop oldest to make room */
@@ -1044,10 +1082,45 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
          * missing HW server. It needs a REAL reply injected (QHWServer stub). See docs/17. */
         timeout=sync_timeout; LOG("Q_read \"%s\" forever-wait capped to %ums (no server peer)\n",C->queues[s].name,sync_timeout); }
     struct queue*q=&C->queues[s];
+    /* RTS_FAMILY_ROUTE — DEFAULT OFF (superseded by SK_REPLY_ROUTE). This modelled the shared "Rts<X>"
+     * queue as having MULTIPLE per-family readers (config + softkey), each filtering by its request
+     * family. RE refuted that: there is ONE per-process DISPATCH thread that reads "Rts<X>" and the
+     * softkey API caller reads its OWN "Client<X>" queue (it never reads "Rts<X>"). So the correct fix
+     * is to route softkey replies to "Client<X>" (SK_REPLY_ROUTE in q_send), not to filter "Rts<X>"
+     * reads. Kept (gated off) for reference / A-B. */
+    static int rts_family_route=-1;
+    if(rts_family_route<0){ const char*e=getenv("HEROSCALL_RTS_FAMILY_ROUTE"); rts_family_route=e&&e[0]=='1'; }  /* default OFF */
     for(;;){
         lock();
         if(q->tail!=q->head){
-            uint32_t slot=q->head%QSLOTS;
+            /* RTS_FAMILY_ROUTE: on a SHARED ".Rts" per-process reply queue, Guppy multiplexes BOTH its
+             * config dispatch thread (reads 0x17xxxx replies) AND its Python softkey-login waiter (reads
+             * 0x28a0xxx replies). A plain FIFO head read lets whichever thread wakes first dequeue the
+             * other's reply (wrong family) and discard it -> the softkey login never completes -> no
+             * RegisterConnection -> no GData fill -> the bar never draws. Faithful FModule dispatch routes
+             * each reply to the waiter whose request-family matches; replicate that here: a reader on a
+             * ".Rts" queue dequeues only the first message whose family (type-id>>16) == the family of the
+             * request IT last sent, leaving other-family messages in place for the other waiter. */
+            uint32_t pos=q->head; int have=1;                     /* default: FIFO head */
+            /* the per-process synchronous reply queue is named "Rts<hex>" (e.g. "Rtsffffffff") and the
+             * compound reply-to is "<mailslot>.Rts<hex>" — match "Rts" (NOT ".Rts"; the queue's own
+             * registered name has no leading dot). No other HeROS queue name contains "Rts". */
+            if(rts_family_route && strstr(C->queues[s].name,"Rts")){
+                int rsl=task_slot(task_self());
+                uint32_t fam=(rsl>=0)?C->tasks[rsl].last_req_family:0;
+                if(fam){
+                    have=0;
+                    for(uint32_t p=q->head; p!=q->tail; p++){
+                        uint32_t fsl=p%QSLOTS;
+                        uint32_t ty=(q->msg[fsl].len>=4)?*(const uint32_t*)q->msg[fsl].data:0;
+                        if((ty>>16)==fam){ pos=p; have=1; break; }
+                    }
+                    /* have==0: no message of my family yet -> fall through to the wait path (do NOT
+                     * consume another waiter's reply). The futex wake on q->tail re-checks on every send. */
+                }
+            }
+            if(have){
+            uint32_t slot=pos%QSLOTS;
             uint32_t full=q->msg[slot].len;                       /* the REAL message length */
             /* TOO-BIG contract — FAITHFUL to heros.ko Q_read_ex @0x10c510 (decompiled): if the caller's
              * buffer is smaller than the message (maxsize=p[2] < msglen) the real kernel does NOT dequeue
@@ -1078,7 +1151,15 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             uint32_t len=copied;
             qhex("Q_read",id,buf,len);
             uint32_t qowner=q->owner, qnotify=q->notify_bits;
-            __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);
+            if(pos==q->head){
+                __atomic_add_fetch(&q->head,1,__ATOMIC_ACQ_REL);  /* normal FIFO dequeue */
+            } else {
+                /* out-of-order family match: remove slot `pos`, shift [pos+1..tail-1] down by one */
+                for(uint32_t i=pos; i+1!=q->tail; i++) q->msg[i%QSLOTS]=q->msg[(i+1)%QSLOTS];
+                __atomic_sub_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
+                LOG("Q_read RTS_FAMILY_ROUTE: out-of-order dequeue at pos %u (queue 0x%x \"%s\", reader t%x)\n",
+                    pos,id,C->queues[s].name,task_self());
+            }
             int more = (q->tail != q->head);            /* queue still non-empty after this read? */
             unlock();
             /* LEVEL-TRIGGERED queue notify: the kernel event word is a BITMASK, so N sends to a queue set
@@ -1140,6 +1221,7 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
                 q_send(id,upd,(uint32_t)sizeof upd,0);
             }
             return (int)len;                              /* message size in eax */
+            }   /* if(have) */
         }
         uint32_t t=q->tail; unlock();
         /* empty/timeout => "no message". errno MUST NOT be ENOMEM here, or the libheros q_read

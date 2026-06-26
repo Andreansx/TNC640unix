@@ -403,6 +403,45 @@
 > rendezvous is timing-sensitive → the first run after a `limactl restart` can stall in ConfigServer's 5-task
 > rendezvous; re-run). Findings: `scratchpad/skmgr_softkey_findings.md`.
 
+> ## ★★★★★ FEX-NATIVE FRONTIER (2026-06-26, cont.) — softkey bar CONTENT reaches the client END-TO-END (SK_REPLY_ROUTE); gate moves to the jh.gtk.Window fullscreen render
+> The prior "GData handshake / bind-gate" framing is SUPERSEDED. RE this session (full Guppy trace lives in
+> **g_pystderr.log ~62k lines**, NOT the truncated g_mmi.log — after Python init Guppy redirects stdio to the
+> helogpipe FIFOs) pinned the softkey reply flow exactly and CRACKED the cross-process content delivery:
+> **Queue map (Guppy, owner):** `0x320 "Rtsffffffff"` (t108, the per-process SYNC reply queue the CONFIG
+> DISPATCH reads, wedged in the config-#6 GetData) · `0x31e "Clientffffffff"` (t107, notify 0x02000000 — the
+> softkey API caller's OWN reply queue, where it ACTUALLY reads SkMgr replies) · `0x31d "WMQ00107"` (t107, the
+> WM event queue). **Root cause:** skmgr resolved the login reply-to `"0000107CfgMc.Rtsffffffff"`→0x320 and sent
+> EVERY softkey reply (SkMgrLoginQuit handle=13, 1676 SkMgrInfoResponses incl. the `.bmx` icon-path strings) to
+> **0x320** — owned by the wedged config dispatch t108, which never drains/routes them; the softkey caller t107
+> reads its OWN 0x31e and got nothing → login never completed → bar never filled. (The earlier "config thread
+> consumes the softkey replies" / per-family-reader theory was a MISREAD on the truncated log; t107 never reads
+> 0x320.) **FIX = SK_REPLY_ROUTE** (`emulator/heros_rtos.c` q_send, default ON, `HEROSCALL_SK_REPLY_ROUTE=0`
+> disables): "Rts<suffix>" and "Client<suffix>" share the per-client <suffix>, so redirect a softkey-family
+> (type-id>>16==0x28a) reply from "Rts<suffix>"→"Client<suffix>" if it exists (same class as CFG_REPLY_ROUTE).
+> **VERIFIED (good 3-proc run, skmgr serve 3356):** SK_REPLY_ROUTE fired **1676×** → skmgr now sends to 0x31e;
+> **t107 reads ALL 1677 replies (no TOO-BIG, buffer grows 128→256)**, login completes (handle 13), bind SUCCEEDS
+> (no "Binding...failed"), and t107 actively requests info for EXACTLY the 7 HwViewer softkeys
+> (hwvView/hwvSearch/hwvPageUp/hwvPageDown/hwvEnd/hwvChangeWindow/hwvBusSpecific). The softkey bar CONTENT now
+> flows end-to-end to the client. (RTS_FAMILY_ROUTE, the per-family-reader filter on 0x320, is the WRONG model →
+> gated OFF by default, kept for reference. Also added the WM event-serial fix + the 0x3042 SYNC handler, and an
+> openbox `decor=no` rule.)
+> ★ NEW GATE (precisely pinned, NOT yet crossed): the HwViewer window renders **tiny (~330×165, glade natural
+> size) in the top-left, NOT fullscreen** → the bottom 88px softkey-bar strip is BLANK (1 colour) and the `.bmx`
+> icons are NEVER opened (the buttons never draw). The OEM window is `jh.gtk.Window(usage=…, screen='OemScreen')`
+> (HwViewer.py:3271) — a HEIDENHAIN winmgr-managed WndFullScreen (the softkey bind REQUIRES it, so it can't be a
+> plain gtk.Window that would honour move_resize). HWVDBG: `decoration=(1280,0,0,1)` ("plug artifact") collapses
+> the width; HWV_FORCE_FS forces defaultSize=(1280,936), move_resize is called, **GDK reports geometry
+> (0,0,1280,936) — but the actual X window stays ~330×165** (move_resize on the jh.gtk.Window is overridden; its
+> size is controlled by winmgr, which is absent). openbox `decor=no` did NOT change the decoration artifact (it's
+> the OemScreen/WM binding, not an openbox frame-extent); and skmgr REQUIRES a running WM (its PLIB++ "waiting for
+> X-WindowManager" aborts→sig6 without one), so NO_OPENBOX is not an option in the 3-proc. ⇒ the bar-fill is now
+> gated SOLELY on the **jh.gtk.Window(screen='OemScreen') fullscreen render** = the documented winmgr WM-geometry
+> frontier (INJECT_WMGR_ACK answers the WM PROTOCOL 0x3001/0x3037/0x3042 but does not provide the GtkSocket/screen
+> rect that sizes the window). NEXT levers: (a) carry the real OemScreen RECT in the 0x3037/screen reply so
+> jh.gtk.Window sizes fullscreen; (b) RE how jh.gtk.Window(screen='OemScreen') queries its size from the WM and
+> inject that; (c) bring up the real winmgr.elf for the OEM-window placement. Run: `emulator/run_3proc_skmgr_guppy.sh`
+> (SK_REPLY_ROUTE default ON; HWV_FORCE_FS=1). Findings: `scratchpad/skmgr_softkey_findings.md`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
