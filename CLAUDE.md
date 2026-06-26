@@ -478,6 +478,23 @@
 > screen-activate). Both are the documented multi-process WM frontier; the content half is fully solved + verified
 > upstream. Run: `emulator/run_3proc_skmgr_guppy.sh` (skmgr strace now traces openat → shows the 19 .bmx opens).
 > Findings: `scratchpad/skmgr_softkey_findings.md`.
+>
+> ★ ADDENDUM (WM dispatch fully mapped + concrete stand-in spec): decompiled winmgr `HandleMessage@0x29f00`
+> end-to-end. Guppy sends FOUR Q_WMGR(0x312) requests — **0x3001**(connect, SendReply16+WmSendEvent a1[5]),
+> **0x300c**(find-window→method+176→`WmClient::OnRequest` flush; a1[6]=0 so NO direct reply), **0x302c**(StartTimer,
+> SendReply16→a1[6]=0x31d/WMQ00107), **0x3037**(GetScreens, SendReply208, NO geometry) — NOT 0x3042, NOT
+> GetAreaRect 0x3002/3. INJECT_WMGR_ACK answers 0x3001+0x3037; **0x302c/0x300c unanswered**. KEY: the HwViewer GTK
+> window RENDERS (panes+error, 118 colours) WITHOUT completing the handshake → the WM handshake gates the
+> **fullscreen geometry** (winmgr `RegisterWindow` reparent+resize at X level; rect = GetAreaRect 0x3002/3 applied
+> by winmgr, nobody queries it) and the **softkey-area window**, NOT the window render. Draw architecture CONFIRMED
+> both sides: libSkMgrCtrl (Guppy client) builds softkey IMAGE LISTS (`CreateImageList`/`AddImageListEntry`/
+> `SetMenuImageList`/`ImageStrip`) → skmgr; **skmgr draws the bar via libplibpp `PFrame` into its softkey-area
+> window** (skmgr NEEDs libplibpp, 0 direct X-draw imports). skmgr's PFrame never created (0 CreateWindow) — no WM
+> ⇒ no softkey-area geometry/parent. ⇒ **CONCRETE LEVER (winmgr stand-in, bounded):** an emulator/helper that
+> (1) creates the screen-layout X windows per `tnc640layout1280.xml` (FullArea/ClientArea + softkey-area
+> 1280×88@y=936) + maps them, (2) serves Q_WMGR faithfully incl GetAreaRect(0x3002/3)+RegisterWindow so Guppy's
+> WndFullScreen gets the ClientArea rect AND skmgr's PLib gets the softkey-area → PFrame::Create → skmgr draws the
+> loaded .bmx → bar renders; OR crack winmgr.elf's logo deadlock (logo thread t107 sticks in a queue-delete).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
