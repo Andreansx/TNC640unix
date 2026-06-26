@@ -795,6 +795,30 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         inject_fmload_set(id);
         in_fmload_inject=0;
     }
+    /* INJECT_WMGR_ACK: WM clients (skmgr, Guppy) connect to the window manager by sending WM requests to
+     * Q_WMGR — 0x302c (StartTimer) + 0x3037 (GetScreens) — embedding their reply-queue id at msg+24 and a
+     * seq at msg+4, then BLOCK reading that reply queue (WMQ<task>) for winmgr's reply. With no winmgr (or
+     * winmgr stuck in its own logo-render handshake) the reply never comes and skmgr never reaches its
+     * softkey serve loop, so a client's SkMgrLogin on Q_SkMgr is never processed. winmgr's
+     * HandleMessage@winmgr.elf 0x29f00 answers 0x3037 with a 208-byte type-0x3037 screen-list reply
+     * (seq echoed @off4; the empty-screen branch is valid). Synthesize+post that reply to the embedded
+     * reply-q so the client's WM bring-up advances — same INJECT_ACK class as Cfg/Evt/Peer. */
+    { static int inject_wmgr_ack=-1;
+      if(inject_wmgr_ack<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_ACK"); inject_wmgr_ack=e&&e[0]=='1'; }
+      if(inject_wmgr_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
+         && *(const uint32_t*)msg==0x3037u){
+          uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t rq =*(const uint32_t*)((const char*)msg+24);
+          if(rq && q_slot(rq)>=0){
+              unsigned char rep[208]; memset(rep,0,sizeof rep);
+              put32(rep+0,0x3037u);   /* reply type = GetScreens reply */
+              put32(rep+4,seq);       /* echo the request seq so the client's wait matches */
+              /* empty-screen-list reply (winmgr's else-branch): screen fields zeroed */
+              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u, 208B) to WM reply-q 0x%x\n",seq,rq);
+              q_send(rq,rep,sizeof rep,0);
+          }
+      }
+    }
     /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
     if(replay_trigger && !runup_done && msg && size && size<=CFGQ_MSG
        && !strcmp(C->queues[s].name,"CfgServerQueue")){
