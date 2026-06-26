@@ -342,13 +342,22 @@
 > writable (traceback log). Remaining 2-proc gaps (EXPECTED, not render gaps): `jh.softkey.Register` needs the
 > SkManager peer ("Binding softkey resource to window failed"); HardwareServer absent → "Commissioning could not be
 > started". The render path (GTK2+Python2.7+X11 FEX-native) is SOLVED.
-> ★ Phase B (surface to Mac, NO VNC): `run_guppy_window.sh` is now `XDISPLAY`-aware (skips Xvfb, renders to an
-> external X server); `emulator/guppy_xquartz_mac.sh` (run ON THE MAC) opens a reverse SSH tunnel VM:6000→Mac
-> XQuartz:0 + launches Guppy with DISPLAY=localhost:0. Prereq (user, one-time, admin): `brew install --cask xquartz`
-> + logout + `defaults write org.xquartz.X11 nolisten_tcp -bool false` + `open -a XQuartz` + `xhost +localhost`.
-> ★ NEXT: (a) surface via XQuartz once installed; (b) the real operator screen `machoper.elf`/`Fred.elf` (scout
-> under FEX like Guppy); (c) bring up the SkManager/HardwareServer peers so HwViewer fully populates. Findings:
-> `scratchpad/guppy_is_the_main_mmi.md`. Run: `emulator/run_guppy_window.sh` (GUPPY_C=HwSetup|HwViewer|SParDialog).
+> ★★ Phase B DONE — the HwViewer window is surfaced to the Mac as a NATIVE XQuartz window (NO VNC):
+> `docs/img/guppy-hwviewer-xquartz-mac.png` (the TNC640 commissioning screen with the macOS XQuartz menu bar +
+> Dock + clock; `Window id 0x800003 "HwViewer" 1512x839`). `emulator/guppy_xquartz_mac.sh` (run ON THE MAC):
+> (1) `open -a XQuartz` → the `:0` unix socket `/tmp/.X11-unix/X0` appears IMMEDIATELY (no logout needed despite the
+> installer's "requires logging out"); (2) `socat TCP-LISTEN:6000 → UNIX-CONNECT X0` (avoids XQuartz's TCP listener
+> + the `nolisten_tcp`/logout dance); (3) `DISPLAY=:0 xhost +`; (4) reverse SSH tunnel via lima's ssh.config
+> (`ssh -fNR 6000:localhost:6000 lima-tnc`); (5) `run_guppy_window.sh` is `XDISPLAY`-aware — `XDISPLAY=127.0.0.1:0`
+> skips Xvfb and renders straight to the Mac. ★ Gotcha SOLVED: the rootfs `/etc` (bound over `/etc` in the
+> mount-ns) had **no `/etc/hosts`**, so resolving the X DISPLAY host stalled on a DNS lookup to 127.0.0.1:53 → the X
+> connect hung; the run script now writes a minimal `/etc/hosts` (and the helper uses `127.0.0.1:0` to avoid
+> resolution). Install (one-time): `brew install --cask xquartz` + `brew install socat` (XQuartz pkg needs admin —
+> the macOS GUI auth dialog via `osascript ... with administrator privileges` works without a TTY).
+> ★ NEXT: (a) the real operator screen `machoper.elf`/`Fred.elf` (scout under FEX like Guppy = the actual Manual-op/
+> Programming MMI); (b) bring up the SkManager/HardwareServer peers so HwViewer fully populates (softkeys + data).
+> Findings: `scratchpad/guppy_is_the_main_mmi.md`. Run: `emulator/run_guppy_window.sh` (GUPPY_C=HwSetup|HwViewer|
+> SParDialog); native Mac window: `emulator/guppy_xquartz_mac.sh HwSetup`.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under

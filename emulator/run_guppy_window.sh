@@ -91,6 +91,9 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   unshare -m bash -c '
     set -u; ulimit -c 0
     mount --make-rprivate /; mount --bind "$R/etc" /etc
+    # the rootfs /etc (bound over /etc) lacks /etc/hosts → resolving the X DISPLAY host (localhost) does a
+    # DNS lookup to 127.0.0.1:53 (no server) and STALLS the X connect; give it a minimal hosts file.
+    grep -q "127.0.0.1" /etc/hosts 2>/dev/null || printf "127.0.0.1\tlocalhost\n::1\tlocalhost\n" > /etc/hosts
     export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu DISPLAY=$DISP HEROSROOT=$R/heros5
     export PYTHONHOME=/usr
     mkdir -p /etc/fonts; [ -e /etc/fonts/fonts.conf ] || printf "<?xml version=\"1.0\"?><fontconfig><dir>/usr/share/fonts</dir><cachedir>/tmp/fc</cachedir></fontconfig>" > /etc/fonts/fonts.conf
