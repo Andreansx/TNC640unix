@@ -693,6 +693,15 @@ static int q_is_probe_name(const char*base){
 static uint32_t q_ident(const char*nm){
     char base[NAMELEN]; q_basename(base,nm);
     lock(); int s=q_find_slot(base); uint32_t id=(s>=0)?C->queues[s].id:0; unlock();
+    /* "<oem>/mmi.qHF" = the MMI host-FRAME embed queue. GuppyRegisterWindow's NO_NCK_WINMGR
+     * (no-window-manager) path PROBES it: present -> embed this X window into the host frame
+     * (return 1 -> WndFocusPane falls back to non-bind-capable); ABSENT -> the window SELF-binds
+     * its softkeys (return 0 -> WndFocusPane sets +0x14 and calls GUPPYSKMGR::Register). In the
+     * 3-proc demo there is no main-MMI host frame, so auto-creating a black hole here makes the
+     * window think it was embedded and it never self-binds. Report absent (the faithful no-host
+     * behaviour) so Guppy self-registers its softkeys with skmgr. Same class as the HwsM/PLC*N*
+     * presence-probe suppression. */
+    if(!id && nm && strstr(nm,"mmi.qHF")){ LOG("Q_ident \"%s\" -> 0x0 (mmi.qHF host-frame absent)\n",nm); return 0; }
     if(!id && q_autocreate && !q_is_probe_name(base)){    /* black-hole sink for absent peers */
         id=q_create(base,2,0); LOG("Q_ident \"%s\" -> auto 0x%x\n",base,id); return id;
     }

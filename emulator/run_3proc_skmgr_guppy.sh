@@ -9,7 +9,11 @@ TGT=$REPO/work/target/rootfs
 R=/var/tmp/lr
 CC=i686-linux-gnu-gcc
 DISP="${XDISPLAY:-:99}"
-USE_XVFB=1; case "$DISP" in :99) USE_XVFB=1;; *) USE_XVFB=0;; esac
+# gtk_external_display_active() (libgtkbind 0x16510) returns TRUE unless the X display is exactly ":0.0";
+# when TRUE, GUPPYRUNTIMEGTK_::CreateWindowData SKIPS the screen->Wnd-type dispatch -> the window is NOT
+# bind-capable -> jh.softkey.Register fails "Binding...failed". So run Xvfb on :0 (gdk -> ":0.0") for a
+# bind-capable OEM window (faithful, no patch). Start our own Xvfb for :99/:0/:0.0; else external X.
+USE_XVFB=1; case "$DISP" in :99|:0|:0.0) USE_XVFB=1;; *) USE_XVFB=0;; esac
 CFGPRE="/lib/noopfree.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 MMIPRE="${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 SKPRE="${SK_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
@@ -22,7 +26,7 @@ echo "=== build preloads ==="
 $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $REPO/emulator/cfgfix.c -ldl || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/arena.map -o $R/lib/arena_stub.so $REPO/emulator/arena_stub.c || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/nolimit.map -o $R/lib/nolimit.so $REPO/emulator/nolimit.c || exit 1
-for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree skspy skforce wmstub; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
+for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree skspy skforce wmstub gdactive; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
 
 echo "=== stage Python runtime (idempotent) ==="
 if [ "${STAGE:-0}" = "1" ] || [ ! -d "$R/usr/lib/python2.7" ]; then
@@ -71,6 +75,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_INJECT_ACK=1 HEROSCALL_INJECT_EVT_ACK=1 HEROSCALL_INJECT_PEER_ACK=1 HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 HEROS_EVENTS_PIPE=1 \
   HEROS_CFG_REPLY_ROUTE=1 HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_HSTRACE="${HSTRACE:-0}" DISP="$DISP" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" NO_NCK_WINMGR="${NO_NCK_WINMGR:-}" WMFORCE="${WMFORCE:-}" SKFORCE="${SKFORCE:-}" \
+  HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" \
   GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
@@ -109,7 +114,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     echo "### Guppy ($GUPPY_BIN $GUPPY_ARGS, DISPLAY=$DISP) ###"
     [ "$USE_XVFB" = "1" ] && ( sleep "${SHOT_AT:-150}"; rm -f /tmp/g_screen.xwd; DISPLAY=$DISP xwd -root -out /tmp/g_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/g_screen.xwd 2>/dev/null)" ) &
     timeout -s KILL "${MMI_TIMEOUT:-200}" /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/g_strace.log \
-      env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" LD_PRELOAD="$MMIPRE" \
+      env HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/$GUPPY_BIN" -p=~/Guppy Guppy $GUPPY_ARGS > /tmp/g_mmi.log 2>&1 || true
     echo "### Guppy done ###"
     pkill -KILL -x strace 2>/dev/null; kill $CFGPID $SKPID 2>/dev/null
