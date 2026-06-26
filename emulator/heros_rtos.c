@@ -94,6 +94,7 @@ struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
               volatile uint32_t as_mask;             /* enabled async-signal mask          (TCB+0x1f4) */
               volatile uint32_t last_ev_want;        /* most recent Ev_receive want-mask (for queue-notify bit matching) */
               volatile uint32_t nowait_miss;         /* consecutive Ev_receive(EV_NOWAIT) misses (for EV_NOWAIT_YIELD spin throttle) */
+              volatile uint32_t autofire_n;          /* count of SYSEVENT_AUTOFIRE fires for this task (FIRE_LIMIT cap: fire enough to clear startup render-waits, then block normally so the serve thread runs) */
               volatile uint32_t last_req_family; };  /* type-id>>16 of the last request this task sent to a server queue (CfgServerQueue/Q_SkMgr*) — used to route its reply on the SHARED ".Rts" per-process reply queue (RTS_FAMILY_ROUTE) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
 /* one variable-length message + the 12-byte sender header the kernel returns in Q_read's p[4]
@@ -407,9 +408,20 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
          * Emulate the sysevent firing: when a forever-blocking Ev_receive wants a sysevent bit, set
          * those wanted sysevent bits in this task's own event word so the next loop iteration catches
          * them (the FModule code then proceeds as if the sysevent arrived). Gated (winmgr-only env). */
-        { static int sysfire=-1; static uint32_t firemask=0;
+        { static int sysfire=-1; static uint32_t firemask=0; static long firelimit=-1;
           if(sysfire<0){ const char*e=getenv("HEROSCALL_SYSEVENT_AUTOFIRE"); sysfire=e&&e[0]=='1';
               const char*m=getenv("HEROSCALL_SYSEVENT_FIRE_MASK"); firemask=m?(uint32_t)strtoul(m,0,16):0x00ff0000u; }
+          if(firelimit<0){ const char*l=getenv("HEROSCALL_SYSEVENT_FIRE_LIMIT"); firelimit=l?atol(l):0; }
+          /* FIRE_LIMIT (per task): unlimited autofire makes a render thread that does
+           * Ev_receive(forever, sysevent) in a tight loop busy-SPIN (819K fires) — it clears its OWN
+           * waits but STARVES the sibling Q_WMGR serve thread (CPU + lock contention) so winmgr never
+           * answers skmgr. With a cap, the task fires enough to get PAST its startup render-waits (create
+           * windows) then BLOCKS normally on the next forever-wait, freeing the serve thread (woken by a
+           * real queue notify). 0 = unlimited (back-compat). */
+          if(sysfire && timeout==0xffffffff && firelimit>0 && s>=0 && s<MAXTASK
+             && C->tasks[s].autofire_n >= (uint32_t)firelimit){
+              /* cap reached for this task: fall through to the normal futex block (no fire) */
+          } else
           if(sysfire && timeout==0xffffffff){
               /* Fire ONLY the sysevent bits in firemask (default all 16-23). Firing a thread's logic-
                * coupling sysevent (e.g. main's "logo-done" 0x00080000) directly makes it skip the step
@@ -422,7 +434,7 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
                * returns garbage/-1 ("Operating system could not create thread"). */
               uint32_t sysbits = want & 0x00ff0000u & firemask & ~0x00080000u;
               if(sysbits && (cur & sysbits)==0){
-                  LOG("SYSEVENT_AUTOFIRE: task 0x%x blocked on sysevent want %08x mask %08x -> firing %08x\n",self,want,firemask,sysbits);
+                  if(s>=0&&s<MAXTASK) C->tasks[s].autofire_n++;
                   __atomic_or_fetch(ev,sysbits,__ATOMIC_ACQ_REL);
                   continue;                       /* re-check: now catches the fired sysevent bit(s) */
               }
