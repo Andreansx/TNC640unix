@@ -496,6 +496,43 @@
 > WndFullScreen gets the ClientArea rect AND skmgr's PLib gets the softkey-area → PFrame::Create → skmgr draws the
 > loaded .bmx → bar renders; OR crack winmgr.elf's logo deadlock (logo thread t107 sticks in a queue-delete).
 
+> ## ★★★★★★ WINMGR CREATES ITS SCREEN-LAYOUT WINDOWS — the t_create thread-rendezvous bug FIXED (2026-06-26, cont.)
+> The prior framing above ("`WmModule::Initialize` is vtable-only, an FModule virtual NEVER fired; gated on the
+> absent AppStartMaster start directive") is **REFUTED**. A focused winmgr-only diagnostic (`scratchpad/run_wmdiag.sh`
+> = ConfigServer + winmgr, verbose+HSTRACE) showed the REAL gate is an **emulator thread-creation bug**, and fixing
+> it makes winmgr run `WmModule::Initialize` → **CREATE ITS SCREEN-LAYOUT WINDOWS** under FEX-native ARM64.
+> **ROOT CAUSE (two interacting emulator bugs in the libheros `t_create`↔`t_start` rendezvous):**
+> winmgr's `FThread::CreateMainContext`→`EvalContextThread` calls `t_create(...)`; if it returns -1 it throws
+> `AssertContext("THREAD: Operating system could not create thread", fthread.cpp:546)` and winmgr never reaches
+> `WmModule::Initialize`. The -1 came from: (a) winmgr's MAIN-context child registers (heroscall case 0x00) with
+> **parent=0xffffffff** — libheros doesn't yet know the bootstrap thread's heros task id, so it passes parent=-1 —
+> so the rendezvous wake `ev_send(p[12]=0xffffffff, 0x80000)` is LOST and the parent's `t_create` (blocked in
+> `ev_receive(0x80000)`) never completes (cf. ConfigServer's children register with a VALID parent 0x109 → fine);
+> AND (b) **`HEROSCALL_SYSEVENT_AUTOFIRE` was firing bit 0x80000** (= 0x00080000, which sits inside the
+> 0x00ff0000 sysevent mask) — but 0x80000 is ALSO the libheros t_create rendezvous wake bit — so AUTOFIRE
+> phantom-woke the parent's `ev_receive(0x80000)` BEFORE the child wrote the task id → t_create got garbage → -1.
+> **FIX (`emulator/heros_rtos.c`, always-on, regression-clean):** (a) case 0x00: when a child registers with an
+> invalid parent (task_slot(p[12])<0), publish an **orphan-rendezvous token** (`ctl.orphan_tc`) + futex-wake every
+> thread blocked on the 0x80000 bit; `ev_receive` consumes one token at the top of its loop and returns 0x80000
+> (the real parent then reads the already-written task id → t_create succeeds). The child writes p[8] (task id)
+> BEFORE publishing the token, so the ordering is correct. (b) AUTOFIRE now masks out `& ~0x00080000` so it NEVER
+> fires the rendezvous bit. **VERIFIED (`scratchpad/run_wmdiag.sh`):** thread-create errors 1→**0**, T_start
+> 0→**1** (rendezvous completes), and winmgr advances from "0 XCreateWindow" to **`WmModule::Initialize` →
+> `CreateMainWindow`/`WmRootWindow::Create` + `ReadLayout` → 3× XCreateWindow + MapWindow + ChangeProperty×9 +
+> QueryFont×12 + CreatePixmap + PutImage + AllocColor** (X writev 35→87), then registers with AppStartMaster
+> (`FmProcessState "winmgr:"` → 0x308/0x333). **3-proc baseline REGRESSION-CLEAN** (`run_3proc_skmgr_guppy.sh`:
+> Guppy renders 111 colours, skmgr serves 1385 reads, crash=0 — the fix only triggers on invalid-parent t_create /
+> never autofires 0x80000, both no-ops for valid-parent procs). ⇒ this is a real advance PAST the documented
+> "winmgr creates 0 windows" gate.
+> ★ NEW winmgr gate (the next frontier): after creating its windows winmgr catches an **"Unhandled exception: PKc"**
+> (a bare `throw const char*` — `WmModule::Initialize` throws it when `CreateMainWindow`→`WmRootWindow::Create`
+> returns 0; caught by `RunExceptionShell`, NON-fatal, logged to QEvtServer) and then a **sub-thread SIGSEGVs**
+> during the FModule `0x1000` inter-thread ping-pong (the same GUI sync as the AppStartMP logo handshake) — likely
+> aggravated by running winmgr STANDALONE (no AppStartMaster/peers). NEXT: stabilize winmgr (RE why
+> `WmRootWindow::Create` returns 0 + the sub-thread crash) so it stays up + serves skmgr's Q_WMGR in a 4-proc run
+> → skmgr's PLib gets the VSoftKeyArea window → draws the loaded .bmx → the bar renders. Run:
+> `scratchpad/run_wmdiag.sh` (winmgr-only diag); `WINMGR=1 … bash emulator/run_3proc_skmgr_guppy.sh` (4-proc).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

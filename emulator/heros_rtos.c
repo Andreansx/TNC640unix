@@ -112,6 +112,10 @@ struct ctl {
     volatile int magic;                              /* 0=empty 1=initing 2=ready */
     volatile int32_t lock;                           /* futex spinlock */
     volatile uint32_t next_task, next_sem, next_q, next_reg;
+    volatile uint32_t orphan_tc;                      /* pending main-context t_create rendezvous tokens
+                                                        (child registered with parent=0xffffffff -> the
+                                                        0x80000 wake had no valid target; a 0x80000-waiter
+                                                        consumes one in ev_receive). See case 0x00. */
     struct task   tasks[MAXTASK];
     struct sem    sems[MAXSEM];
     struct queue  queues[MAXQ];
@@ -356,6 +360,16 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     }
     int hst_waited=0;
     for(;;){
+        /* ORPHAN main-context t_create rendezvous: a child registered with parent=0xffffffff (its
+         * 0x80000 wake had no valid target). If we are a 0x80000-waiter (the t_create parent) and a
+         * token is pending, consume it and deliver 0x80000 — completes the rendezvous so t_create
+         * returns the (already-written) task id instead of -1. (See case 0x00.) */
+        if(want & 0x80000u){
+            uint32_t o=__atomic_load_n(&C->orphan_tc,__ATOMIC_ACQUIRE);
+            while(o>0 && !__atomic_compare_exchange_n(&C->orphan_tc,&o,o-1,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){}
+            if(o>0){ LOG("EV orphan-rendezvous: task 0x%x want %08x -> delivering 0x80000\n",self,want);
+                     return want & 0x80000u; }
+        }
         uint32_t cur=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
         int ok = cond==1 ? ((cur&want)==want) : ((cur&want)!=0);
         if(ok){
@@ -402,7 +416,11 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
                * that produces that signal (T_starting + waiting for the logo thread) -> a phantom path.
                * Restrict to the RENDER-side bit (0x00010000) so the LOGO thread proceeds + signals the
                * coupling bit to its peer NATURALLY. */
-              uint32_t sysbits = want & 0x00ff0000u & firemask;
+              /* NEVER autofire bit 19 (0x00080000): it is the libheros t_create<->t_start rendezvous
+               * wake bit, not a real sysevent. Autofiring it phantom-wakes a t_create parent's
+               * ev_receive(0x80000) BEFORE the child registers + writes the task id -> t_create
+               * returns garbage/-1 ("Operating system could not create thread"). */
+              uint32_t sysbits = want & 0x00ff0000u & firemask & ~0x00080000u;
               if(sysbits && (cur & sysbits)==0){
                   LOG("SYSEVENT_AUTOFIRE: task 0x%x blocked on sysevent want %08x mask %08x -> firing %08x\n",self,want,firemask,sysbits);
                   __atomic_or_fetch(ev,sysbits,__ATOMIC_ACQ_REL);
@@ -1995,7 +2013,26 @@ long syscall(long n,...){
         if(s>=0){ C->tasks[s].ctx_dst=p[10]; C->tasks[s].arg_dst=p[6];
                   C->tasks[s].msgsize=p[2]; __atomic_store_n(&C->tasks[s].started,0,__ATOMIC_RELEASE); }
         if(p[8]) *(uint32_t*)(uintptr_t)p[8]=T;        /* deliver task id to the parent (arg[4]) */
-        if(p[12]) ev_send(p[12],0x80000);              /* wake t_create_ex's ev_receive(0x80000) */
+        if(p[12] && task_slot(p[12])>=0){
+            ev_send(p[12],0x80000);                    /* wake t_create_ex's ev_receive(0x80000) */
+        } else {
+            /* MAIN-CONTEXT / orphan t_create: the parent id is 0xffffffff (winmgr's
+             * FThread::CreateMainContext runs in the bootstrap thread BEFORE libheros knows that
+             * thread's heros task id, so it passes parent=-1). The direct ev_send above would be
+             * lost -> the parent's t_create rendezvous (ev_receive(0x80000)) never completes ->
+             * t_create returns -1 -> "THREAD: Operating system could not create thread" -> the
+             * whole subsystem (winmgr) never reaches WmModule::Initialize. FIX: publish an orphan
+             * rendezvous token + futex-wake every thread currently blocked waiting on the 0x80000
+             * rendezvous bit so the real parent (whoever it is) re-checks and proceeds. 0x80000 is
+             * the dedicated t_create wake bit, so only a t_create parent ever waits on it. */
+            __atomic_add_fetch(&C->orphan_tc,1,__ATOMIC_ACQ_REL);
+            lock();
+            for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used && (C->tasks[i].last_ev_want & 0x80000u))
+                futex((void*)&C->tasks[i].events,FUTEX_WAKE,0x7fffffff,0);
+            unlock();
+            LOG("T_create ORPHAN task 0x%x parent 0x%x -> published rendezvous token (orphan_tc=%u)\n",
+                T,p[12],__atomic_load_n(&C->orphan_tc,__ATOMIC_ACQUIRE));
+        }
         LOG("T_create task 0x%x parent 0x%x ctxbuf %08x -> wait t_start\n",T,p[12],p[10]);
         HST(T,p[12],"TC t%x parent=t%x -> block until T_start\n",T,p[12]);
         if(s>=0){ for(;;){ uint32_t st=__atomic_load_n(&C->tasks[s].started,__ATOMIC_ACQUIRE);
