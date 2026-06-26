@@ -895,7 +895,16 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
      * SkMgrInfoResponses carrying the .bmx softkey-icon paths strand on 0x320 -> the bar never fills).
      * "Rts<suffix>" and "Client<suffix>" share the per-client <suffix>, so redirect a softkey-family
      * (type-id>>16 == 0x28a) reply from "Rts<suffix>" to "Client<suffix>" if that queue exists. Same
-     * class as CFG_REPLY_ROUTE (redirect a reply to the queue the waiter actually reads). */
+     * class as CFG_REPLY_ROUTE (redirect a reply to the queue the waiter actually reads).
+     * ★ GATE on the Client queue being WAITABLE (notify_bits != 0): the redirect is only correct in the
+     * -1-pid topology where "Client<X>" is a NOTIFY queue a SEPARATE softkey-API thread reads while the
+     * shared "Rts<X>" is the wedged config-dispatch queue (brief: Clientffffffff notify 0x02000000). With
+     * the P_ident(self) fix the per-client suffix is the real task id and "Rts<taskid>"/"Client<taskid>"
+     * are BOTH owned by the softkey thread, which reads its OWN notify-bearing "Rts<taskid>" (e.g. Rts10a
+     * notify 0x01000000) while "Client<taskid>" is a PASSIVE no-notify queue nobody waits on. Redirecting
+     * to that passive queue STRANDS the SkMgrLoginQuit/InfoResponses (login never completes -> bar never
+     * fills). So redirect ONLY when "Client<X>" is itself waitable; else leave the reply on "Rts<X>" (the
+     * queue the caller's reader thread actually wakes on). */
     if(sk_reply_route<0){ const char*e=getenv("HEROSCALL_SK_REPLY_ROUTE"); sk_reply_route=e?(e[0]=='1'):1; }
     if(sk_reply_route && msg && size>=4 && !strncmp(C->queues[s].name,"Rts",3)){
         const unsigned char*m=msg;
@@ -903,7 +912,7 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         if((mtype>>16)==0x28au){
             char cn[NAMELEN]; snprintf(cn,sizeof cn,"Client%s",C->queues[s].name+3);  /* "Rtsffffffff"+3 -> "Clientffffffff" */
             int rs=q_find_slot(cn);
-            if(rs>=0 && rs!=s && C->queues[rs].name[0]){
+            if(rs>=0 && rs!=s && C->queues[rs].name[0] && C->queues[rs].notify_bits){
                 LOG("SK_REPLY_ROUTE: redirect softkey reply \"%s\"(0x%x) -> \"%s\"(0x%x) (type %08x, %u bytes)\n",
                     C->queues[s].name,C->queues[s].id,cn,C->queues[rs].id,mtype,size);
                 s=rs; id=C->queues[rs].id;
