@@ -427,6 +427,7 @@ static int ev_send(uint32_t task,uint32_t bits){
 #define AS_FORCED_MASK  0x00c00000u  /* As_mask "newly-enabled & pending" trigger bits  */
 static int as_deliver=1;             /* HEROSCALL_AS_DELIVER=0 disables real signalling  */
 static int q_autocreate=1;           /* HEROSCALL_AUTO_QUEUE=0 disables black-hole queues */
+static int qident_notify=-1;         /* HEROS_QIDENT_NOTIFY=0 disables compound "<mailslot>.<notifyqueue>" resolution */
 static uint32_t qread_maxwait=0;     /* HEROSCALL_QREAD_MAXWAIT=ms caps "forever" Q_read waits (debug) */
 static uint32_t sync_timeout=0;      /* HEROSCALL_SYNC_TIMEOUT=ms caps forever Q_read on "*Sync" handshake
                                       * queues only (e.g. QSikSync) — these deadlock when their server peer
@@ -766,6 +767,29 @@ static uint32_t q_ident(const char*nm){
      * behaviour) so Guppy self-registers its softkeys with skmgr. Same class as the HwsM/PLC*N*
      * presence-probe suppression. */
     if(!id && nm && strstr(nm,"mmi.qHF")){ LOG("Q_ident \"%s\" -> 0x0 (mmi.qHF host-frame absent)\n",nm); return 0; }
+    /* COMPOUND reply-to "<mailslot>.<notifyqueue>" (HEROS_QIDENT_NOTIFY=1, default ON): HeROS
+     * reply-to addresses embed the sender's config-mailslot identity BEFORE the dot and the
+     * actual NOTIFY queue (the kernel queue the client created + reads) AFTER it, e.g.
+     * "0000107CfgMc.Rtsffffffff". q_basename keeps the before-dot mailslot, which in the 3-proc
+     * demo is UNBACKED (no per-client config-mailslot server) -> auto-create a black hole ->
+     * a server's reply to that resolved id is LOST. Concretely: skmgr's SkMgrFrame::OnLogin ->
+     * SkMgrClientManager::CreateClient does q_ident(loginPath="0000107CfgMc.Rtsffffffff") ->
+     * SetQueueID, and Server::Connection::Flush q_sends the SkMgrLoginQuit there; with the
+     * before-dot mailslot black-holed, the LoginQuit never reaches the client and its softkey
+     * bind blocks forever. The real delivery target is the after-dot notify queue (the client
+     * owns+reads it) — exactly what INJECT_ACK already extracts for the config connect-ack. So
+     * when the before-dot base is ABSENT but the after-dot notify queue EXISTS, resolve to it.
+     * Only fires for dotted names whose before-dot part is unbacked AND whose after-dot part is
+     * a genuinely Q_create'd queue, so non-reply-to names and real before-dot queues are
+     * unaffected (q_find_slot(base) already matched those above). */
+    if(!id && qident_notify && nm && base[0]){    /* base[0]: only "<mailslot>.<notifyq>", NOT leading-dot ".X" (that is CFG_REPLY_ROUTE's empty-queue path) */
+        const char*dot=strrchr(nm,'.');
+        if(dot && dot>nm && dot[1]){
+            lock(); int ns=q_find_slot(dot+1); uint32_t nid=(ns>=0)?C->queues[ns].id:0; unlock();
+            if(nid){ LOG("Q_ident \"%s\" -> 0x%x (compound notify-queue \"%s\", mailslot \"%s\" unbacked)\n",
+                         nm,nid,dot+1,base); return nid; }
+        }
+    }
     if(!id && q_autocreate && !q_is_probe_name(base)){    /* black-hole sink for absent peers */
         id=q_create(base,2,0); LOG("Q_ident \"%s\" -> auto 0x%x\n",base,id); return id;
     }
@@ -1669,6 +1693,7 @@ static void ensure_init(void){
                 while(*q && !((*q>='0'&&*q<='9')||(*q>='a'&&*q<='f')||(*q>='A'&&*q<='F'))) q++; } }
         const char *ad=getenv("HEROSCALL_AS_DELIVER"); as_deliver=!(ad&&ad[0]=='0');
         const char *aq=getenv("HEROSCALL_AUTO_QUEUE"); q_autocreate=!(aq&&aq[0]=='0');
+        const char *qn=getenv("HEROS_QIDENT_NOTIFY"); qident_notify=!(qn&&qn[0]=='0');
         const char *qw=getenv("HEROSCALL_QREAD_MAXWAIT"); qread_maxwait=0;
         if(qw) for(const char*q=qw; *q>='0'&&*q<='9'; q++) qread_maxwait=qread_maxwait*10+(uint32_t)(*q-'0');
         const char *st=getenv("HEROSCALL_SYNC_TIMEOUT"); sync_timeout=0;
