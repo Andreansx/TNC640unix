@@ -1112,6 +1112,14 @@ static void post_evt_ans_error(uint32_t rqid);
 /* WMQ_BREAK per-queue consecutive-empty-no-wait-read counter (slot-indexed; reset on a real read). */
 static unsigned long wmq_empty_streak[1024];
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
+    int q_saved_errno=errno;   /* libc syscall() preserves errno on SUCCESS, sets it only on error; the
+                                * real heros.ko q_read does likewise. Our success path below calls
+                                * LOG()/ev_send()/q_send() which clobber errno via fprintf/futex, so we
+                                * MUST restore the caller's errno before a positive return. winmgr's
+                                * WmRecvRequest@0x39fd0 does `errno=0; q_read(); if(errno&~2) return ERR`
+                                * — a dirty errno after a SUCCESSFUL read made it reject EVERY Q_WMGR
+                                * request (WmWaitableQueue::Notify skips HandleMessage -> 0 WM replies ->
+                                * skmgr/Guppy block forever -> softkey bar never drawn). */
     int s=q_slot(id); if(s<0){ LOG("Q_read unknown queue 0x%x\n",id); errno=EINVAL; return -9; }  /* errno!=ENOMEM: wrapper -> 0, not "grow" */
     if(timeout==0xffffffff && qread_maxwait) timeout=qread_maxwait;   /* debug: cap ALL forever-waits */
     if(timeout==0xffffffff && sync_timeout && strstr(C->queues[s].name,"Sync")){ /* cap only *Sync handshakes */
@@ -1258,6 +1266,7 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
                 LOG("INJECT_UPD: connect read -> injecting synthetic UpdNewState (%u bytes, id 0x1f0320)\n",(unsigned)sizeof upd);
                 q_send(id,upd,(uint32_t)sizeof upd,0);
             }
+            errno=q_saved_errno;   /* SUCCESS: restore caller errno (LOG/ev_send/q_send above clobbered it) */
             return (int)len;                              /* message size in eax */
             }   /* if(have) */
         }
@@ -2183,11 +2192,17 @@ long syscall(long n,...){
     case 0x27: /* Sys_getenv(name@p[0], outbuf@p[2], size@p[4]) */
         if(p&&p[0]) return env_get((const char*)(uintptr_t)p[0],(char*)(uintptr_t)p[2],p[4]);
         return -2;
-    case 0x29: /* P_ident(name): look up a RUNNING process by name. The emulator tracks tasks/queues,
-                * not P_ processes, so report NOT-FOUND (-1) — else AppStart::Processes::OnMessage(FmLoadProcess)
-                * reads p_ident!=-1 as "process already running" and throws "...twice" BEFORE IsAFile/PCreate,
-                * silently aborting the spawn (the default 0 broke the fork). -1 = heros not-found convention. */
-        { const char*pn=(p&&p[0])?(const char*)(uintptr_t)p[0]:"?";
+    case 0x29: /* P_ident(name@p[0]).
+                * NULL/empty name = the SELF-query "what is MY process id" — heros p_ident(0). The WM client
+                * code (libbackend, in Guppy/skmgr) builds its WM-connect message embedding this as its pid
+                * (msg field a1[6]); winmgr's WmClient::ProcessExists@0x1dd90 then REJECTS the client when
+                * pid==-1 ("Created invalid client '???.???'") so WmClient::SendReply sends NOTHING -> winmgr
+                * answers ZERO Q_WMGR requests -> skmgr/Guppy block forever -> the softkey bar never draws.
+                * Return the caller's own heros task id (a valid, non-(-1) pid). The NAMED form still reports
+                * NOT-FOUND (-1): AppStart::Processes::OnMessage(FmLoadProcess) reads p_ident(name)!=-1 as
+                * "already running" and throws "...twice" before the spawn, so a named lookup MUST stay -1. */
+        if(!p||!p[0]){ uint32_t self=task_self(); LOG("P_ident(self) -> 0x%x\n",self); return (long)(int32_t)self; }
+        { const char*pn=(const char*)(uintptr_t)p[0];
           if(strstr(pn,"winmgr")||strstr(pn,"mgr")) { fprintf(stderr,"[rtos] P_ident(\"%s\") -> -1 (Processes::OnMessage reached)\n",pn); fflush(stderr); }
           else LOG("P_ident(\"%s\") -> -1\n",pn); }
         return (uint32_t)-1;
