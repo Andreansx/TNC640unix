@@ -302,6 +302,7 @@ static void post_inject_reread(void);    /* posts the synthetic UpdNewState that
  * delivered (avoids FWaitableInput::Unmask "0<mask" from over-notifying unarmed waitables).
  * Use for AppStartMP's pre-spawn Ev_receive(0x01019007): inject the CREATE_VOID_SUBSYSTEM bit. */
 static uint32_t ev_inject_want=0, ev_inject_bit=0; static int ev_inject_init=0;
+static int qnotify_level=-1;          /* HEROSCALL_QNOTIFY_LEVEL: level-triggered owned-queue notify re-assert */
 static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
@@ -460,6 +461,30 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
                 return __atomic_load_n(ev,__ATOMIC_ACQUIRE)&want;
             }
             rel.tv_sec=rem/1000; rel.tv_nsec=(rem%1000)*1000000L; tp=&rel;
+        }
+        /* LEVEL-TRIGGERED queue notify (HEROSCALL_QNOTIFY_LEVEL, default ON): the real kernel keeps a
+         * queue's notify bit ASSERTED while the queue is non-empty. The emulator sets it on Q_send (edge)
+         * and clears it on the owner's read; q_read re-asserts on the READ path, but a message that lands
+         * while the owner is cycling through a wait whose mask EXCLUDES that bit (e.g. Guppy's softkey/
+         * PyRPC thread 0x10a polling 0x00001000 / 0x03001000 between its 0x03011000 blocks) can STRAND:
+         * the cross-process Q_send sets bit 24 (Rts<taskid> notify), but the owner consumed it on an
+         * earlier read and never sees the new level -> SkMgrLoginQuit sits unread -> the softkey bar never
+         * fills. Before blocking, re-assert the notify bit of any NON-EMPTY owned queue whose notify_bits
+         * intersect `want`. SCOPED to top-byte (24-31) queue-notify bits ∩ want -> can NEVER set a non-queue
+         * bit like ConfigServer's 0x80000 (bit 19) run-up wait (the reason the old UNSCOPED heuristic at the
+         * top of this fn was removed). gated for A/B; faithful (the kernel queue notify IS level-triggered). */
+        if(qnotify_level<0){ const char*e=getenv("HEROSCALL_QNOTIFY_LEVEL"); qnotify_level=(e&&e[0]=='1')?1:0; }
+        if(qnotify_level && (want & 0xff000000u)){
+            uint32_t set=0; lock();
+            for(int qi=0; qi<MAXQ; qi++){ struct queue*qq=&C->queues[qi];
+                if(qq->used && qq->owner==self && (qq->notify_bits & want) && qq->tail!=qq->head)
+                    set |= (qq->notify_bits & want); }
+            unlock();
+            if(set && (cur & set)!=set){
+                __atomic_or_fetch(ev,set,__ATOMIC_ACQ_REL);
+                if(hstrace) HST(self,0,"QNOTIFY_LEVEL t%x re-assert %08x (pending owned queue, want %08x)\n",self,set,want);
+                continue;                                    /* re-check: catch the re-asserted bit, drain the queue */
+            }
         }
         futex(ev,FUTEX_WAIT,cur,tp);                          /* forever (tp=0) or remaining slice */
     }

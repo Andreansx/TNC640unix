@@ -563,6 +563,48 @@
 > override). ⇒ Guppy will NEVER open the .bmx; the DONE-condition's `g_strace .bmx` check is a process-assumption
 > error (the bitmaps load in skmgr's strace, where .bmx=19).
 
+> ## ★★★★★ winmgr SERVES its WM clients (P_ident self-pid ROOT CAUSE) + softkey reply ROUTING fixed (2026-06-27) — gate now = the softkey READER thread's cross-process/FModule wake
+> The prior "winmgr stays up but the bar doesn't draw / INJECT-vs-winmgr chicken-and-egg" framing is advanced
+> two concrete layers. Lever-1 (rate-limited autofire) was a RED HERRING (winmgr creates its 5 windows with
+> SYSFIRE=0 too; the spin only starved the RTOS lock — **SYSFIRE=0 is the clean config**). Two ROOT-CAUSE fixes
+> landed (both committed + pushed):
+> **(1) winmgr replied to ZERO WM clients because every client's pid was -1 (commit 0e6a084).** Decompiled the
+> dispatch (`WmWaitableQueue::Notify`->`WmRecvRequest`->`HandleMessage@0x29f00`->per-type->`WmClient::SendReply
+> @0x1e650`): SendReply only sends for a VALID client, and `WmClient::ProcessExists@0x1dd90` =
+> `pid!=-1 && tid!=-1 && p_name(pid) && t_name(tid)`. DUMPQ of the 0x3001 connect: **a1[6]=pid=0xffffffff(-1)**.
+> The libbackend WM client (Guppy/skmgr) embeds its OWN pid via the heros self-query **`p_ident(NULL)`**, which
+> the emulator returned -1 for unconditionally -> winmgr "Created invalid client '???.???'" -> 0 replies ->
+> skmgr/Guppy block forever on the WM handshake. FIX (`heros_rtos.c` case 0x29): `P_ident(NULL)` = the self-query
+> -> return `task_self()` (valid pid); the NAMED form still returns -1 (AppStart spawn logic). Also: `q_read`
+> preserves errno on success (WmRecvRequest checks it). **VERIFIED:** winmgr now REPLIES (10 Q_WMGR reads, 208B
+> GetScreens + 16B connect-acks); **Guppy advances 261 -> 4622 log lines** (past the WM handshake INTO the softkey
+> LOGIN: Q_send Q_SkMgrCtrl, SkMgrLogin); skmgr serves + sends its own WM requests. crash=0, /etc GUARD OK.
+> **(2) SK_REPLY_ROUTE mis-routed the login reply in the new valid-pid topology (commit bed94e5).** The pid fix
+> renamed the per-client softkey reply queues "Rtsffffffff"/"Clientffffffff" -> "Rts<taskid>"/"Client<taskid>".
+> Now BOTH are owned by the same softkey thread, which reads its OWN notify-bearing **"Rts<taskid>"** (Rts10a,
+> notify 0x01000000) while "Client<taskid>" is a PASSIVE no-notify queue. SK_REPLY_ROUTE was unconditionally
+> redirecting Rts->Client, STRANDING the 36B SkMgrLoginQuit on the dead Client10a. FIX: gate the redirect on the
+> target Client queue being WAITABLE (`notify_bits!=0`) — preserves the old -1-pid case (Clientffffffff had
+> notify), but in the valid-pid topology the reply now stays on the Rts10a the owner wakes on. VERIFIED: fires 0x.
+> **★ REMAINING GATE (precisely pinned, NOT crossed): the softkey READER thread (Guppy task 0x10a) doesn't drain
+> the reply.** The 36B SkMgrLoginQuit sits in Rts10a (0x321, notify bit 24, owner 0x10a); the emulator re-asserts
+> the level-triggered notify ("still has 1 msgs, reader=t10a") but 0x10a never consumes it -> Guppy sends 0 of the
+> 7 SkMgrInfoRequests -> skmgr (serve 4-8, PutImage 0) never draws (screenshot 3 colours). 0x10a's terminal block
+> is `Ev_receive(0x03011000, ANY, forever)` whose mask INCLUDES bit 24 — so it SHOULD wake; it doesn't. Reply path
+> is a TWO-HOP bridge: skmgr -> Rts10a(0x10a) -> 0x10a forwards -> Client109 (0x109/Guppy-main, notify 0x02000000,
+> where the bit-0x8-polling API caller reads). Only the MAIN thread (0x109) is /dev/events-bridged; the secondary
+> 0x10a is not. Tried + did NOT crack it: EV_FORCE_TASK=10a/_BIT=1000; **HEROSCALL_QNOTIFY_LEVEL** (NEW, default
+> OFF) faithful level-triggered owned-queue notify re-assert before ev_receive blocks, scoped to top-byte (24-31)
+> bits ∩ want (can never touch ConfigServer's non-queue 0x80000 wait) — 0x10a still didn't catch bit 24, so the
+> gate is the WAKE/dispatch of the secondary thread, not edge-vs-level. NO_OPENBOX is NOT an option (skmgr's PLib
+> sig6-aborts without an EWMH WM; winmgr alone doesn't satisfy its check). ⇒ the bar is gated on the
+> **cross-process/FModule wake + reply-forwarding of Guppy's secondary softkey thread 0x10a** = the documented
+> multi-thread FModule frontier (same class as the HrMmi peer gate / AppStartMP logo handshake). NEXT: (a)
+> cross-process-wake/evdev-bridge the SECONDARY GUI threads (not just mains); (b) RE the 0x10a FModule dispatcher
+> (why a set+re-asserted bit-24 in its 0x03011000 wait isn't dispatched to a Rts10a read); (c) operational-peer
+> INJECT for Guppy's softkey thread. Findings: `scratchpad/skmgr_softkey_findings.md`. Run:
+> `emulator/run_3proc_skmgr_guppy.sh` (WINMGR=1 INJECT_WMGR_ACK=0 SYSFIRE=0; HEROSCALL_QNOTIFY_LEVEL=1 to A/B).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
