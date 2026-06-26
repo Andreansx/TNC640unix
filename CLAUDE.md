@@ -359,6 +359,50 @@
 > Findings: `scratchpad/guppy_is_the_main_mmi.md`. Run: `emulator/run_guppy_window.sh` (GUPPY_C=HwSetup|HwViewer|
 > SParDialog); native Mac window: `emulator/guppy_xquartz_mac.sh HwSetup`.
 
+> ## ★★★★ FEX-NATIVE FRONTIER (2026-06-26) — SkManager (skmgr.elf) runs + 3-proc with Guppy; the softkey-bind chain RE'd end-to-end; the bind GATE cracked; the bar-fill = the GUPPYSKMGR↔skmgr GData handshake frontier
+> Target: make HwViewer's `jh.softkey.Register` succeed so the softkey bar fills (the documented "needs the
+> SkManager peer" gap from the Guppy milestone above). Progress (full writeup `scratchpad/skmgr_softkey_findings.md`):
+> **(1) DONE — skmgr.elf runs FEX-native** (`emulator/run_skmgr_smoke.sh`): `-p=~/skmgr skmgr -w -k`, zero crashes,
+> RTOS init clean, connects to ConfigServer (config round-trip via its Q_SkMgrCtrl reply queue + INJECT_ACK),
+> connects to X, **creates Q_SkMgr (0x313, notify 0x02000000) + Q_SkMgrCtrl (0x314, notify 0x04000000)**, serves.
+> **(2) DONE — 3-proc** (`emulator/run_3proc_skmgr_guppy.sh` = ConfigServer + skmgr + Guppy/HwViewer): Guppy
+> resolves **`Q_ident "Q_SkMgr" -> 0x313`** = skmgr's REAL queue; HwViewer renders (359 colours), /etc GUARD OK.
+> **(3) SKRegister chain RE'd (idalib on Guppy.elf + libSkMgrCtrl.so):** HwViewer.py:2653 `jh.softkey.Register(
+> 'sk/HwViewer_sxga.spj', Notify, window)` → `_jh` builtin → `PyJh::SKRegister@0xc3d20` → `PyJHCallback::
+> SKRegister@0xb45e0` → **bind GATE** → `GUPPYSKMGR::Register@0xbe2f0` → `GUPPYSKMGR_::Connect@0xbc9a0` →
+> `LogIn@0xc130` (SkMgrLogin → `SendMessage@0xc080`, gated on CheckState `this+24` + conn `this+48`) →
+> `FMailslotQueue::Write` → q_send(Q_SkMgr 0x313). Reply via **GData GdSkMgrCtrlServerResponse chan 118620288,
+> handle field 59 (-1=fail)**; server side `SkMgrCtrlConnectionHandler::RegisterConnection@0x16110` creates the
+> GData channels. **The bind GATE (RE'd, disasm @0xb470c):** `PyJHCallback::SKRegister` requires the window
+> record (in tree `dword_126BFC`) +0x1C!=0 (WndFullScreen bind-capable) OR +0x14!=0 (WndPlcScreen/FocusPane);
+> both 0 → `Err_Set(ER_SOE_SK_BIND_WINDOW)` = "Binding softkey resource to window failed". The OEM window gets
+> NEITHER (it is NOT created as a bind-capable WndFullScreen; **the WM-registration path `gtk_window_set_usage`
+> is NEVER called for it** — wmstub logged 0; the window draws fully WITHOUT WM registration ⇒ winmgr.elf is NOT
+> on this window's path, bringing it up would not set the flag). **GATE CRACKED:** patch `0xb4710` jnz(75)→jmp(EB)
+> — via `emulator/skforce.c` (runtime mprotect; perturbs FEX JIT/SMC) OR an **on-disk patched `Guppy_skpatch.elf`**
+> (file off 0xb4710 75→EB; deterministic, non-perturbing; `GUPPY_BIN=Guppy_skpatch.elf`). VERIFIED: the patched
+> Guppy reaches softkey.Register, proceeds PAST the gate (no "Binding...failed"), into GUPPYSKMGR::Register.
+> **★ NEW FRONTIER (the bar-fill blocker, precisely pinned via Guppy's own heroscall log = ground truth):** past
+> the gate, Guppy **NEVER q_sends to 0x313/0x314** (its sends go to ConfigServer 0x303 / Q_WMGR 0x312 / others;
+> skmgr reads 0 messages). GUPPYSKMGR::Register gets **STUCK in the connection setup BEFORE the LogIn q_send** —
+> window freezes mid-draw (256 colours), continuous SIGBUS `BUS_ADRALN` flood (FEX trap-emulate of unaligned
+> atomics; FEX warns "Host CPU doesn't support atomics" — the lima/vz VM hides LSE atomics so the GData shared-mem
+> atomics each fault). It is a **block, not slowness** (identical end-state at MMI_TIMEOUT 140/270/430s; no crash;
+> no python re-raise = never returns from the native call). ⇒ the bar-fill is gated on the GUPPYSKMGR↔skmgr
+> **GData cross-process connection handshake** (client's connection-state `+24` never reaches login-ready; it
+> waits for skmgr to publish the GData connection channel 118620288, which the under-FEX GData round-trip doesn't
+> complete) = the documented multi-process GData pub/sub frontier (same class as the HrMmi INJECT saga). CAVEAT:
+> the OEM window is genuinely not bind-capable, so the forced-gate path may also read uninitialised window-record
+> fields — the gate force is a DIAGNOSTIC isolating the first blocker, not a faithful fix. NEXT levers: (a) RE
+> what flips `SkMgrCtrlInterfaceImpl+24`/the observed GData 118620288 to login-ready → make skmgr publish/INJECT
+> it so LogIn→q_send(0x313) fires; (b) verify the emulator shares GData cross-process (M_attach `/dev/shm/
+> heros_reg_*` vs a separate channel needing a bridge) — if not, that's the root; (c) `FEX_CPUFEATUREREGISTERS`
+> to expose host LSE atomics so the GData path runs native instead of SIGBUS-trapping. Tooling: `emulator/{skforce,
+> skspy,wmstub}.c`, `run_skmgr_smoke.sh`, `run_3proc_skmgr_guppy.sh` (knobs GUPPY_BIN/MMI_FREEGUARD/WMFORCE/SKFORCE/
+> NO_NCK_WINMGR/SK_ARGS/MMI_TIMEOUT/SHOT_AT/DUMPQ/HSTRACE). VM bumped to 8 CPUs/8 GiB (the RTOS task-creation
+> rendezvous is timing-sensitive → the first run after a `limactl restart` can stall in ConfigServer's 5-task
+> rendezvous; re-run). Findings: `scratchpad/skmgr_softkey_findings.md`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
