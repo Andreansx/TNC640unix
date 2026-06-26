@@ -817,9 +817,20 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
               unsigned char rep[208]; memset(rep,0,sizeof rep);
               put32(rep+0,0x3037u);   /* dest off0:  reply type 12343 = GetScreens reply */
               put32(rep+8,seq);       /* dest off8:  v273 = request seq (winmgr writes a1[1] HERE, not off4) */
-              /* off12 v274 / off16 v275 / off20 v276 / off68 v283 / off196 v285 = 0 (empty-screen branch) */
-              put32(rep+204,1u);      /* dest off204: v287 _BOOL4 is-last = TRUE (empty-screen else-branch) */
-              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u@off8, is-last@off204, 208B) to WM reply-q 0x%x\n",seq,rq);
+              /* HEROSCALL_WMGR_SCREEN=1 -> the NON-EMPTY (do-while) branch: one valid screen so the WM
+               * client has a screen to attach its softkey bar to (the demo HwViewer targets the OEM
+               * screen; layout tnc640layout1280.xml: SCREEN_OEM name="OEM"). winmgr's do-while writes
+               * v274=screenNum, v275=screenId, v276=name(0x30), v283=name2(0x80), v285=flag(ScreenId+124),
+               * v287=is-last. =0 (default) -> the empty-screen else-branch. */
+              static int scr=-1; if(scr<0){ const char*e=getenv("HEROSCALL_WMGR_SCREEN"); scr=e&&e[0]=='1'; }
+              if(scr){ put32(rep+12,0u);            /* v274 screenNum */
+                       put32(rep+16,2u);            /* v275 screenId (OEM desktopId 2) */
+                       memcpy(rep+20,"OEM",4);      /* v276 name (48B field) */
+                       memcpy(rep+68,"OEM",4);      /* v283 name2 (128B field) */
+                       rep[196]=0;                  /* v285 flag byte (ScreenId+124) */
+              }
+              put32(rep+204,1u);      /* dest off204: v287 _BOOL4 is-last = TRUE (only/last screen) */
+              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u@off8, %s, is-last, 208B) to WM reply-q 0x%x\n",seq,scr?"1 screen OEM":"empty",rq);
               q_send(rq,rep,sizeof rep,0);
           }
       }
