@@ -92,7 +92,8 @@ struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
               uint32_t ctx_dst, arg_dst, msgsize;    /* delivery slots (process-local ptrs) */
               volatile uint32_t as_pending;          /* async-signals raised but not yet read (TCB+0x1f0) */
               volatile uint32_t as_mask;             /* enabled async-signal mask          (TCB+0x1f4) */
-              volatile uint32_t last_ev_want; };     /* most recent Ev_receive want-mask (for queue-notify bit matching) */
+              volatile uint32_t last_ev_want;        /* most recent Ev_receive want-mask (for queue-notify bit matching) */
+              volatile uint32_t nowait_miss; };      /* consecutive Ev_receive(EV_NOWAIT) misses (for EV_NOWAIT_YIELD spin throttle) */
 struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count; };
 /* one variable-length message + the 12-byte sender header the kernel returns in Q_read's p[4]
  * (from Q_send's message-node fields: source queue id, sender task, mode|size) */
@@ -358,13 +359,31 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
         int ok = cond==1 ? ((cur&want)==want) : ((cur&want)!=0);
         if(ok){
             uint32_t caught = cur & want;
+            if(s>=0&&s<MAXTASK) C->tasks[s].nowait_miss=0;     /* EV_NOWAIT_YIELD: a real catch resets the spin streak */
             __atomic_and_fetch(ev,~caught,__ATOMIC_ACQ_REL);  /* consume */
             if(hstrace && (hst_waited||caught)) HST(self,0,"EV< t%x want=%08x c=%u -> caught %08x%s\n",
                 self,want,cond,caught,hst_waited?" (woke)":"");
             evdev_reconcile(self);    /* events consumed -> re-arm/drain /dev/events to match */
             return caught;
         }
-        if(timeout==0){ evdev_reconcile(self); return 0; }  /* poll miss -> drain stale signal */
+        if(timeout==0){ evdev_reconcile(self); /* poll miss -> drain stale signal */
+            /* EV_NOWAIT_YIELD: a client thread that busy-spins Ev_receive(want, EV_NOWAIT) waiting for a
+             * USEREVMASK "reply-available" bit (e.g. Guppy's softkey thread polling bit 0x8 while another
+             * task — the 0x320 reply-queue reader t108 — must read+process the SkMgr reply and ev_send 0x8)
+             * pegs a core. Under FEX (per-task host threads, contended VM) the spin can starve the reader
+             * task so it never wakes on the cross-process queue notify -> the bit is never set -> livelock.
+             * Throttle the spinning NOWAIT miss with a short usleep so the OS scheduler runs the reader.
+             * Faithful: a NOWAIT poll returns "nothing" either way; only the spin rate changes (the real
+             * kernel's scheduler/event coupling never spins this tight). Per-task consecutive-miss gated so
+             * legit one-off polls aren't slowed. */
+            static int evy=-1; static long evy_n=0;
+            if(evy<0){ const char*e=getenv("HEROSCALL_EV_NOWAIT_YIELD"); evy=e?atoi(e):0;
+                       const char*t=getenv("HEROSCALL_EV_NOWAIT_YIELD_N"); evy_n=t?atol(t):64; }
+            if(evy>0 && s>=0 && s<MAXTASK){
+                if(C->tasks[s].nowait_miss < 0x7fffffff) C->tasks[s].nowait_miss++;
+                if(C->tasks[s].nowait_miss > evy_n) usleep((useconds_t)evy);
+            }
+            return 0; }
         /* HEROSCALL_SYSEVENT_AUTOFIRE=1: the reserved SYSEVENT bits (16-23, mask 0x00ff0000) are set
          * by the real kernel's Ev_sendtcb when a hardware/system sysevent fires (timer, X readable,
          * input). The emulator generates no such sysevents, so a thread that BLOCKS on a sysevent bit
@@ -909,25 +928,29 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
       if(inject_wmgr_ack && msg && size>=24 && !strcmp(C->queues[s].name,"Q_WMGR")
          && *(const uint32_t*)msg==0x3001u){
           uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t a10=*(const uint32_t*)((const char*)msg+8);     /* a1[10] = client's last-seen WM event serial */
           uint32_t rq =*(const uint32_t*)((const char*)msg+20);   /* a1[5] = reply queue (Guppy 0x31d) */
           if(rq && q_slot(rq)>=0){
               static uint32_t wroot=0xffffffffu;
               if(wroot==0xffffffffu){ const char*e=getenv("HEROSCALL_WMGR_ROOT"); wroot=e?(uint32_t)strtoul(e,0,0):0u; }
               unsigned char rep[16]; memset(rep,0,sizeof rep);
               put32(rep+0,0x3001u);   /* reply type 12289 = WM connect reply */
-              put32(rep+8,seq);       /* v273 = request seq @off8 */
+              put32(rep+4,a10+1);     /* off4 = WM EVENT SERIAL: WmSendRequestReply gap-checks serial-1==a1[10] */
+              put32(rep+8,seq);       /* v273 = request seq @off8 (reqid; WmSendRequestReply checks ==request seq) */
               put32(rep+12,wroot);    /* v274 = RootWindow @off12 */
-              LOG("INJECT_WMGR_ACK: posting 0x3001 connect-reply (seq %u@off8, root 0x%x, 16B) to WM reply-q 0x%x\n",seq,wroot,rq);
+              LOG("INJECT_WMGR_ACK: posting 0x3001 connect-reply (seq %u@off8, serial %u@off4, root 0x%x, 16B) to WM reply-q 0x%x\n",seq,a10+1,wroot,rq);
               q_send(rq,rep,sizeof rep,0);
           }
       }
       if(inject_wmgr_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
          && *(const uint32_t*)msg==0x3037u){
           uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t a10=*(const uint32_t*)((const char*)msg+8);     /* a1[10] = client's last-seen WM event serial */
           uint32_t rq =*(const uint32_t*)((const char*)msg+24);
           if(rq && q_slot(rq)>=0){
               unsigned char rep[208]; memset(rep,0,sizeof rep);
               put32(rep+0,0x3037u);   /* dest off0:  reply type 12343 = GetScreens reply */
+              put32(rep+4,a10+1);     /* dest off4:  WM EVENT SERIAL (gap-checked serial-1==a1[10]); was 0 -> GAP after the connect's serial 0 -> WMGRErrSync */
               put32(rep+8,seq);       /* dest off8:  v273 = request seq (winmgr writes a1[1] HERE, not off4) */
               /* HEROSCALL_WMGR_SCREEN=1 -> the NON-EMPTY (do-while) branch: one valid screen so the WM
                * client has a screen to attach its softkey bar to (the demo HwViewer targets the OEM
@@ -942,8 +965,41 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
                        rep[196]=0;                  /* v285 flag byte (ScreenId+124) */
               }
               put32(rep+204,1u);      /* dest off204: v287 _BOOL4 is-last = TRUE (only/last screen) */
-              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u@off8, %s, is-last, 208B) to WM reply-q 0x%x\n",seq,scr?"1 screen OEM":"empty",rq);
+              LOG("INJECT_WMGR_ACK: posting 0x3037 screen-reply (seq %u@off8, serial %u@off4, %s, is-last, 208B) to WM reply-q 0x%x\n",seq,a10+1,scr?"1 screen OEM":"empty",rq);
               q_send(rq,rep,sizeof rep,0);
+          }
+      }
+      /* 0x3042 = WM SYNC (WmSync@libwinmgrlib 0x86d0). The client sends a 24-byte request
+       * [off0=12354, off4=seq, off8=a1[10], off12=a1[11], off16=pid, off20=tid] and blocks in
+       * WmSendRequestReply reading its session queue a1[2] = "WMQ<tid>" for the reply. winmgr's
+       * HandleMessage@0x29f00 case 0x3042 builds a WmEvent (SetType(10)+SetValue(seq)) and sends it
+       * to the client via WmClient vtable+80 (-> WmSendEvent -> q_send of the serialized event).
+       * The CLIENT only requires (WmSendRequestReply LABEL_34): reply off0<=12355, off4==a1[10]+1
+       * (event serial, gap-checked), off8==request seq (reqid). The 24-byte sync request carries
+       * NO reply-queue id (unlike 0x3001/0x3037) — the reply goes to a1[2]=WMQ<a1[1]=tid@off20>.
+       * Without this reply WmSync never returns and Guppy's WndFullScreen WM-registration handshake
+       * never completes, so the fullscreen geometry + window map (hence the softkey bar layout) never
+       * happen. Same INJECT_ACK class as 0x3001/0x3037. */
+      if(inject_wmgr_ack && msg && size>=24 && !strcmp(C->queues[s].name,"Q_WMGR")
+         && *(const uint32_t*)msg==0x3042u){
+          uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t a10=*(const uint32_t*)((const char*)msg+8);     /* a1[10] = client's last-seen WM event serial */
+          uint32_t tid=*(const uint32_t*)((const char*)msg+20);    /* a1[1] = WM context task -> reply queue WMQ<tid> */
+          char wmq[NAMELEN]; snprintf(wmq,sizeof wmq,"WMQ%05X",tid);
+          int rs=q_find_slot(wmq); uint32_t rq=(rs>=0)?C->queues[rs].id:0;
+          if(rq && q_slot(rq)>=0){
+              /* The reply is a serialized WmEvent (type 10). The client discards the buffer after the
+               * sync barrier; only off0/off4/off8 matter. Mirror the winmgr_event_ envelope used by
+               * the 0x3001/0x3037 replies: off0=event type, off4=serial, off8=reqid. Size = 208 (the
+               * dest WmEvent buffer class). off0=10 (WmEvent::Type 10, <=12355 -> LABEL_34 success). */
+              unsigned char rep[208]; memset(rep,0,sizeof rep);
+              put32(rep+0,10u);       /* off0: WmEvent type 10 (sync-reply); <=12355 -> normal event */
+              put32(rep+4,a10+1);     /* off4: WM event serial (gap-checked serial-1==a1[10]) */
+              put32(rep+8,seq);       /* off8: reqid (== request seq; WmSendRequestReply LABEL_34 checks v28==a4[2]) */
+              LOG("INJECT_WMGR_ACK: posting 0x3042 sync-reply (seq %u@off8, serial %u@off4, type 10, 208B) to WM reply-q \"%s\" 0x%x\n",seq,a10+1,wmq,rq);
+              q_send(rq,rep,sizeof rep,0);
+          } else {
+              LOG("INJECT_WMGR_ACK: 0x3042 sync — reply queue \"%s\" (tid 0x%x) not found, skipping\n",wmq,tid);
           }
       }
     }
