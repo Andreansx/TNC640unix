@@ -604,6 +604,19 @@
 > (why a set+re-asserted bit-24 in its 0x03011000 wait isn't dispatched to a Rts10a read); (c) operational-peer
 > INJECT for Guppy's softkey thread. Findings: `scratchpad/skmgr_softkey_findings.md`. Run:
 > `emulator/run_3proc_skmgr_guppy.sh` (WINMGR=1 INJECT_WMGR_ACK=0 SYSFIRE=0; HEROSCALL_QNOTIFY_LEVEL=1 to A/B).
+> ★ TWO A/B TOOLS tried this session (both committed default-OFF, neither crossed the gate but both informative):
+> (1) **HEROS_EVDEV_SIBLING** (shared-pipe sibling wake) — Guppy open()s `/dev/events` ONCE (main thread 0x109),
+> so the secondary softkey reader 0x10a shares that pipe but the watcher reconciled it only for 0x109's events;
+> the fix makes the shared pipe readable when ANY same-`tgid` task has a pending event (+15ms watcher poll). It
+> compiles/runs clean but did NOT make 0x10a drain Rts10a (the reader reads exactly 2 msgs then stops in EVERY
+> config) ⇒ the stranding is NOT the /dev/events wake. (2) **HEROS_TM_PERIODIC** (real `Tm_evevery` re-fire
+> thread) — the emulator fired winmgr's ~55ms WmTimer ONCE then no-op'd it ("periodic firing = TODO"); the fix
+> spawns a detached re-fire thread. RESULT = a CONFIRMED REGRESSION as default: the blind 55ms tick STARVES the
+> serve threads (winmgr Q_WMGR serves **10->0**, Guppy **4572->650** lines; skmgr polls its 0x313 ~180x emptily +
+> floods 382K SIGBUS lines), exactly the documented render-thread-starves-serve-thread problem. ⇒ this **proves
+> the render tick must be EVENT-DRIVEN** (fire winmgr's render sysevent on a REAL X-socket-readable event = the
+> /dev/events bridge, the AppStartMP-logo fix bf0b579 applied to winmgr's render thread), NOT a blind periodic
+> timer = lever 2, the precise remaining faithful fix. A/B: `HEROS_EVDEV_SIBLING=1` / `HEROS_TM_PERIODIC=1`.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under

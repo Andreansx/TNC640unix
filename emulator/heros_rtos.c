@@ -223,9 +223,24 @@ static uint32_t task_by_name(const char*nm){
 static struct evdev { volatile uint32_t task; int rd, wr; uint32_t sysmask; int signaled; } evdevs[MAXEVDEV];
 static volatile int n_evdev=0;
 static int events_bridge=0;                      /* HEROS_EVENTS_PIPE=1 -> /dev/events is a pipe */
+static int evdev_sibling=-1;          /* HEROS_EVDEV_SIBLING=0 disables the shared-pipe sibling wake */
 static void evdev_reconcile_locked(struct evdev*e){      /* caller holds C->lock */
     int s=task_slot(e->task); if(s<0) return;
-    uint32_t want = C->tasks[s].events & (e->sysmask | 0xff000000u);
+    uint32_t mask=e->sysmask | 0xff000000u;
+    uint32_t want = C->tasks[s].events & mask;
+    /* SHARED-PIPE SIBLING WAKE: only the FIRST FModule thread in a process open()s /dev/events, so its
+     * pipe (e->wr/e->rd) is SHARED by every sibling thread's ppoll. A cross-process notify to a SECONDARY
+     * thread (e.g. Guppy's softkey reader 0x10a -> skmgr's SkMgrLoginQuit on Rts10a, notify bit 24) sets
+     * THAT thread's event word but not the pipe-owner's (0x109), so the shared pipe never goes readable and
+     * the secondary thread's ppoll never wakes -> the reply strands -> the softkey bar never fills. Make the
+     * pipe readable if ANY same-process (same tgid) task has a pending event matching the sysmask/notify
+     * mask; the shared fd then wakes ALL ppoll-blocked siblings, each re-checks its own bits, and the right
+     * one drains its queue (spurious wakes of the others are harmless — they re-block). */
+    if(!want && evdev_sibling!=0){
+        int32_t tg=C->tasks[s].tgid;
+        if(tg) for(int i=0;i<MAXTASK;i++)
+            if(C->tasks[i].used && C->tasks[i].tgid==tg && (C->tasks[i].events & mask)){ want=1; break; }
+    }
     if(want){
         if(!e->signaled){ char c=1; raw5(SYS_write,e->wr,(long)&c,1,0,0); e->signaled=1; }
     } else if(e->signaled){
@@ -255,10 +270,15 @@ static void *evdev_watcher_fn(void *arg){
     struct evdev *e=(struct evdev*)arg;
     int s=task_slot(e->task); if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
+    /* When the shared-pipe sibling wake is on, a cross-process notify to a SIBLING (not e->task) does NOT
+     * change e->task's word, so a pure futex-wait on it would miss it. Poll on a short timeout so the
+     * watcher re-reconciles (scanning siblings) within ~15ms; without sibling wake, block indefinitely. */
+    if(evdev_sibling<0){ const char*v=getenv("HEROS_EVDEV_SIBLING"); evdev_sibling=(v&&v[0]=='1')?1:0; }
+    struct timespec to={0,15*1000000L};
     for(;;){
         uint32_t cur=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
         lock(); evdev_reconcile_locked(e); unlock();
-        futex(ev,FUTEX_WAIT,(int)cur,0);   /* block until ANY ev_send to this task (incl. cross-process) */
+        futex(ev,FUTEX_WAIT,(int)cur,evdev_sibling?&to:0);  /* own event, or every 15ms to poll siblings */
     }
     return 0;
 }
@@ -497,6 +517,45 @@ static int ev_send(uint32_t task,uint32_t bits){
     futex(&C->tasks[s].events,FUTEX_WAKE,0x7fffffff,0);
     evdev_reconcile(task);            /* wake a select()-blocked EVHandler on /dev/events */
     return 0;
+}
+
+/* ---------------- periodic timer (Tm_evevery) ----------------
+ * The real kernel Tm_evevery is PERIODIC (re-fires the event bits every period_us). The emulator used to
+ * fire it ONCE [immediate] then no-op — fine for a converging pending-flush, but a periodic RENDER/serve
+ * tick then dies after one pass. winmgr arms a ~55ms WmTimer (Tm_evevery, bits 0x1 -> its own task 0x106)
+ * that drives its serve/refresh loop; with only one fire winmgr does a single pass (creates its windows,
+ * serves a handful of Q_WMGR requests) then idles -> it serves skmgr/Guppy only a few requests and the
+ * softkey/WM handshake never completes -> the bar never fills. A detached thread per Tm_evevery re-fires
+ * the bits every period so the tick stays alive. Gated HEROS_TM_PERIODIC (default OFF — VERIFIED 2026-06-27
+ * that a blind re-fire STARVES the serve threads: winmgr Q_WMGR serves 10->0, Guppy 4572->650 lines; the
+ * render tick must be EVENT-DRIVEN (fire on a real X event, the /dev/events bridge), not a blind timer);
+ * capped + floored. */
+static volatile int n_ptimer=0;
+struct ptimer { uint32_t task, bits, period_us; };
+static void *ptimer_fn(void *arg){
+    struct ptimer *pt=(struct ptimer*)arg;
+    uint32_t task=pt->task, bits=pt->bits, period=pt->period_us; free(pt);
+    if(period<20000) period=20000;            /* floor 20ms — avoid a tight re-fire loop on a tiny period */
+    struct timespec ts={(long)(period/1000000),(long)(period%1000000)*1000L};
+    for(;;){
+        raw5(SYS_nanosleep,(long)&ts,0,0,0,0);
+        if(task_slot(task)<0){ __atomic_sub_fetch(&n_ptimer,1,__ATOMIC_RELAXED); return 0; } /* task gone */
+        ev_send(task,bits);
+    }
+    return 0;
+}
+static void ptimer_start(uint32_t task,uint32_t bits,uint32_t period_us){
+    static int on=-1; if(on<0){ const char*e=getenv("HEROS_TM_PERIODIC"); on=(e&&e[0]=='1')?1:0; }
+    if(!on || !bits) return;
+    if(__atomic_load_n(&n_ptimer,__ATOMIC_RELAXED)>=64) return;   /* cap concurrent periodic timers */
+    struct ptimer *pt=malloc(sizeof *pt); if(!pt) return;
+    pt->task=task; pt->bits=bits; pt->period_us=period_us;
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at,PTHREAD_CREATE_DETACHED);
+    if(pthread_create(&th,&at,ptimer_fn,pt)==0){ __atomic_add_fetch(&n_ptimer,1,__ATOMIC_RELAXED);
+        LOG("Tm_evevery PERIODIC thread: task 0x%x bits %08x every %u us\n",task,bits,period_us); }
+    else free(pt);
+    pthread_attr_destroy(&at);
 }
 
 /* ---------------- async signals (pSOS "asr") ----------------
@@ -2212,6 +2271,9 @@ long syscall(long n,...){
             uint32_t self=task_self(); ev_send(self, p[1]);
             LOG("Tm_ev%s delay=%u us bits=%08x -> ev_send(0x%x) [immediate]\n",
                 lo==0x1b?"after":"every", p?p[0]:0, p?p[1]:0, self);
+            /* Tm_evevery (0x1d) is PERIODIC: also start a re-fire thread so the tick stays alive
+             * (winmgr's WmTimer render/serve loop). Tm_evafter (0x1b) stays one-shot. */
+            if(lo==0x1d) ptimer_start(self, p[1], p[0]);
             return 1;                       /* nonzero fake timer id */
         }
         return 0;
