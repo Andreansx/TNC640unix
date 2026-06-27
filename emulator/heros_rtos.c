@@ -693,15 +693,24 @@ static void qhex(const char*tag,uint32_t id,const void*p,uint32_t n){
 /* CAPTURE_MSG: dump the FULL bytes of the first message whose (header & 0x7fffffff) matches
  * HEROSCALL_CAPTURE_TYPE (hex) to /tmp/cap_<type>.bin — used to extract the real CfgActiveHandwheel
  * sub-message embedded in the 2711B HrMmiCfgGlobal (0x290081). Gated; one capture per type. */
-static uint32_t capture_type=0; static int capture_done=0; static int capture_init=0;
+/* CAPTURE list: HEROSCALL_CAPTURE_TYPE may be a comma-separated list of hex type-ids
+ * (e.g. "28a0120,28a02c0,28a0200"). Each is captured ONCE (first message of that type)
+ * to /tmp/cap_<type>.bin. Used to harvest the REAL well-formed SkMgr wire (Guppy sends
+ * SkMgrLogin/SetMenu when login completes under PIDENT_SELF=0) for byte-exact replay. */
+#define CAPN 8
+static uint32_t capture_types[CAPN]; static int capture_got[CAPN]; static int capture_n=0; static int capture_init=0;
 static void capture_msg(const void*p,uint32_t n){
-    if(!capture_init){ capture_init=1; const char*e=getenv("HEROSCALL_CAPTURE_TYPE"); capture_type=e?(uint32_t)strtoul(e,0,16):0; }
-    if(!capture_type||capture_done||!p||n<4) return;
+    if(!capture_init){ capture_init=1; const char*e=getenv("HEROSCALL_CAPTURE_TYPE");
+        if(e){ char buf[256]; snprintf(buf,sizeof buf,"%s",e); char*s=buf,*tok;
+            while((tok=strsep(&s,","))&&capture_n<CAPN){ if(*tok) capture_types[capture_n++]=(uint32_t)strtoul(tok,0,16); } } }
+    if(!capture_n||!p||n<4) return;
     uint32_t h=*(const uint32_t*)p & 0x7fffffff;
-    if(h!=capture_type) return;
-    char path[64]; snprintf(path,sizeof path,"/tmp/cap_%x.bin",capture_type);
-    FILE*f=fopen(path,"wb"); if(f){ fwrite(p,1,n,f); fclose(f); capture_done=1;
-        fprintf(stderr,"[rtos] CAPTURE_MSG: wrote %u bytes of type 0x%x to %s\n",n,capture_type,path); }
+    for(int i=0;i<capture_n;i++){
+        if(capture_got[i]||h!=capture_types[i]) continue;
+        char path[64]; snprintf(path,sizeof path,"/tmp/cap_%x.bin",capture_types[i]);
+        FILE*f=fopen(path,"wb"); if(f){ fwrite(p,1,n,f); fclose(f); capture_got[i]=1;
+            fprintf(stderr,"[rtos] CAPTURE_MSG: wrote %u bytes of type 0x%x to %s\n",n,capture_types[i],path); }
+    }
 }
 
 /* raise SIGUSR1 (and optionally 18) on the task's OS thread to invoke its ASR */
@@ -1355,10 +1364,13 @@ static void inject_sk_flow(uint32_t qid){
     unsigned char m[1024]; int o; uint32_t H=13;   /* login handle (good run = 13) */
     const char*cli="/mnt/sys/heros5/bin/Guppy.elf"; int cl=(int)strlen(cli);
     const char*spj="/mnt/sys/Python/HwViewer/sk/HwViewer.spj"; int sl=(int)strlen(spj);
-    /* 1) SkMgrLogin: [0x028a0120][0x84:0][0x1ef: longint 0,0][0xe7: client path] */
+    /* 1) SkMgrLogin: REAL captured wire (scratchpad/cap_SkMgrLogin.bin, PIDENT_SELF=0 Guppy_skpatch):
+     *    [0x028a0120][0x84:0][0x800001ef: 0x1ef ABSENT (NOT a present longint!)][0xe7: reply-to string].
+     *    The prior code wrote 0x1ef as a PRESENT 8-byte longint -> GMessage::Read rejects -> GMsgException
+     *    0x78 -> skmgr blocks. Absent = code|0x80000000 with NO value dword. */
     o=0; put32(m+o,0x028a0120u);o+=4;
     put32(m+o,0x84u);o+=4; put32(m+o,0u);o+=4;
-    put32(m+o,0x1efu);o+=4; put32(m+o,0u);o+=4; put32(m+o,0u);o+=4;        /* GMsgLongInt = 8 bytes */
+    put32(m+o,0x800001efu);o+=4;                                          /* 0x1ef ABSENT */
     put32(m+o,0xe7u);o+=4; put32(m+o,(uint32_t)cl);o+=4; memcpy(m+o,cli,cl);o+=cl;
     LOG("INJECT_SK_FLOW: post SkMgrLogin %d bytes -> queue 0x%x\n",o,qid); q_send(qid,m,(uint32_t)o,0);
     /* 2) SkMgrSetMenu: [type][0x84:handle][0x84:0][0xc6:1][0xe7:.spj][0x28a006b:screen4][0x28a028b:0][0x28a00cb:0] */

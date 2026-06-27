@@ -925,6 +925,29 @@
 > here); the lima Mac-mount is READ-ONLY from the VM (write to /tmp, `limactl copy` back); screenshot=/tmp/g_screen.xwd,
 > tree=/tmp/g_windows.txt. Run: `cp scratchpad/sktest.sh /tmp/ && bash /tmp/sktest.sh 0` (foreground). Knobs:
 > `HEROSCALL_INJECT_SK_FLOW`, `HEROSCALL_INJECT_AREA_ACK`, `HEROSCALL_SK_FLOW_DELAY` (default 75s).
+> ★★ CAPTURE-REPLAY PROGRESS (2026-06-27, cont.) — the REAL SkMgrLogin wire HARVESTED; the 0x78 encoding cracked;
+> SetMenu/Activate capture BLOCKED by the Guppy-wedge. Extended `capture_msg` (`HEROSCALL_CAPTURE_TYPE` now a
+> comma-list → /tmp/cap_<type>.bin each). Ran `scratchpad/captest.sh` (PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1
+> INJECT_WMGR_ACK=0 **GUPPY_BIN=Guppy_skpatch.elf** INJECT_SK_FLOW=0 — Guppy sends its OWN softkey messages).
+> **CAPTURED the REAL SkMgrLogin (34B, `scratchpad/cap_SkMgrLogin.bin`):**
+> `2001 8a02 | 8400 0000 0000 0000 | ef01 0080 | e700 0000 0a00 0000 | <10B str ".Rts10a">` =
+> type 0x028a0120, **GMsgUnsigned(0x84)=0 PRESENT**, **field 0x1ef ABSENT (`0x800001ef`, NO value dword)**,
+> GMsgString(0xe7) len10 = the reply-to queue. ⇒ **WIRE ENCODING CRACKED: present = `[code][value]`, ABSENT =
+> `[code|0x80000000]` (no value), string = `[0xe7][len][bytes]`.** My INJECT_SK_FLOW Login wrote 0x1ef as a
+> PRESENT 8-byte longint → GMessage::Read throws **GMsgException 0x78** → skmgr blocks. **FIXED** the Login in
+> `inject_sk_flow` (0x1ef → `0x800001ef` absent); the captured Login itself caused **NO 0x78** (well-formed,
+> skmgr replied SkMgrLoginQuit 36B). **BUT** the SetMenu (0x028a02c0) + Activate (0x028a0200) were **NOT
+> captured**: after skmgr's login reply, **Guppy's softkey thread WEDGES on `Ev_receive(0x03011000)`** (the GData
+> connection-spin / secondary-thread-wake — the documented deep gate) and **never sends the SetMenu** (serve
+> stays 2-5, NOT the brief's 405; the "login completes" config did NOT reproduce). Also: Guppy uses the GData
+> command path for the Activate (no 0x028a0200 GMessage on the wire ever) → it must be SYNTHESIZED regardless.
+> ⇒ **NEXT (precise):** the SetMenu/Activate wire can't be captured (Guppy wedges), so SYNTHESIZE them byte-exact
+> from the schema — decode the libGMessageGui .rodata schema tables (SetMenu @0x23cd20, Activate @0x23d0b4/the
+> `SkMgrActivateBody`@0x1f5a40 = 4 attrs GMsgUnsigned/SkMgrSoftkeyScreen(-1)/SkMgrSoftkeyGroup(-1)/GMsgBool) for
+> the exact per-field CODE+KIND, then apply the cracked present/absent encoding (mark unset fields
+> `code|0x80000000`). OR fix the Guppy post-login GData-wedge to capture them live, OR harvest the real SkMgrSetMenu
+> from yeen (navigate the live control to HwViewer). The Login is now well-formed; the SetMenu/Activate are the
+> last byte-exact pieces. Tooling: `scratchpad/captest.sh` (capture), `cap_SkMgrLogin.bin`.
 >
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
