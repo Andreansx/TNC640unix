@@ -1270,6 +1270,45 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
           }
       }
     }
+    /* INJECT_AREA_ACK (HEROSCALL_INJECT_AREA_ACK=1): answer skmgr's softkey-window WM queries that the
+     * REAL winmgr does NOT serve (it creates 0 windows in the INJECT_WMGR_ACK=0 config, so it has no area
+     * rect to return -> skmgr's PFrame gets ID 0 -> destructed before BuildSoftkeyBar). Both requests go
+     * via WmSendRequestReply (SAME envelope as the working 0x3037 handler: req seq@off4, client serial
+     * a10@off8, session reply-queue a1[1]@off24; verified by WmGetAreaRect@libwinmgrlib 0x56b0 decompile:
+     * v13=*a1@off20, v14=a1[1]@off24, area-name@off28; reply read at v16[5..8]=off20/24/28/32):
+     *   0x3003 WmGetAreaRect -> reply the HARVESTED HSoftKeyAreaOEM rect (x=0,y=680,w=1024,h=88 from
+     *     tnc640layout1024.xml) so skmgr's PSoftkeyControl creates its OWN softkey X window sized by it.
+     *   0x3004 WmRegisterWindowEx -> reply result@off12=0 (success; PRegisterWindowEx sets window-flag bit 8).
+     * No conflict with the real winmgr (it replies to GetScreens/0x3037 but NEVER to 0x3003/0x3004). */
+    { static int inject_area_ack=-1;
+      if(inject_area_ack<0){ const char*e=getenv("HEROSCALL_INJECT_AREA_ACK"); inject_area_ack=e&&e[0]=='1'; }
+      if(inject_area_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
+         && *(const uint32_t*)msg==0x3003u){
+          uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t a10=*(const uint32_t*)((const char*)msg+8);
+          uint32_t rq =*(const uint32_t*)((const char*)msg+24);
+          char area[48]; { uint32_t n=(size>28)?(size-28):0; if(n>47)n=47; memcpy(area,(const char*)msg+28,n); area[n]=0; }
+          if(rq && q_slot(rq)>=0){
+              unsigned char rep[64]; memset(rep,0,sizeof rep);
+              put32(rep+0,0x3003u); put32(rep+4,a10+1); put32(rep+8,seq);
+              put32(rep+20,0u); put32(rep+24,680u); put32(rep+28,1024u); put32(rep+32,88u);
+              LOG("INJECT_AREA_ACK: 0x3003 GetAreaRect \"%s\" -> rect 0,680,1024,88 (seq %u serial %u) -> WM reply-q 0x%x\n",area,seq,a10+1,rq);
+              q_send(rq,rep,sizeof rep,0);
+          }
+      }
+      if(inject_area_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
+         && *(const uint32_t*)msg==0x3004u){
+          uint32_t seq=*(const uint32_t*)((const char*)msg+4);
+          uint32_t a10=*(const uint32_t*)((const char*)msg+8);
+          uint32_t rq =*(const uint32_t*)((const char*)msg+24);
+          if(rq && q_slot(rq)>=0){
+              unsigned char rep[48]; memset(rep,0,sizeof rep);
+              put32(rep+0,0x3004u); put32(rep+4,a10+1); put32(rep+8,seq); put32(rep+12,0u);  /* result=0 success */
+              LOG("INJECT_AREA_ACK: 0x3004 RegisterWindow -> result 0 (seq %u serial %u) -> WM reply-q 0x%x\n",seq,a10+1,rq);
+              q_send(rq,rep,sizeof rep,0);
+          }
+      }
+    }
     /* REPLAY_TRIGGER: record startup self-messages to CfgServerQueue (verbatim, valid bytes) */
     if(replay_trigger && !runup_done && msg && size && size<=CFGQ_MSG
        && !strcmp(C->queues[s].name,"CfgServerQueue")){
