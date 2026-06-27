@@ -509,6 +509,8 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
         futex(ev,FUTEX_WAIT,cur,tp);                          /* forever (tp=0) or remaining slice */
     }
 }
+static void as_kick(int32_t tgid,int32_t tid,uint32_t trig);   /* fwd: SIGUSR1 the task's OS thread */
+static int ev_sigwake=-1;             /* HEROS_EV_SIGWAKE=1: signal-interrupt a cross-process poll-blocked target */
 static int ev_send(uint32_t task,uint32_t bits){
     int s=task_slot(task); if(s<0) return -7;
     if(hstrace){ uint32_t snd=task_self();
@@ -1041,6 +1043,25 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         HST(sender,owner,"QS [%x]\"%s\" size=%u tag=%08x sndr=t%x notify=%08x->t%x [%s]\n",
             id,q->name,size,mtag,sender,nbits,owner, msascii(msg,size)); }
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
+    /* SOFTKEY-REPLY CROSS-PROCESS POLL WAKE (scoped) — ★ RULED OUT 2026-06-27: cross-process SIGUSR1 to a FEX
+     * guest thread CRASHES it. The softkey reply queue "Rts<taskid>" notify to its owner (Guppy's secondary
+     * softkey reader 0x10a) lands LATE — after 0x10a re-blocked in its OWN ppoll on a private fd (not the
+     * shared /dev/events, not an event-word futex) — so the futex + evdev_reconcile both miss it and skmgr's
+     * SkMgrLoginQuit strands. The idea: tgkill(SIGUSR1) the owner's OS thread to INTERRUPT that poll (EINTR)
+     * so its FModule dispatcher loops back to ev_receive(poll) and catches the notify. VERIFIED FIRING
+     * ("EV_SIGWAKE: SIGUSR1 -> t0x10a (tid …)") but the cross-process SIGUSR1 to the FEX-translated guest
+     * thread mid-ppoll corrupts its emulated context -> Guppy SIGSEGV (3/3 runs crashed vs 0/2 with it off; the
+     * broad all-notify variant additionally broke the startup config rendezvous). ⇒ an in-process wake is
+     * required (a Guppy-side watcher signalling 0x10a same-process with the proper as_pending context, or
+     * poking 0x10a's actual private poll fd). Kept gated HEROS_EV_SIGWAKE (default OFF) as the documented
+     * ruled-out experiment. */
+    if(ev_sigwake<0){ const char*e=getenv("HEROS_EV_SIGWAKE"); ev_sigwake=(e&&e[0]=='1')?1:0; }
+    if(ev_sigwake && owner && (nbits&0xff000000u) && q->name[0]=='R'&&q->name[1]=='t'&&q->name[2]=='s'){
+        int os=task_slot(owner);
+        if(os>=0 && C->tasks[os].tid>0){ int32_t mytg=(int32_t)raw5(SYS_getpid,0,0,0,0,0);
+            if(C->tasks[os].tgid && C->tasks[os].tgid!=mytg){ as_kick(C->tasks[os].tgid,C->tasks[os].tid,0);
+                LOG("EV_SIGWAKE: SIGUSR1 -> t0x%x (tid %d) for \"%s\" notify %08x\n",owner,C->tasks[os].tid,q->name,nbits); } }
+    }
     LOG("Q_send -> queue 0x%x size %u (depth %u) notify %08x->task 0x%x\n",id,size,used+1,nbits,owner);
     /* INJECT_WINMGR: on the first FmProcessState (0x40c803e0) posted to the AppStartMaster queue
      * (= subsystems registered, the boot reached the process-state stage), inject a synthetic

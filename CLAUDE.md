@@ -617,6 +617,23 @@
 > the render tick must be EVENT-DRIVEN** (fire winmgr's render sysevent on a REAL X-socket-readable event = the
 > /dev/events bridge, the AppStartMP-logo fix bf0b579 applied to winmgr's render thread), NOT a blind periodic
 > timer = lever 2, the precise remaining faithful fix. A/B: `HEROS_EVDEV_SIBLING=1` / `HEROS_TM_PERIODIC=1`.
+> ★★ CRUX CONFIRMED + a 3rd lever RULED OUT (2026-06-27, cont.): a clean DUMPQ baseline PROVED the softkey
+> CONTENT/TRANSPORT flows END-TO-END — **skmgr genuinely sends the 36B `SkMgrLoginQuit`** (`Q_send -> queue 0x321
+> size 36`, owner Guppy task 0x10a) — but it lands LATE (skmgr line ≈ its end-of-activity) AFTER 0x10a drained
+> what was present and re-blocked in its OWN libc **ppoll** (its last heroscall is `ev_receive(poll)`, then it
+> ppolls a PRIVATE fd — not the shared /dev/events, not an event-word futex), so the futex-wake + evdev poke both
+> miss it and the reply strands. **HEROS_EV_SIGWAKE** (scoped to "Rts*"-queue cross-process notifies) tgkill'd
+> SIGUSR1 at 0x10a's OS thread to interrupt that ppoll → loop → ev_receive(poll) catches bit 24. VERIFIED FIRING
+> (`EV_SIGWAKE: SIGUSR1 -> t0x10a (tid 35988)`) but the **cross-process SIGUSR1 to the FEX-translated guest thread
+> mid-ppoll CRASHES Guppy** (SIGSEGV, 3/3 EV_SIGWAKE=1 runs crashed vs 0/2 off; the broad all-notify variant also
+> broke the startup config rendezvous → narrowed to Rts*). ⇒ **cross-process signal-wake is unsafe under FEX**;
+> the wake MUST be IN-PROCESS = a Guppy-side watcher that signals 0x10a SAME-process with the proper `as_pending`
+> context, OR pokes 0x10a's actual private poll fd (needs gdb/strace RE of that fd). Net: 3 levers ruled out
+> (sibling /dev/events wake, level-trigger, periodic tick), 1 unsafe (cross-proc signal); content/transport DONE;
+> the gate is precisely 0x10a's in-process private-ppoll wake for a LATE cross-process reply. Also: the 4-proc has
+> high RUN VARIANCE (~half the runs Guppy SIGSEGVs early / skmgr stalls at serve 3 before the login; the clean
+> default baseline = skmgr 341/serve 4, Guppy 4572, crash 0). All A/B knobs committed default-OFF (regression-clean
+> default verified). A/B: `EV_SIGWAKE=1` (CRASHES — diagnostic only).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
