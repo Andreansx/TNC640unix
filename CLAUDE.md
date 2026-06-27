@@ -858,6 +858,19 @@
 > set -> so Activate ALONE won't draw (why INJECT_SK_ACTIVATE needs the login chain first); the 3-message flow in
 > order is required. This is well-defined (3 schemas + handle threading) and INDEPENDENT of Guppy's stuck GData
 > connect -- build it in a clean session.
+> ★ SCHEMAS GATHERED for the build (libGMessageGui, decompiled the Body C1 + located the .rodata tables):
+> **SkMgrLoginBody@0x1fc9d0** = GMsgLongInt(+24) + GMsgString(+40) [client path]; table @0x23d68c.
+> **SkMgrSetMenuBody@0x1f79c0** = GMsgUnsigned(+24)+GMsgUnsigned(+36)+GMsgUnsigned(+60)+GMsgString(+72) [.spj path];
+> table @0x23cd20 = [0x84,0x84,0xc6,0xe7,0x28a006b,0x28a028b,0x28a00cb]. **SkMgrActivate** table @0x23d0b4 =
+> [0x028a0200,0x84,0x84,0x028a006b,0x028a004b,0xc6,0x028a00e0] (already built in INJECT_SK_ACTIVATE). ★ CAVEAT for
+> the build: the Body-field count != table-code count 1:1 (SetMenu body=4 fields, table=7 codes), so the exact
+> wire needs CALIBRATION against a real capture (navigate yeen's live control to an OEM/HwViewer screen + DUMPQ a
+> real SkMgrLogin/SetMenu, OR iterate vs skmgr's GMsgEntityBody::Read deserializer assert) — same method as the
+> INJECT_ACK/EvtAnsErrorRequest wire-format calibration (a decimal->hex / present-vs-absent-tag mismatch trips
+> fmailslotqueue.cpp:324). Values: login client path (e.g. a Guppy/HwViewer path), SetMenu .spj
+> "/mnt/sys/Python/HwViewer/sk/HwViewer.spj" + screen 4 + a handle (skmgr OnLogin assigns; good run used 13).
+> Status: foundation gathered (schemas+handlers+gate+tables); the wire-calibration + sequencing + handle-thread is
+> the focused next-session build (clean VM so verification is reliable).
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
