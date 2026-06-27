@@ -872,6 +872,38 @@
 > Status: foundation gathered (schemas+handlers+gate+tables); the wire-calibration + sequencing + handle-thread is
 > the focused next-session build (clean VM so verification is reliable).
 
+> ## ★★★★★★ INJECT_SK_FLOW — skmgr ENTERS its softkey DRAW PATH FEX-native (2026-06-27, cont.); bar gated SOLELY on winmgr WmModule::Initialize
+> The Guppy GData stall (the softkey thread wedged at `Q_send 0x339 -> Ev_receive(0x08) forever` in GUPPYSKMGR's
+> connection spin) is **BYPASSED**. New **`HEROSCALL_INJECT_SK_FLOW`** (`emulator/heros_rtos.c`, commit 00d04e4):
+> a one-shot detached timer thread (single-poster via `ctl.sk_flow_posted` CAS; **retries** the Q_SkMgr lookup so
+> the post lands after skmgr creates its serve queue — the read-counter/empty-poll triggers I tried first NEVER
+> fired, the constellation is event-driven, ~17-118 q_reads total per proc) posts the softkey flow DIRECTLY to
+> skmgr's **Q_SkMgr (0x314)**: **SkMgrLogin (0x028a0120, 61B) -> SkMgrSetMenu (0x028a02c0, 100B, HwViewer.spj) ->
+> SkMgrActivate (0x028a0200, 52B)**. **VERIFIED (4-proc, WINMGR=1):** the timer fires + posts; skmgr READS +
+> ACCEPTS Login+SetMenu (deserializer **crash=0**, no inPlaceMem/Factory assert), CREATES a PFrame softkey object,
+> and **sends 8 WM requests to winmgr (0x30e)** = it **ENTERS its softkey draw path** — the brief's long-standing
+> "skmgr never enters its draw phase" gate is CROSSED.
+> ★ **`HEROSCALL_INJECT_AREA_ACK`** (commit ebd8e6e): serves the two WM requests the real winmgr does NOT (it
+> creates 0 windows, so no area rect): **0x3003 WmGetAreaRect -> the harvested HSoftKeyAreaOEM rect (0,680,1024,88)**
+> at reply v16[5..8]=off20/24/28/32, **0x3004 WmRegisterWindowEx -> result@off12=0**. Envelope verified by idalib
+> decompile (WmGetAreaRect@libwinmgrlib 0x56b0: req type 12291, reply read at v16[5..8]; WmSendRequestReply@0x42b0:
+> seq@off4, serial@off8, session reply-q a1[1]@off24 — identical to the working 0x3037 GetScreens handler).
+> ★ **THE GATE (precisely pinned, NOT crossed): winmgr creates 0 windows in the 4-proc.** `winmgr_XCreateWindow=0`,
+> `WmModule::Initialize=0` in BOTH INJECT_WMGR_ACK=0 AND =1 (the brief's "INJECT_WMGR_ACK=1 -> 5 windows" did NOT
+> reproduce). So skmgr's PFrame has **no valid parent -> ID 0x00000000 -> destructed** before WmGetAreaRect, and
+> skmgr **blocks in OnSetMenu's WM-client handshake (P_name/T_name of -1) before reading the queued Activate** (only
+> 2 of 3 flow msgs read; "queue 0x314 still has 1 msgs") -> OnActivation / the 0x3003 query never run -> INJECT_AREA_ACK
+> never fires (it's correct + ready but premature). ⇒ the softkey bar is gated SOLELY on **winmgr running
+> WmModule::Initialize (creating its screen-layout windows incl. the softkey area) in the 4-proc** = the documented
+> winmgr render-thread frontier (winmgr DOES create its windows in the 2-proc `run_wmdiag.sh` via the t_create fix,
+> but NOT in the 4-proc with skmgr+Guppy competing — render-thread starvation/timing). NEXT: get winmgr to run
+> WmModule::Initialize in the 4-proc (the /dev/events render-tick bridge bf0b579 applied to winmgr's render thread,
+> OR resolve the 4-proc render-thread starvation) -> skmgr's PFrame gets a valid parent -> reaches 0x3003 ->
+> INJECT_AREA_ACK serves the rect -> skmgr creates its softkey window -> BuildSoftkeyBar -> PutImage the 19 .bmx ->
+> BAR. The softkey CONTENT/flow/draw-trigger half is now fully solved + verified upstream; this is the last layer.
+> Run: `bash scratchpad/sktest.sh [wmack]` (INJECT_SK_FLOW + INJECT_AREA_ACK; clean inline env). Knobs:
+> `HEROSCALL_INJECT_SK_FLOW`, `HEROSCALL_INJECT_AREA_ACK`, `HEROSCALL_SK_FLOW_DELAY` (default 75s).
+>
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
 > the softkey login does NOT need a deep GData bridge — it was a REPLY-ROUTING regression I introduced. Decisive
