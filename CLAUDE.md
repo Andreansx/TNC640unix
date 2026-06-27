@@ -1136,6 +1136,47 @@
 > skmgr must publish) so Guppy completes login→Open→…→Activate itself; the wire-encoding work remains the durable
 > deliverable from the INJECT line of attack.
 
+> ## ★ YEEN LIVE-CAPTURE — the OEM-rights gate CROSSED, but skmgr is DORMANT for every reachable screen; HwViewer unreachable on a demo (2026-06-27, cont.)
+> Continued the yeen gdb-capture of the real SkMgr softkey wire (to replay byte-exact via INJECT_SK_FLOW,
+> bypassing BOTH the GMessage hand-encoding AND the Guppy GData wedge). The control was booted CLEAN in GUI mode
+> on yeen's physical screen (`VBoxManage controlvm TNC640 poweroff` + `startvm --type gui`; ★ savestate-RESUME
+> FAULTS the running constellation → "fatal error" + regress to logo — ALWAYS cold-boot) and driven from the Mac
+> by `scratchpad/send_keys.py` (VBoxManage `keyboardputscancode` via `keypad/tnckeymap.py`; softkeys
+> SK1-8 = F1-8 = set1 0x3b-0x42, F9/F10 scroll, CE=53 d3, MOD=1d 38 32 b2 b8 9d, PGMMGT=1d 38 19 99 b8 9d, cursors
+> e0 48/50/4d/4b). **★ THE OEM-RIGHTS GATE — the brief's perennial wall ("OEM-password-gated navigation") — is
+> CROSSED, and there is NO password:** the OEM **code numbers** are in the control's OWN `/etc/passwd` GECOS
+> (oemservice **857282**, oemconfig **95148**, oemdataaccessread 68736571, oemconfiguresafety 8371). The VM NEVER
+> asks for a password (user-confirmed: "never asked for an OEM password… The only password was the root password");
+> the CODE NUMBERS are the access — entered via MOD → Code-number entry (CURRIGHT focuses the code field first).
+> 95148 opened **Machine parameters** (ConfigEditor); 857282 unlocked **Bus diagnosis**.
+> **★★ DECISIVE (crash-proof gdb capture on skmgr, `scratchpad/setup_capture2.sh`): skmgr is DORMANT (0 messages)
+> for EVERY navigable screen** — Manual operation, tool table, MOD (Display/Diagnostic/Machine parameters), Bus
+> diagnosis, the Machine-parameters editor, the empty Programming editor — ALL drawn by the Qt softkey server
+> (hesoftkeysqt). skmgr ONLY draws the OEM GTK **HwViewer** (HW-commissioning) screen, confirming the brief's
+> dormancy hypothesis on the LIVE control. ★ CAPTURE MECHANISM PROVEN + a hard lesson: break
+> `GMessage::Read@libgmsglib` (`_ZN8GMessage4ReadER12GMsgInStreamP13GMsgErrorListb`), GUARDED pointer extract
+> `buf = *(stream + *(*(stream)-12) + 52)` (`$esp+8`=stream), filter `(type>>16)==0x028a`, dump 240B, auto-RE-ATTACH
+> loop. The ORIGINAL (unguarded) capture SILENTLY DETACHED on the first bad deref (0x8510c477) → every earlier
+> "skmgr 0 messages" reading was from a DEAD gdb (meaningless); the v2 alignment+range guards keep gdb attached
+> (verified `pgrep gdb`=alive across the whole navigation).
+> **★ HwViewer is NOT reachable on a demo station:** not in any MMI menu / MOD / diagnostic, and NOT in the HEROS
+> menu (system apps only — firefox/hefilemanager/hterminal/keypad/nccontrol/heoemuseradmin/…). It is OEM-PLC-
+> triggered and a programming-station demo has no machine/PLC to trigger it. A manually-forked
+> `Guppy.elf … -C=HwSetup` RUNS on the live control (inline `setsid sh -c '…exec Guppy.elf "__OEM__:__OEM__/Guppy"
+> -R=UnloadOEM … -C=HwSetup'` clears the /tmp-noexec that blocks `sh FILE`/`. FILE`; PID confirmed, survives) but
+> does NOT join the live constellation's __OEM__ slot (AppStartMaster orchestration) → never reaches softkey
+> registration → skmgr stays dormant, screen unchanged. (There ARE idle BASE Guppy procs `$ProgStat:$ProgStat/Guppy`
+> + `$toolSvMa:$toolSvMa/Guppy` — `-R=UnloadOEM`, NO `-C`, no script = the demo's "terminate: no script" state.)
+> ⇒ **CONCLUSION: the yeen live-capture is blocked at reaching an ACTIVE skmgr/OEM screen — the documented wall,
+> now with the OEM-code gate CROSSED but the screen itself genuinely unreachable on a demo.** The capture rig is
+> ready the instant any skmgr screen is reached (e.g. on a real machine, or if an OEM-screen launch path is found).
+> ⇒ **NEXT = the Mac side** (the live-capture detour is exhausted): (a) complete `INJECT_SK_FLOW` — wire encoding
+> is SOLVED (build_setmenu.c serializer), handle known (ConnectionID **13** from the captured SkMgrLoginQuit
+> /tmp/cap_28a0140.bin), so add the missing **SkMgrOpen** message (`SkMgrFrame::OnOpen@0x431d0`→`AddResource@0x7a950`
+> → registers the .spj resource → loads the 19 .bmx → returns a resource id) + thread body+20=handle /
+> body+32=resource-id → Login→Open→SetMenu→Activate; OR (b) crack the Guppy 0x10a `GUPPYSKMGR::Connect` GData spin
+> so Guppy drives skmgr itself. Tooling: `scratchpad/{send_keys.py, setup_capture2.sh, launch_hwv3.sh, yeen_capture.gdb}`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
