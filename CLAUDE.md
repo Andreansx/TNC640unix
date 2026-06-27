@@ -710,6 +710,23 @@
 > PFrame gets a valid window → BuildSoftkeyBar → draws the 19 .bmx. Both grounded by the harvest; status =
 > protocol+geometry fully known, implementation pending. (Verified this session: skmgr login completes
 > (SK_REPLY_FORCE), finds Q_WMGR 0x30e, blocks at the GetScreens serial gap.)
+> ★★★ WINMGR=1 IS THE BETTER BASELINE + the gate RE-PINNED to skmgr's DRAW TRIGGER (2026-06-27, cont.): re-ran
+> with **WINMGR=1 INJECT_WMGR_ACK=0 SK_REPLY_FORCE=1 + the real 1024 layout/size** (WM_LAYOUT=tnc640layout1024.xml
+> WM_SIZE=1024x768, matching the harvest). RESULT: the real winmgr's serials are CORRECT → **NO serial gap**
+> (vs the INJECT path's `WmRecvEvent: Gap`), winmgr's HandleMessage@0x29f00 confirmed to SERVE 0x3003 GetAreaRect
+> + 0x3004 RegisterWindow (from its parsed layout, on the serve thread — independent of the render gate that
+> blocks its OWN window creation). The softkey CONTENT fully flows: Guppy login completes, skmgr serves **811**
+> (was 407), the 028a0740 SkMgrInfoResponses (140/153/222B) stream to Guppy (SK_REPLY_FORCE redirect), skmgr
+> **opens all 19 .bmx + creates 55 GCs**. ★ BUT skmgr does **0 CreateWindow / 0 PutImage / 0x3003 sends = 0** —
+> it is fully primed (bitmaps loaded, GCs made) but NEVER ENTERS ITS DRAW PHASE: it never sends WmGetAreaRect to
+> create its PFrame softkey window. ⇒ THE GATE (precisely pinned) = skmgr's **DRAW TRIGGER**: skmgr serves the
+> softkey DATA but only creates its PFrame window + PutImages when an OEM SCREEN-ACTIVATE / SoftkeyBarSetup fires
+> (the documented "drive skmgr's screen-activate"). The content + WM handshake + bitmap-load are ALL solved
+> (WINMGR=1 baseline); the bar needs skmgr told the OEM screen is ACTIVE so PSoftkeyControl::BuildSoftkeyBar runs
+> (PGetAreaRect HSoftKeyAreaOEM → create PFrame → register → draw the 19 .bmx). NEXT: RE what message activates
+> skmgr's OEM-screen PFrame (a winmgr screen-activate event 0x3009-0x301F, or a Guppy SkMgrActivate/ShowMenu on
+> Q_SkMgr) + inject/serve it. Run: `PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1 INJECT_WMGR_ACK=0 WM_LAYOUT=%SYS%/
+> resource/tnc640layout1024.xml WM_SIZE=1024x768 bash emulator/run_3proc_skmgr_guppy.sh`.
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
