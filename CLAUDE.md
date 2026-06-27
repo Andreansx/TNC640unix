@@ -1177,6 +1177,40 @@
 > body+32=resource-id → Login→Open→SetMenu→Activate; OR (b) crack the Guppy 0x10a `GUPPYSKMGR::Connect` GData spin
 > so Guppy drives skmgr itself. Tooling: `scratchpad/{send_keys.py, setup_capture2.sh, launch_hwv3.sh, yeen_capture.gdb}`.
 
+> ## ★ GUPPY-DRIVES walled at the PRE-LOGIN GData connect — TWO levers RULED OUT, blocker pinned EXACTLY (2026-06-27, cont.)
+> One focused single-path push on **Guppy-drives** (no oscillation), driven to a definitive, precisely-characterized
+> wall. The softkey CONNECT chain is fully decompiled (idalib on Guppy.elf + libSkMgrCtrl.so): HwViewer.py
+> `jh.softkey.Register` → `GUPPYSKMGR_::Register@0xbe2f0` → **`GUPPYSKMGR_::Connect@0xbc9a0`** → `KernelInterfaceHdl<
+> SkMgrCtrlInterface>::Connect@0xc02b0` (just `Find` the local proxy + `*a1=proxy`, NO login) → the proxy's
+> **vtable+36 = `LogIn@0xc130`** (the object's vptr points PAST the 2-entry RTTI header, so `*(vptr+0x24)` =
+> `_ZTV+0x2c` = LogIn, NOT the `NcCtrlInitConnect` stub at `_ZTV+0x24`) → `SendMessage@0xc080` (conn48 gate). On
+> connect failure the `.cold@0x35448` path `__cxa_throw`s exception(1). **GROUND TRUTH (g_pystderr, the softkey
+> thread's real log — NOT g_mmi):** Guppy DOES reach the softkey code — its softkey/OEM thread (task ~0x109)
+> **busy-polls `Ev_receive(0x08, EV_NOWAIT)` 63,335×** — but **sends 0 SkMgrLogin (0x028a0120) to skmgr** (verified
+> in BOTH g_pystderr+g_mmi DUMPQ; skmgr serve 0x314=0, .bmx=0, PutImage=0, 118 colours = the HwViewer window draws
+> WITHOUT the bar, `scratchpad/shots/guppy_drives_no_bar.png`). ⇒ **the bit-0x8 wait is the PRE-LogIn GData
+> connection-establish, NOT a post-send reply wait** (no login → no reply → nothing to receive). **TWO levers RULED
+> OUT this session (don't re-walk):** (1) **conn48/CheckState SendMessage force** — on-disk patched
+> `libSkMgrCtrl.so` 0xc09b `746b`→`9090` (conn48 je→nop) + 0xc0b0 (CheckState), VERIFIED present+surviving (run does
+> NOT re-stage the lib) → **NO effect** (0 sends; LogIn is upstream of the busy-poll, never reached, so the
+> SendMessage gate is irrelevant). Patch RESTORED to `.orig` (clean baseline). (2) **`HEROSCALL_EV_NOWAIT_YIELD=200`**
+> — the emulator's OWN documented faithful fix for this exact spin (heros_rtos.c:408 comment: *"Guppy's softkey
+> thread polling bit 0x8 … the spin can starve the reader task … the bit is never set → livelock"*; defaults OFF,
+> never tested in the cold-VM Guppy-drives config) → **NO effect** (busy-poll IDENTICAL at 63,335; the reply-reader
+> model assumes the login was SENT — in the cold VM it never is, so there is no reply to read and nothing to
+> unstarve). ⇒ **DEFINITIVE BLOCKER (exact fn+value): the GData cross-process connection-ready publish.**
+> `GUPPYSKMGR_::Connect@0xbc9a0` busy-polls bit 0x08 for the connection-established signal that skmgr's
+> `SkMgrCtrlConnectionHandler::RegisterConnection@0x16110` should publish when it detects the client's GData connect;
+> under per-process FEX that cross-process GData connect-detection never fires → bit 0x08 never set → LogIn never
+> reached → 0 SkMgrLogin → skmgr (healthy, serving winmgr's 208B GetScreens) stays clientless → 0 .bmx, no bar. This
+> is the documented multi-process GData frontier (the hardest target in the system, per memory
+> [[feedback-softkey-bar-one-decisive-path]]). The GTK window milestone STANDS (HwViewer renders FEX-native,
+> 118 colours). The ONLY faithful Guppy-drives lever left = an emulator GData connection-ready BRIDGE (detect
+> Guppy's GData connect-request → synthesize skmgr's RegisterConnection publish / set bit 0x08 on the softkey
+> thread) = deep multi-session GData-shared-mem RE. The INJECT-the-menu-to-skmgr path (prior session's LEAD LEVER)
+> is the cross-method alternative but conflicts with the "don't oscillate" discipline. Tooling:
+> `scratchpad/skyield_run.sh` (Guppy-drives + EV_NOWAIT_YIELD harness), `emulator/skconnforce.c` (ruled-out diag).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

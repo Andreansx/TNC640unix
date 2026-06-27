@@ -16,6 +16,7 @@ DISP="${XDISPLAY:-:99}"
 USE_XVFB=1; case "$DISP" in :99|:0|:0.0) USE_XVFB=1;; *) USE_XVFB=0;; esac
 CFGPRE="/lib/noopfree.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 MMIPRE="${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
+[ "${SKCONNFORCE:-0}" = "1" ] && MMIPRE="/lib/skconnforce.so:$MMIPRE"
 SKPRE="${SK_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 GUPPY_BIN="${GUPPY_BIN:-Guppy.elf}"
 GUPPY_C="${GUPPY_C:-HwSetup}"
@@ -26,7 +27,7 @@ echo "=== build preloads ==="
 $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $REPO/emulator/cfgfix.c -ldl || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/arena.map -o $R/lib/arena_stub.so $REPO/emulator/arena_stub.c || exit 1
 $CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/nolimit.map -o $R/lib/nolimit.so $REPO/emulator/nolimit.c || exit 1
-for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree skspy skforce wmstub gdactive; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
+for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree skspy skforce skconnforce wmstub gdactive; do $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; done
 
 echo "=== stage Python runtime (idempotent) ==="
 if [ "${STAGE:-0}" = "1" ] || [ ! -d "$R/usr/lib/python2.7" ]; then
