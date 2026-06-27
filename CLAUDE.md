@@ -1198,17 +1198,30 @@
 > thread polling bit 0x8 … the spin can starve the reader task … the bit is never set → livelock"*; defaults OFF,
 > never tested in the cold-VM Guppy-drives config) → **NO effect** (busy-poll IDENTICAL at 63,335; the reply-reader
 > model assumes the login was SENT — in the cold VM it never is, so there is no reply to read and nothing to
-> unstarve). ⇒ **DEFINITIVE BLOCKER (exact fn+value): the GData cross-process connection-ready publish.**
-> `GUPPYSKMGR_::Connect@0xbc9a0` busy-polls bit 0x08 for the connection-established signal that skmgr's
-> `SkMgrCtrlConnectionHandler::RegisterConnection@0x16110` should publish when it detects the client's GData connect;
-> under per-process FEX that cross-process GData connect-detection never fires → bit 0x08 never set → LogIn never
-> reached → 0 SkMgrLogin → skmgr (healthy, serving winmgr's 208B GetScreens) stays clientless → 0 .bmx, no bar. This
-> is the documented multi-process GData frontier (the hardest target in the system, per memory
-> [[feedback-softkey-bar-one-decisive-path]]). The GTK window milestone STANDS (HwViewer renders FEX-native,
-> 118 colours). The ONLY faithful Guppy-drives lever left = an emulator GData connection-ready BRIDGE (detect
-> Guppy's GData connect-request → synthesize skmgr's RegisterConnection publish / set bit 0x08 on the softkey
-> thread) = deep multi-session GData-shared-mem RE. The INJECT-the-menu-to-skmgr path (prior session's LEAD LEVER)
-> is the cross-method alternative but conflicts with the "don't oscillate" discipline. Tooling:
+> unstarve).
+> ★★ MAJOR FRAMING CORRECTION (the session's real deliverable — supersedes "the GData cross-process connection
+> frontier" that ~10 sessions chased): **the softkey login transport is a PLAIN `FMailslotQueue` to `Q_SkMgr`
+> (0x314), NOT GData.** Decompiled the whole client send: `SkMgrCtrlInterfaceImpl::CreateQueues@0xb010` does
+> `this[0x30](conn48) = FMailslotQueue::Open(transport this+0x2c, "Q_SkMgr", true)`; `FMailslotQueue::Open@libbackend
+> 0x22a50` = `a1[1]=q_ident(name); return a1[1]!=-1` (so conn48 = q_ident success); `LogIn@0xc130` →
+> `SendMessage@0xc080` → `FMailslotQueue::Write@0x21a40` (vtable+0xc) = `if(this[1]==-1) return false; … q_send(this[1],…)`
+> → on success `WaitForExpectedMessage@0xb7e0` busy-polls bit 0x08 for the `0x28A0100` reply (the `0x28A0140`
+> SkMgrLoginQuit sets `this[14]`=conn-id + `RegisterConnection`). **DEFINITIVE GROUND TRUTH: there are ZERO q_sends
+> to 0x314 in the entire run** (the only 0x314 traffic is one `Q_ident "Q_SkMgr"→0x314`; Guppy NEVER even
+> `Q_ident`s `Q_SkMgrCtrl` 0x315; no ~61B SkMgrLogin appears on ANY queue) — **the login is NEVER TRANSMITTED.**
+> So the bit-0x08 spin is NOT `WaitForExpectedMessage` (which only runs AFTER a successful `Write`/q_send), and the
+> "GData connection-ready" framing is wrong: there is no GData transport here at all. The block is UPSTREAM of the
+> transmit — `FMailslotQueue::Write` returns false (no q_send) only when `this[1]==-1` (the LogIn instance's transport
+> queue-id is unresolved), i.e. `CreateQueues` resolved 0x314 on one instance but the `LogIn` instance's transport
+> isn't connected — OR `GUPPYSKMGR_::Connect@0xbc9a0` bails at `KernelInterfaceObjectManager::Find` (proxy not
+> registered) before `LogIn` (no exception/"Binding…failed" marker was logged, so Connect did NOT throw → Find likely
+> succeeds and the gap is the transport-instance / a pre-LogIn wait). ⇒ **NEXT (precise, faithful): runtime-instrument
+> GUPPYSKMGR_::Connect / LogIn / FMailslotQueue::Write (trampoline or emulator-side guest-PC log) to pin which of
+> {softkey.Register not reached · Connect Find=0 · Write this[1]==-1} holds, then connect the LogIn instance's
+> FMailslotQueue transport to 0x314 so the 61B login q_sends → skmgr serves it → SkMgrLoginQuit → bar.** This is far
+> more tractable than the phantom GData bridge — it's a plain queue-transport wiring on ONE in-process instance, no
+> shared-mem-atomic RE. GTK window milestone STANDS (HwViewer renders FEX-native, 118 colours;
+> `scratchpad/shots/guppy_drives_no_bar.png`). Tooling:
 > `scratchpad/skyield_run.sh` (Guppy-drives + EV_NOWAIT_YIELD harness), `emulator/skconnforce.c` (ruled-out diag).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
