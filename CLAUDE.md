@@ -804,6 +804,27 @@
 > replies (Q_PLC_FRONTSTAGE/AppStartMaster/QProMRequest) so it proceeds to SkMgrLogin → softkey phase → the
 > INJECT_SK_ACTIVATE fires, OR (b) bring up the minimal real peers, OR (c) recover warm-VM state. The 137B is a
 > red herring — a normal fire-and-forget config subscription.
+> ★★★ ROOT-CAUSE CHAIN — why login=0 in every post-restart run (2026-06-27, RE'd end-to-end): Guppy's softkey
+> login never fires because the **GData KernelInterface registry lookup fails**. Chain (idalib on Guppy.elf):
+> HwViewer.py `jh.softkey.Register` → `GUPPYSKMGR::Register@0xbe2f0` → **`GUPPYSKMGR_::Connect@0xbc9a0`** →
+> **`KernelInterfaceHdlBase<astring>::Find@0x8f3b0`** → **`KernelInterfaceObjectManager::Find`** (defined in
+> **libNcCtrlModule.so**). If Find returns 0 (the `SkMgrCtrlInterface` is NOT in the shared registry), Connect
+> BAILS before `SkMgrCtrlInterfaceImpl::LogIn@0xc130` ever sends SkMgrLogin (0x028a0120) — exactly the observed
+> `login=0 / serve=4` stuck state. So the gate is **skmgr publishing `SkMgrCtrlInterface` into the shared GData
+> KernelInterface registry**, which (per the brief's GData frontier) skmgr does via `SkMgrCtrlConnectionHandler::
+> RegisterConnection` — gated on skmgr's OWN winmgr WM-handshake completing. ⇒ FULL CHAIN:
+> winmgr serves skmgr → skmgr's RegisterConnection PUBLISHES SkMgrCtrlInterface in the registry → Guppy's
+> `KernelInterfaceObjectManager::Find` SUCCEEDS → Connect → LogIn → SkMgrLogin → skmgr serves (SK_REPLY_FORCE
+> routes the reply) → 7 InfoRequests → INFoResponses flow → INJECT_SK_ACTIVATE fires → skmgr 0x3003 GetAreaRect
+> → BuildSoftkeyBar → PutImage the 19 .bmx → BAR. The whole chain is timing-sensitive; the pre-restart good run
+> (serve 811) completed it warm, and post-restart 15+ runs deterministically fail at Guppy's Find (login=0).
+> ★ PRECISE LEVER (task #5, now confirmed as the root gate): RE `KernelInterfaceObjectManager::Find`/the registry
+> structure in libNcCtrlModule.so, then make skmgr's `SkMgrCtrlInterface` registration land in the shared GData
+> registry under FEX (or INJECT the registry entry) so Guppy's Find succeeds DETERMINISTICALLY → Connect → LogIn
+> → … → bar — removing the warm-state dependence. This is the named, root-caused mechanism; the inject
+> (INJECT_SK_ACTIVATE) is verified-correct and fires the instant the chain reaches InfoResponses. Run batch
+> (warm-distribution test): all post-restart runs stuck at login=0 (warm state lost; needs the registry fix or
+> a clean/warm VM).
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
