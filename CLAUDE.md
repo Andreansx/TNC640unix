@@ -846,6 +846,18 @@
 > type-id + intended reader → INJECT its reply (set Ev bit 0x08 on t5872) so Connect completes → SkMgrLogin fires →
 > bar; (2) recover a warm VM state (avoid restart) where the chain completes naturally. The draw half
 > (INJECT_SK_ACTIVATE) is proven-ready and fires the instant SkMgrLogin → InfoResponses flow.
+> ★★★ LEAD LEVER for next session — BYPASS Guppy entirely, drive skmgr DIRECTLY (most promising; sidesteps the
+> whole 0x339/GData gate): skmgr is the SOLE drawer (loads the 19 .bmx, owns the PFrame, PutImages); the only
+> purpose of the Guppy->skmgr handshake is to hand skmgr the menu+activate. So have the EMULATOR inject the full
+> softkey flow straight to skmgr's Q_SkMgr (0x313), no Guppy login needed: (1) SkMgrLogin (0x028a0120) ->
+> SkMgrFrame::OnLogin@0x41790 (registers a client + sets up the frame), (2) SkMgrSetMenu (0x028a02c0, carrying
+> "/mnt/sys/Python/HwViewer/sk/HwViewer.spj") -> SkMgrFrame::OnSetMenu@0x47340 (parses the .spj -> loads the .bmx),
+> (3) SkMgrActivate (0x028a0200) -> SkMgrFrame::OnActivation@0x42170 -> creates the PFrame (0x3003 GetAreaRect to
+> winmgr) -> PSoftkeyControl::BuildSoftkeyBar -> PutImage. ★ KEY GATE (decompiled SkMgrGMsgController::OnActivation
+> @0x5a5a0): the Activate is a NO-OP unless this+5 != 0 (the controller's SkMgrFrame/screen), which login+SetMenu
+> set -> so Activate ALONE won't draw (why INJECT_SK_ACTIVATE needs the login chain first); the 3-message flow in
+> order is required. This is well-defined (3 schemas + handle threading) and INDEPENDENT of Guppy's stuck GData
+> connect -- build it in a clean session.
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
