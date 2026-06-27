@@ -324,11 +324,155 @@ static void post_inject_reread(void);    /* posts the synthetic UpdNewState that
  * Use for AppStartMP's pre-spawn Ev_receive(0x01019007): inject the CREATE_VOID_SUBSYSTEM bit. */
 static uint32_t ev_inject_want=0, ev_inject_bit=0; static int ev_inject_init=0;
 static int qnotify_level=-1;          /* HEROSCALL_QNOTIFY_LEVEL: level-triggered owned-queue notify re-assert */
+
+/* ---- GUEST BACKTRACE on a watched Ev_receive bit (HEROSCALL_EV_TRACE_BIT) ----
+ * To find WHICH guest function spins/blocks Ev_receive on a given want-bit (e.g.
+ * Guppy's softkey thread polling bit 0x08), dump the GUEST i386 return-address
+ * chain. The LD_PRELOAD .so is itself i386 and shares the guest i386 stack, so
+ * scanning ESP upward for values that fall inside r-x file mappings recovers the
+ * caller chain; map each `name+0xVMA` with i686-linux-gnu-objdump / IDA. Throttled:
+ * each distinct (task,callstack) is logged once, up to HEROSCALL_EV_TRACE_BUDGET
+ * backtraces, then scanning stops (cheap guard). Default OFF (bit 0 => no-op). */
+struct gmap { uintptr_t lo, hi, off; int x; char name[48]; };
+static struct gmap g_maps[640]; static int g_nmaps=-1;
+static void gmap_load(void){
+    g_nmaps=0;
+    FILE*f=fopen("/proc/self/maps","r"); if(!f) return;
+    char line[700];
+    while(fgets(line,sizeof line,f)){
+        unsigned long lo,hi,off; char perms[8]={0}; char path[480]={0};
+        int n=sscanf(line,"%lx-%lx %7s %lx %*x:%*x %*u %479[^\n]",&lo,&hi,perms,&off,path);
+        if(n<4){ continue; }
+        if(g_nmaps>=640) break;
+        struct gmap*m=&g_maps[g_nmaps++];
+        m->lo=lo; m->hi=hi; m->off=off; m->x=(perms[2]=='x');
+        const char*b=strrchr(path,'/'); b=b?b+1:path;
+        strncpy(m->name, b[0]?b:"[anon]", sizeof(m->name)-1);
+    }
+    fclose(f);
+}
+static struct gmap* gmap_find(uintptr_t a){
+    for(int i=0;i<g_nmaps;i++) if(a>=g_maps[i].lo && a<g_maps[i].hi) return &g_maps[i];
+    return 0;
+}
+static uintptr_t gmap_base(const char*name){
+    uintptr_t lo=(uintptr_t)-1;
+    for(int i=0;i<g_nmaps;i++) if(strcmp(g_maps[i].name,name)==0 && g_maps[i].lo<lo) lo=g_maps[i].lo;
+    return lo==(uintptr_t)-1?0:lo;
+}
+static int      evt_bit=-1;          /* HEROSCALL_EV_TRACE_BIT  (hex want-bit; 0=off) */
+static uint32_t evt_task=0;          /* HEROSCALL_EV_TRACE_TASK (hex; 0=any task)     */
+static int      evt_budget=0;        /* HEROSCALL_EV_TRACE_BUDGET (distinct backtraces to log) */
+static int      evt_exact=0;         /* HEROSCALL_EV_TRACE_EXACT: require want==bit (not just &) */
+static uint32_t evt_seen[256]; static int evt_nseen=0;
+/* A real return address on the stack has a CALL instruction immediately before it:
+ * E8 rel32 (direct) or FF /2 (indirect, modrm.reg==2) in the 2..6 bytes before `a`.
+ * This rejects stray DATA pointers (function pointers, vtable entries) that merely
+ * fall inside an r-x mapping — the cause of the bogus "libXfixes+0x3466 x24" dumps. */
+static int looks_like_retaddr(uintptr_t a, struct gmap*m){
+    if(a < m->lo+7) return 0;                          /* need 7 bytes before a, same module */
+    const volatile unsigned char*q=(const volatile unsigned char*)a;
+    if(q[-5]==0xE8) return 1;                           /* call rel32 */
+    if(q[-2]==0xFF && ((q[-1]>>3)&7)==2) return 1;      /* call r/m  (2-byte: ff d0..d7 etc.) */
+    if(q[-3]==0xFF && ((q[-2]>>3)&7)==2) return 1;      /* call r/m  (3-byte: modrm+sib / disp8) */
+    if(q[-6]==0xFF && ((q[-5]>>3)&7)==2) return 1;      /* call r/m32 disp32 */
+    if(q[-7]==0xFF && ((q[-6]>>3)&7)==2) return 1;      /* call r/m32 sib+disp32 */
+    return 0;
+}
+/* one frame: *(bp)=saved caller ebp, *(bp+4)=return address into caller. Valid iff
+ * bp is aligned + in-stack and the return slot is a real call-site address. */
+static int evt_frame_ok(uintptr_t bp, uintptr_t lo, uintptr_t top){
+    if((bp&3) || bp<lo || bp+8>top) return 0;
+    uintptr_t ret=*(volatile uintptr_t*)(bp+4);
+    struct gmap*m=gmap_find(ret);
+    return m && m->x && looks_like_retaddr(ret,m);
+}
+static int evt_chain_len(uintptr_t bp, uintptr_t lo, uintptr_t top){
+    int n=0;
+    for(int i=0;i<40;i++){
+        if(!evt_frame_ok(bp,lo,top)) break;
+        n++;
+        uintptr_t nb=*(volatile uintptr_t*)bp;
+        if(nb<=bp || nb>=top || nb-bp>0x8000) break;
+        bp=nb;
+    }
+    return n;
+}
+static void ev_trace(uint32_t self,uint32_t want,uint32_t cond,uint32_t timeout){
+    if(evt_bit==-1){
+        const char*b=getenv("HEROSCALL_EV_TRACE_BIT");  evt_bit=b?(int)strtoul(b,0,16):0;
+        const char*t=getenv("HEROSCALL_EV_TRACE_TASK"); evt_task=t?(uint32_t)strtoul(t,0,16):0;
+        const char*n=getenv("HEROSCALL_EV_TRACE_BUDGET"); evt_budget=n?atoi(n):16;
+        const char*x=getenv("HEROSCALL_EV_TRACE_EXACT"); evt_exact=(x&&x[0]=='1');
+    }
+    if(!evt_bit) return;
+    if(evt_exact ? (want!=(uint32_t)evt_bit) : !(want & (uint32_t)evt_bit)) return;
+    if(evt_task && self!=evt_task) return;
+    if(evt_budget<=0) return;
+    if(g_nmaps<0) gmap_load();
+    uintptr_t sp; __asm__ volatile("mov %%esp,%0":"=r"(sp));
+    struct gmap*sm=gmap_find(sp); uintptr_t top=sp+0x20000;    /* cap scan at the stack mapping top */
+    if(sm && sm->hi<top) top=sm->hi;
+    uint32_t h=2166136261u ^ self;
+    /* PRIMARY: recover the LIVE call chain via the longest valid frame-pointer chain.
+     * (Raw scanning mixes live frames with stale return addresses; fp chain is live-only.) */
+    uintptr_t walk[24]; int nw=0; uintptr_t startbp=0; int bestlen=0;
+    for(uintptr_t p=sp; p<sp+2048 && p+8<=top; p+=4){
+        uintptr_t b=*(volatile uintptr_t*)p;
+        if(b<=p || b>=top) continue;
+        int L=evt_chain_len(b,sp,top);
+        if(L>bestlen){ bestlen=L; startbp=b; if(L>=16) break; }
+    }
+    if(startbp && bestlen>=2){
+        uintptr_t bp=startbp;
+        for(int i=0;i<24 && nw<24;i++){
+            if(!evt_frame_ok(bp,sp,top)) break;
+            uintptr_t ret=*(volatile uintptr_t*)(bp+4);
+            walk[nw++]=ret; h=(h ^ (uint32_t)ret)*16777619u;
+            uintptr_t nb=*(volatile uintptr_t*)bp;
+            if(nb<=bp || nb>=top || nb-bp>0x8000) break;
+            bp=nb;
+        }
+    }
+    /* SECONDARY: raw call-validated scan (fallback / cross-check) */
+    uintptr_t addrs[20]; int na=0;
+    for(uintptr_t p=sp; p<top && na<20; p+=4){
+        uintptr_t a=*(volatile uintptr_t*)p;
+        struct gmap*m=gmap_find(a);
+        if(!m || !m->x) continue;
+        if(strstr(m->name,"heros_rtos")||strstr(m->name,"herosapi")||strstr(m->name,"renamefix")
+           ||strstr(m->name,"fakeroot")||strstr(m->name,"fexunmask")||strstr(m->name,"arena")
+           ||strstr(m->name,"FEXInterpreter")||strstr(m->name,"nolimit")||strstr(m->name,"cfgfix")
+           ||strstr(m->name,"guardfree")||strstr(m->name,"noopfree")) continue;
+        if(!looks_like_retaddr(a,m)) continue;
+        if(na>0 && addrs[na-1]==a) continue;
+        addrs[na++]=a;
+    }
+    for(int i=0;i<evt_nseen;i++) if(evt_seen[i]==h) return;     /* this callstack already logged */
+    if(evt_nseen<256) evt_seen[evt_nseen++]=h;
+    evt_budget--;
+    fprintf(stderr,"[evtrace] t0x%x want=%08x c=%u to=%s : FPWALK %d frames (chainlen %d):\n",
+        self,want,cond,timeout==0xffffffff?"inf":(timeout==0?"poll":"fin"),nw,bestlen);
+    for(int i=0;i<nw;i++){
+        struct gmap*m=gmap_find(walk[i]); uintptr_t base=m?gmap_base(m->name):0;
+        fprintf(stderr,"[evtrace]   F%d %#010lx  %s+0x%lx\n",
+            i,(unsigned long)walk[i], m?m->name:"?", (unsigned long)(walk[i]-base));
+    }
+    fprintf(stderr,"[evtrace]   --- raw scan (%d) ---\n",na);
+    for(int i=0;i<na;i++){
+        struct gmap*m=gmap_find(addrs[i]); uintptr_t base=m?gmap_base(m->name):0;
+        fprintf(stderr,"[evtrace]   R%d %#010lx  %s+0x%lx\n",
+            i,(unsigned long)addrs[i], m?m->name:"?", (unsigned long)(addrs[i]-base));
+    }
+    fflush(stderr);
+}
+
 static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
     volatile uint32_t *ev=&C->tasks[s].events;
     C->tasks[s].last_ev_want=want;                 /* record for queue-notify bit matching */
+    ev_trace(self,want,cond,timeout);              /* HEROSCALL_EV_TRACE_BIT: dump guest caller chain */
     /* RUN-UP FALLBACK: the HWS-stub run-up-done signal does NOT fire on the path where ConfigServer
      * reaches its FModule serve loop directly (Ev_receive(0x01011000, forever) — the dispatch waiting on
      * its CfgServerQueue 0x01000000 bit + queue/event bits). Without runup_done, the INJECT_REREAD that

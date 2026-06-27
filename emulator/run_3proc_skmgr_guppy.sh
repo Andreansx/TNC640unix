@@ -97,6 +97,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_INJECT_WMGR_ACK="${INJECT_WMGR_ACK:-0}" EMPTYPOLL_DIAG="${EMPTYPOLL_DIAG:-0}" EMPTYPOLL_YIELD="${EMPTYPOLL_YIELD:-0}" WMGR_SCREEN="${WMGR_SCREEN:-0}" WMQ_BREAK="${WMQ_BREAK:-0}" WMQ_BREAK_N="${WMQ_BREAK_N:-2000}" \
   HEROS_CFG_REPLY_ROUTE=1 HEROS_EV_SIGWAKE="${EV_SIGWAKE:-0}" HEROSCALL_PIDENT_SELF="${PIDENT_SELF:-1}" HEROSCALL_SK_REPLY_FORCE="${SK_REPLY_FORCE:-1}" HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_CAPTURE_TYPE="${CAPTURE_TYPE:-}" HEROSCALL_INJECT_SK_FLOW="${INJECT_SK_FLOW:-0}" HEROSCALL_INJECT_AREA_ACK="${INJECT_AREA_ACK:-0}" DISP="$DISP" \
   HEROSCALL_INJECT_SK_ACTIVATE="${INJECT_SK_ACTIVATE:-0}" HEROSCALL_SK_ACT_THRESH="${SK_ACT_THRESH:-5}" HEROSCALL_SK_ACT_SCREEN="${SK_ACT_SCREEN:-}" HEROSCALL_SK_ACT_GROUP="${SK_ACT_GROUP:-0}" HEROSCALL_SK_ACT_HANDLE="${SK_ACT_HANDLE:-13}" HEROSCALL_SK_ACT_BOOL="${SK_ACT_BOOL:-0}" \
+  HEROSCALL_EV_TRACE_BIT="${EV_TRACE_BIT:-0}" HEROSCALL_EV_TRACE_TASK="${EV_TRACE_TASK:-0}" HEROSCALL_EV_TRACE_BUDGET="${EV_TRACE_BUDGET:-24}" HEROSCALL_EV_TRACE_EXACT="${EV_TRACE_EXACT:-0}" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" NO_NCK_WINMGR="${NO_NCK_WINMGR:-}" WMFORCE="${WMFORCE:-}" SKFORCE="${SKFORCE:-}" \
   HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" HWVIEWER_GEOMETRY="${HWVIEWER_GEOMETRY:-}" WINMGR="${WINMGR:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" SYSFIRE="${SYSFIRE:-0}" SYSFIRE_MASK="${SYSFIRE_MASK:-00ff0000}" WM_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" WM_FIRE_YIELD="${WM_FIRE_YIELD:-0}" \
   GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" GUPPY_DISPLAY="${GUPPY_DISPLAY:-}" HWV_FORCE_FS="${HWV_FORCE_FS:-}" LANG=C LC_ALL=C \
@@ -151,7 +152,8 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       ( timeout "${MMI_TIMEOUT:-200}" cat /tmp/__helogpipe_$p > /tmp/g_$p.log 2>/dev/null & )
     done
 
-    GDISP="${GUPPY_DISPLAY:-$DISP}"   # faithful bind: GUPPY_DISPLAY=:0.0 makes gtk_external_display_active() FALSE (gdk_get_display()==":0.0") -> bind-capable WITHOUT the Guppy_dispatch gate-NOP, keeping proper window geometry
+    GDISP="${GUPPY_DISPLAY:-$DISP}"   # faithful bind: gtk_external_display_active() (libgtkbind 0x16510) returns FALSE only when gdk_get_display()==":0.0" EXACTLY; then CreateWindowData runs the WndFullScreen dispatch (sets window-record +0x1C) so jh.softkey.Register binds -> login q_sends to Q_SkMgr -> skmgr serves. A plain ":0" gives gdk_get_display()==":0" -> external active -> dispatch skipped -> "Binding softkey resource to window failed". So promote :0 -> :0.0 for Guppy (Xvfb still on :0). NO binary patch, proper window geometry.
+    case "$GDISP" in :0) GDISP=:0.0;; esac
     echo "### Guppy ($GUPPY_BIN $GUPPY_ARGS, DISPLAY=$GDISP) ###"
     [ "$USE_XVFB" = "1" ] && ( sleep "${SHOT_AT:-150}"; rm -f /tmp/g_screen.xwd; DISPLAY=$DISP xwininfo -root -tree > /tmp/g_windows.txt 2>&1; DISPLAY=$DISP xwd -root -out /tmp/g_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/g_screen.xwd 2>/dev/null)" ) &
     timeout -s KILL "${MMI_TIMEOUT:-200}" /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/g_strace.log \
