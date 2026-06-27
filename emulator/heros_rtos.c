@@ -1217,21 +1217,31 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
             }
             if(mt==0x028a0740u) sk_act_count++;   /* skmgr InfoResponse = softkey content flowing */
             if(!sk_act_fired && sk_act_screen!=0xffffffffu && sk_act_count>=sk_act_thresh){
-                int qi=q_find_slot("Q_SkMgr");
+                /* Guppy's control msgs (Login/SetMenu/InfoReq) go to Q_SkMgrCtrl (0x314), the queue the
+                 * SkMgrGMsgController reads -> post the Activate THERE (HEROSCALL_SK_ACT_QUEUE overrides;
+                 * default Q_SkMgrCtrl, fallback Q_SkMgr). NB: with SK_ACT_SCREEN set explicitly this fires
+                 * in skmgr's OWN process (it counts the 0x028a0740 InfoResponses it sends); without it the
+                 * screen-lift (from the SetMenu) and the count happen in different processes and it never fires. */
+                const char*aq=getenv("HEROSCALL_SK_ACT_QUEUE"); if(!aq||!aq[0]) aq="Q_SkMgrCtrl";
+                int qi=q_find_slot(aq); if(qi<0) qi=q_find_slot("Q_SkMgr");
                 if(qi>=0){
                     /* BYTE-EXACT wire verified by the deterministic serializer (scratchpad/build_setmenu.c:
                      * real libGMessageGui SkMgrActivate + GMessage::Write). Empty fields are ABSENT
                      * ([code|0x80000000]); SkMgrSoftkeyScreen/Group are PRESENT ([code][value]).
                      * Layout: type | U-absent | U-absent | Screen=val | Group=val | Bool[-absent]. */
                     int sk_act_bool=-1; { const char*e=getenv("HEROSCALL_SK_ACT_BOOL"); sk_act_bool=e?atoi(e):0; }
+                    /* CALIBRATED against the real SkMgrSetMenu Guppy sends (decoded DUMPQ): the two leading
+                     * GMsgUnsigned are [1, ConnectionID(13)] -> field1 is the HANDLE. OnActivation GATES on
+                     * GetConnection(handle)!=0 && GetClient(handle)!=0, so the handle MUST be PRESENT=13 (an
+                     * ABSENT/0 handle makes OnActivation bail before SkMgrScreenManager::Activate -> no draw). */
                     unsigned char act[64]; int o=0;
                     put32(act+o,0x028A0200u);o+=4;                         /* type SkMgrActivate */
-                    put32(act+o,0x80000084u);o+=4;                         /* GMsgUnsigned field 1 ABSENT */
-                    put32(act+o,0x80000084u);o+=4;                         /* GMsgUnsigned field 2 ABSENT */
+                    put32(act+o,0x00000084u);o+=4; put32(act+o,1u);o+=4;            /* field0 GMsgUnsigned = 1 PRESENT */
+                    put32(act+o,0x00000084u);o+=4; put32(act+o,sk_act_handle);o+=4; /* field1 GMsgUnsigned = handle(13) PRESENT */
                     put32(act+o,0x028A006Bu);o+=4; put32(act+o,sk_act_screen);o+=4; /* SkMgrSoftkeyScreen PRESENT */
-                    put32(act+o,0x028A004Bu);o+=4; put32(act+o,sk_act_group);o+=4;  /* SkMgrSoftkeyGroup PRESENT */
+                    put32(act+o,0x028A004Bu);o+=4; put32(act+o,sk_act_group);o+=4;  /* SkMgrSoftkeyGroup PRESENT (val 0->mask 1=view group 1) */
                     if(sk_act_bool){ put32(act+o,0x000000C6u);o+=4; put32(act+o,1u);o+=4; } /* GMsgBool PRESENT=true */
-                    else { put32(act+o,0x800000C6u);o+=4; }                /* GMsgBool ABSENT (verified default) */
+                    else { put32(act+o,0x800000C6u);o+=4; }                /* GMsgBool ABSENT */
                     sk_act_fired=1;
                     LOG("INJECT_SK_ACTIVATE: posting SkMgrActivate(0x028A0200 screen=%u group=%u handle=%u) to Q_SkMgr(0x%x), %d bytes\n",
                         sk_act_screen,sk_act_group,sk_act_handle,C->queues[qi].id,o);
@@ -1264,6 +1274,25 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     q->msg[slot].hdr[1]=sender;                           /* sender task    (kernel node +0x24) */
     q->msg[slot].hdr[2]=(mode&0xffff)|((size&0xffff)<<16);/* mode | size    (kernel node +0x28) */
     if(msg&&size) memcpy(q->msg[slot].data,msg,size);
+    /* AREA_RECT_FORCE (HEROSCALL_AREA_RECT_FORCE=1): the real winmgr NOW serves skmgr's 0x3003
+     * WmGetAreaRect, but the layout geometry is ANCHOR-based (anchors.right/.bottom=...) and winmgr
+     * doesn't resolve it -> it replies a degenerate rect (0,0,10,10 + off16=0xffffffff) -> skmgr
+     * rejects it, never creates its PFrame softkey window (0 PutImage). A 0x3003 REPLY = type 0x3003
+     * sent to a queue that is NOT "Q_WMGR" (= skmgr's session reply queue). Rewrite the rect
+     * (dwords[5..8] = off20/24/28/32, per WmGetAreaRect@libwinmgrlib 0x56b0) to the harvested
+     * HSoftKeyArea geometry (0,680,1024,88) + clear off16, so skmgr's PSoftkeyControl gets a sized
+     * softkey window -> BuildSoftkeyBar -> PutImage the loaded .bmx. (Forced draw-trigger: the rect
+     * is the real harvested geometry; the only thing forced is overriding winmgr's unresolved value.) */
+    { static int arf=-1; static uint32_t bx=0,by=936,bw=1280,bh=88;
+      if(arf<0){const char*e=getenv("HEROSCALL_AREA_RECT_FORCE"); arf=e&&e[0]=='1';
+        const char*r=getenv("HEROSCALL_BAR_RECT"); if(r&&*r) sscanf(r,"%u,%u,%u,%u",&bx,&by,&bw,&bh); }
+      if(arf && size>=36){ uint8_t*d=q->msg[slot].data;
+        if(d[0]==0x03&&d[1]==0x30&&d[2]==0x00&&d[3]==0x00 && strcmp(q->name,"Q_WMGR")){
+          uint32_t w=d[28]|(d[29]<<8)|(d[30]<<16)|((uint32_t)d[31]<<24);
+          /* The visible bar strip is BELOW the (HWV_FORCE_FS 1280x936) HwViewer window = y=936,1280x88;
+           * the harvested y=680 lands INSIDE HwViewer (obscured). HEROSCALL_BAR_RECT="x,y,w,h" overrides. */
+          if(w<=16){ put32(d+16,0); put32(d+20,bx); put32(d+24,by); put32(d+28,bw); put32(d+32,bh);
+            LOG("AREA_RECT_FORCE: 0x3003 reply (q \"%s\") rect w=%u -> %u,%u,%u,%u\n",q->name,w,bx,by,bw,bh); } } } }
     qhex("Q_send",id,msg,size);
     capture_msg(msg,size);
     __atomic_add_fetch(&q->tail,1,__ATOMIC_ACQ_REL);
