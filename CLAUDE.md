@@ -727,6 +727,28 @@
 > skmgr's OEM-screen PFrame (a winmgr screen-activate event 0x3009-0x301F, or a Guppy SkMgrActivate/ShowMenu on
 > Q_SkMgr) + inject/serve it. Run: `PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1 INJECT_WMGR_ACK=0 WM_LAYOUT=%SYS%/
 > resource/tnc640layout1024.xml WM_SIZE=1024x768 bash emulator/run_3proc_skmgr_guppy.sh`.
+> ★★★★ THE DRAW TRIGGER — fully traced to an INJECTABLE GMessage (2026-06-27, cont., idalib on skmgr.elf +
+> libGMessageGui.so): skmgr's softkey-bar DRAW is gated on a SCREEN-ACTIVATE that it never receives in the FEX
+> run. Complete chain RE'd: **`SkMgrGMsgController::OnActivation(GMessage&)@0x5a5a0`** (installed via
+> InstallMsgHandler) handles **`GMessage::IsA(0x28A0200)` = `SkMgrActivate`** → copies the body's screen/group
+> fields into GData + `GData::Notify` → fires **`SkMgrFrame::OnActivation@0x42170`** → **`SkMgrScreenManager::
+> Activate@0x80ee0`** → **`SkMgrScreen::Activate@0x7fae0`** → creates the PFrame softkey window (the 0x3003
+> WmGetAreaRect area query) → **`PSoftkeyControl::BuildSoftkeyBar`** → PutImage the 19 .bmx. (Parallel GData/
+> command path: `OnCommand→OnRequest@0x530a0` case 0-3 → same OnActivation; `SkMgrActivateByResource`=0x28A0220.)
+> ★ ROOT CAUSE the bar is blank: Guppy/HwViewer's python DOES activate (`Activate()` / `Prom::ActivateSelf()` in
+> g_pystderr) but sends its activation via the **GData/command path (OnRequest), NOT the 0x28A0200 GMessage** — and
+> that GData cross-process command channel does not deliver under FEX (the documented GData frontier). So skmgr
+> NEVER runs OnActivation → never creates its PFrame window → 0 CreateWindow / 0 PutImage / 0x3003 sends=0, even
+> though the content + bitmaps are all loaded. ⇒ THE FIX (tractable, injectable — same class as INJECT_ACK):
+> post a **SkMgrActivate (0x28A0200)** GMessage to skmgr's **Q_SkMgr (0x313/0x314)** with the HwViewer's screen/
+> group → SkMgrGMsgController::OnActivation → draw. Schema (libGMessageGui SkMgrActivateBody::C2Ev@0x1f5a40): 4
+> attrs = **GMsgUnsigned(+24) + SkMgrSoftkeyScreen(+36, def -1) + SkMgrSoftkeyGroup(+48, def -1) + GMsgBool(+60)**;
+> OnActivation reads body+20/+32/+44/+56 (screen/group/…)+ +68(bool). The HwViewer SETUP (0x028a02c0, carries
+> "/mnt/sys/Python/HwViewer/sk/HwViewer.spj") shows candidate screen/group = 0x0d(13)/1. NEXT: get the exact
+> SkMgrActivate wire (field codes + screen/group) — BEST via a faithful CAPTURE from yeen (navigate the live
+> control to the HW-commissioning/OEM screen so skmgr sends a real 0x28A0200, dump it) OR construct from the
+> schema — then add an INJECT_SK_ACTIVATE to heros_rtos.c (post 0x28A0200 to 0x313 after the softkey content
+> loads). This is the precise, named, injectable mechanism for the bar — no longer a vague frontier.
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
