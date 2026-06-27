@@ -690,6 +690,26 @@
 > windows — the mode-fullscreen + HSoftKeyAreaOEM(0,680,1024x88) — and serves skmgr that window id via Q_WMGR →
 > skmgr's PLib PFrame gets a valid softkey-area window → BuildSoftkeyBar → PutImage the 19 loaded .bmx → bar
 > renders. (yeen VM left RUNNING for a possible return; `VBoxManage controlvm TNC640 poweroff` to stop.)
+> ★★ THE AREA-WINDOW PROTOCOL — fully RE'd (the harvest applied; idalib on libplibpp/libwinmgrlib): skmgr's PLib
+> acquires its softkey-area window by AREA NAME via two Q_WMGR requests:
+> **(A) `PGetAreaRect("HSoftKeyAreaOEM")`@libplibpp 0x327a80 → `WmGetAreaRect`@libwinmgrlib 0x56b0 = request type
+> `0x3003`(12291)**; the area name (≤47 chars) is in the request body; the REPLY is parsed at **dwords[5..8] =
+> x,y,w,h** (reply off20/24/28/32) — so serve [type@0][serial@4=a10+1][reqid@8=seq][_@12][_@16][x@20][y@24][w@28]
+> [h@32] = …,0,680,1024,88 for HSoftKeyAreaOEM.
+> **(B) `PRegisterWindowEx`@libplibpp 0x327480 → `WmRegisterWindowEx`@libwinmgrlib 0x5810 = request type
+> `0x3004`(12292)** carrying skmgr's X window id (a3) + screen + area name; REPLY parsed at **dword[3] = result**
+> (off12). PRegisterWindowEx GATES on `PWindow::IsValidWindow(window)` (the brief's gate) BEFORE registering, and
+> on success sets window-flag bit 8. So skmgr CREATES its X window first (sized via the 0x3003 rect), then
+> registers it. The request wrapper `WmSendRequestReply`@0x42b0: session path reply-queue = a1[2] (the session
+> reply queue); no-session path = `WMQ<tid>` (q_ident/q_create "WMQ%05X").
+> ⇒ FEX IMPLEMENTATION (two specified steps, NOT yet done): (1) FIX the INJECT_WMGR_ACK **event-serial handshake
+> for skmgr** — the current 0x3037 GetScreens reply (tuned for Guppy) makes skmgr log `WmRecvEvent: Gap in event
+> serial number sequence!` + `WMGRErrUnexpected ... WINMGRQ_GETSCREENS` and BLOCK before the area query (skmgr
+> reaches `Q_ident "Q_WMGR"` but never sends 0x3003); (2) ADD INJECT handlers for **0x3003** (reply the harvested
+> HSoftKeyAreaOEM rect 0,680,1024,88 at dwords 5-8) + **0x3004** (reply result=success at dword 3) so skmgr's
+> PFrame gets a valid window → BuildSoftkeyBar → draws the 19 .bmx. Both grounded by the harvest; status =
+> protocol+geometry fully known, implementation pending. (Verified this session: skmgr login completes
+> (SK_REPLY_FORCE), finds Q_WMGR 0x30e, blocks at the GetScreens serial gap.)
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
