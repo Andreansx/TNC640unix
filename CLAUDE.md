@@ -888,20 +888,33 @@
 > at reply v16[5..8]=off20/24/28/32, **0x3004 WmRegisterWindowEx -> result@off12=0**. Envelope verified by idalib
 > decompile (WmGetAreaRect@libwinmgrlib 0x56b0: req type 12291, reply read at v16[5..8]; WmSendRequestReply@0x42b0:
 > seq@off4, serial@off8, session reply-q a1[1]@off24 — identical to the working 0x3037 GetScreens handler).
-> ★ **THE GATE (precisely pinned, NOT crossed): winmgr creates 0 windows in the 4-proc.** `winmgr_XCreateWindow=0`,
-> `WmModule::Initialize=0` in BOTH INJECT_WMGR_ACK=0 AND =1 (the brief's "INJECT_WMGR_ACK=1 -> 5 windows" did NOT
-> reproduce). So skmgr's PFrame has **no valid parent -> ID 0x00000000 -> destructed** before WmGetAreaRect, and
-> skmgr **blocks in OnSetMenu's WM-client handshake (P_name/T_name of -1) before reading the queued Activate** (only
-> 2 of 3 flow msgs read; "queue 0x314 still has 1 msgs") -> OnActivation / the 0x3003 query never run -> INJECT_AREA_ACK
-> never fires (it's correct + ready but premature). ⇒ the softkey bar is gated SOLELY on **winmgr running
-> WmModule::Initialize (creating its screen-layout windows incl. the softkey area) in the 4-proc** = the documented
-> winmgr render-thread frontier (winmgr DOES create its windows in the 2-proc `run_wmdiag.sh` via the t_create fix,
-> but NOT in the 4-proc with skmgr+Guppy competing — render-thread starvation/timing). NEXT: get winmgr to run
-> WmModule::Initialize in the 4-proc (the /dev/events render-tick bridge bf0b579 applied to winmgr's render thread,
-> OR resolve the 4-proc render-thread starvation) -> skmgr's PFrame gets a valid parent -> reaches 0x3003 ->
-> INJECT_AREA_ACK serves the rect -> skmgr creates its softkey window -> BuildSoftkeyBar -> PutImage the 19 .bmx ->
-> BAR. The softkey CONTENT/flow/draw-trigger half is now fully solved + verified upstream; this is the last layer.
-> Run: `bash scratchpad/sktest.sh [wmack]` (INJECT_SK_FLOW + INJECT_AREA_ACK; clean inline env). Knobs:
+> ★ **GATE — RE-PINNED with the REAL window tree (the prior "winmgr creates 0 windows" was a BROKEN MEASUREMENT).**
+> Installed `xwininfo` (x11-utils) + read the actual `/tmp/g_windows.txt` tree (the screenshot is `/tmp/g_screen.xwd`,
+> NOT /tmp/shots/*.png; winmgr's strace traces only connect,writev so grep "CreateWindow" NEVER matched — ALL prior
+> winmgr-window checks were invalid). GROUND TRUTH (clean baseline, WMGR_ACK=0, no SYSFIRE, FOREGROUND run):
+> **winmgr does 108 writev to X (ABOVE the Initialize threshold) and the softkey-bar area window EXISTS**: the tree
+> shows the HwViewer main window **0x20020d (1282x938+0+0)** with children **0x60001f (1280x108+0+828) = the bottom
+> softkey strip** + **0x60001b (1252x824) = the content area** (header panes 0x600024/0x600026). So the bar AREA is
+> created (1280x108 at the bottom) — it is just **EMPTY** (only a 16x108 edge child, no buttons). Screenshot confirms:
+> HwViewer renders fullscreen ("Last accepted/Current configuration" + the HW-server error), bottom strip BLANK.
+> **skmgr connects to X (66 writev)** but **draws nothing** (0 .bmx open, PFrame ID 0, 0 PutImage): it reads only
+> **2 of 3 flow msgs** (Login+SetMenu; the Activate stays queued in 0x314), sends **8 WM queries to winmgr (0x30e)**,
+> winmgr **replies 3x to skmgr's 0x313** (correct — only 3 of the 8 expect a reply), then skmgr **wedges in a 10s
+> retry loop** (`Tm_wkafter 0x2710`) doing **`P_name(-1)`/`T_name(-1)` = WM-client ProcessExists validation on an
+> UNRESOLVED pid -1** — so OnSetMenu never returns, the Activate is never read, OnActivation/the 0x3003 query never
+> fire (INJECT_AREA_ACK correct+ready but premature). ⇒ **LIKELY ROOT: the SYNTHETIC SkMgrLogin (INJECT_SK_FLOW) is
+> INCOMPLETE** — it lacks the real Guppy client's reply-to queue + pid/tid, so skmgr's RegisterConnection/ProcessExists
+> validates pid -1 → loops. (This is NOT the winmgr render-thread; winmgr is up + serving. SYSFIRE render-autofire is
+> a DEAD LEVER — it slowed the run so badly it didn't finish in 240s; the clean no-SYSFIRE baseline is correct.)
+> **NEXT levers (concrete):** (a) give the injected SkMgrLogin a VALID reply-to queue + client pid/tid (the real
+> Guppy softkey task id, available in-emulator) so skmgr's client-validation succeeds → OnSetMenu returns → skmgr
+> reads the Activate → OnActivation → 0x3003 → INJECT_AREA_ACK → draw; (b) decompile skmgr's OnLogin/OnSetMenu
+> RegisterConnection to read the exact client-identity fields it validates; (c) confirm whether skmgr draws into the
+> EXISTING Guppy GtkSocket 0x60001f (XEMBED) or its own winmgr-area window. The content/flow/draw-trigger half, the
+> WM handshake, AND the bar-area window all EXIST; the last layer is skmgr's client-validation + draw-completion.
+> ★ HARNESS (critical, cost hours): run sktest.sh **FOREGROUND** in one `limactl shell` (detached nohup setsid dies
+> here); the lima Mac-mount is READ-ONLY from the VM (write to /tmp, `limactl copy` back); screenshot=/tmp/g_screen.xwd,
+> tree=/tmp/g_windows.txt. Run: `cp scratchpad/sktest.sh /tmp/ && bash /tmp/sktest.sh 0` (foreground). Knobs:
 > `HEROSCALL_INJECT_SK_FLOW`, `HEROSCALL_INJECT_AREA_ACK`, `HEROSCALL_SK_FLOW_DELAY` (default 75s).
 >
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
