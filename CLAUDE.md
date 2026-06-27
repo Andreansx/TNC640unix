@@ -789,6 +789,21 @@
 > where the constellation flows to the softkey phase. The inject (INJECT_SK_ACTIVATE) is ready to fire the
 > instant a run reaches that phase. DO NOT restart the VM to "fix" a flaky run — it traded workable-flaky for
 > stuck (this session's lesson).
+> ★★ DIAGNOSIS CORRECTED (2026-06-27, decoded the 137B) — "(a) the per-client 137B config SERVE" above is WRONG,
+> drop it. Captured + decoded the 137B request: type **0x170501**, embedded reply-to "…Rts10a" (Guppy softkey
+> thread 0x10a), string field **"HwSetup"**. It is a **`CfgNotifyForObjects`** (config-change SUBSCRIPTION),
+> routed by `CfgServer::DispatchMessage@0x235eb0` → **`CfgServer::OnNotifyForObjects@0x211e50`**, which only calls
+> `ServerHelper::RegisterNotification@0x326ea0` ×3 and RETURNS — **NO Q_send/reply by design** (RegisterNotification
+> also just registers, no initial-value push). So ConfigServer reading the 137B and going idle is CORRECT — a
+> subscription gets no reply; Guppy is NOT waiting for a "137B reply" and there is no per-client SERVE gap here.
+> ⇒ REAL GATE (re-pinned): Guppy blocks at `Ev_receive(0x03011000)` = the **operational-peer handshake**
+> (Q_PLC_FRONTSTAGE/AppStartMaster/QProMRequest — the SAME class as HrMmi's peer gate, which needed INJECT_PEER_ACK),
+> reached AFTER the config phase. It sends 0 IpoSrvLogin/SkMgrLogin because it is stuck at the peer wait, NOT at
+> config. The pre-restart good run (serve 811) got past the peer wait by warm-state timing. NEXT (correctly
+> targeted, do NOT chase a 137B reply): either (a) INJECT_PEER_ACK-style synthesize Guppy's operational-peer connect
+> replies (Q_PLC_FRONTSTAGE/AppStartMaster/QProMRequest) so it proceeds to SkMgrLogin → softkey phase → the
+> INJECT_SK_ACTIVATE fires, OR (b) bring up the minimal real peers, OR (c) recover warm-VM state. The 137B is a
+> red herring — a normal fire-and-forget config subscription.
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
