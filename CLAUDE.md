@@ -1097,6 +1097,26 @@
 > OnSetMenu's GetConnection succeeds → parse .spj → load the 19 .bmx → create the views → OnActivation → PFrame →
 > 0x3003 (INJECT_AREA_ACK serves the rect) → BuildSoftkeyBar → PutImage. This is the precise, named remaining
 > mechanism — the wire/dispatch/login half is DONE + verified; only the runtime handle needs threading.
+> ★★★ THE FULL OnSetMenu GATE + a MISSING MESSAGE (2026-06-27, cont.) — the bar needs a 4-message protocol, not 3.
+> EXTRACTED the handle: skmgr's SkMgrLoginQuit (0x028a0140) reply (captured /tmp/cap_28a0140.bin, 36B) ends with
+> `84 00 00 00 | 0d 00 00 00` = the last GMsgUnsigned = **ConnectionID 13** (matches the brief). Regenerated the
+> SetMenu with body+20 (the handle field) PRESENT=13 (`gen_sk_wires.sh` HANDLE=, `build_setmenu.c` SK_HANDLE).
+> **But the bar STILL does not draw** (0 .bmx, 0× 0x3003, 118 colours). DECOMPILED `SkMgrFrame::OnSetMenu@0x47340`
+> FULLY — it gates on TWO things and ACTIVATES a menu, it does NOT load the resource:
+> (1) `Connection = SkMgrClientManager::GetConnection(a3=body+20)` (the handle) — throws/returns if 0;
+> (2) `Resource = SkMgrResourceManager::GetResource(a4=body+32)` (a resource id) — **__cxa_throws if null**;
+> then `GetMenuOfIdentifier(Resource, a7=.spj) → ContainsMenu → PushOnMenuStack → SkMgrScreenManager::DoUpdate`.
+> My SetMenu leaves body+32 ABSENT (=0) → `GetResource(0)`=null → throw → no menu. ★ The RESOURCE (the 19 .bmx)
+> is loaded+registered by a SEPARATE message: **`SkMgrFrame::OnOpen@0x431d0` → `SkMgrResourceManager::AddResource
+> @0x7a950` → `SkMgrSYSResource::ParseResourceFile@0x79680` → `ParseSoftkey@0x778a0` → `LoadImage` (the .bmx)**.
+> ⇒ the REAL softkey protocol is **Login → OPEN (register the .spj resource, load the 19 .bmx, returns a resource
+> id) → SetMenu (activate a menu — needs body+20=handle + body+32=resource id) → Activate (screen)** = FOUR
+> messages with handle AND resource-id threading. INJECT_SK_FLOW currently sends only Login→SetMenu→Activate. ⇒
+> NEXT: (a) add the SkMgrOpen message (RE `SkMgrGMsgController`'s OnOpen handler + the wire) BEFORE the SetMenu;
+> (b) intercept BOTH skmgr replies — SkMgrLoginQuit → the handle (body+20), the Open reply → the resource id
+> (body+32) — and thread them in (the handle ConnectionID 13 may be stable but the resource id is dynamic). The
+> wire-encoding half (the brief's long-standing 0x78 gate) is SOLVED + durable; the remaining work is this
+> multi-message resource-registration protocol — now mapped end-to-end (every handler + address known).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
