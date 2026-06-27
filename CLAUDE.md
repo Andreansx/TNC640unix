@@ -654,6 +654,36 @@
 > SkMgrCtrlConnectionHandler::RegisterConnection's publish, then INJECT/complete it. (Caveat also possible: FEX's
 > unaligned-atomic emulation cross-process coherence — but shared-mem reads ARE coherent, so a written value
 > would be seen; the likeliest root is skmgr not writing it.)
+> ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
+> P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
+> the softkey login does NOT need a deep GData bridge — it was a REPLY-ROUTING regression I introduced. Decisive
+> A/B via a new **`HEROSCALL_PIDENT_SELF`** toggle: **PIDENT_SELF=0** (the OLD -1-pid topology, before commit
+> 0e6a084) **COMPLETES the softkey login** (skmgr serve 3→**405**, InfoResponse 0→**402**, **.bmx 0→19** loaded,
+> screenshot 3→**118 colours**) — but breaks winmgr (P_ident=-1 → ProcessExists rejects WM clients). ROOT CAUSE:
+> the P_ident-self fix (0e6a084, needed so winmgr accepts WM clients) split the softkey reply path into DISTINCT
+> per-task queues — the SkMgrLogin reply-to is the FModule I/O thread's sync queue **Rts<ioTask>** (e.g. Rts108)
+> while the softkey API CALLER reads its OWN **notify-bearing Client<callerTask>** (e.g. **Client107, notify
+> 0x02000000**) on a DIFFERENT task. The old notify-gate (bed94e5) only redirected to the SAME-suffix Client
+> (Client108, PASSIVE) → the 36B SkMgrLoginQuit stranded → the FModule sync-port poll spun forever. In the -1
+> collapse ALL per-task queues fold to one notify-bearing "...ffffffff" queue, so the suffix match worked — that's
+> why PIDENT_SELF=0 completes. **FIX = `HEROSCALL_SK_REPLY_FORCE`** (commit 3f4c4fc, default ON in
+> run_3proc_skmgr_guppy.sh): when the suffix-matched Client is absent/passive, route the softkey-family
+> (type-id>>16==0x28a) reply to **THE notify-bearing softkey Client queue** (notify_bits & 0x02000000) regardless
+> of suffix. **VERIFIED with VALID pids** (winmgr-compatible, 3-proc INJECT_WMGR_ACK=1): softkey login completes
+> identically to PIDENT_SELF=0 — serve **405**, **402** InfoResponses all redirected to **Client107(0x31e)**, **19
+> .bmx** loaded, screenshot **118 colours**, crash 0. ⇒ the softkey CONTENT path is SOLVED for the winmgr-
+> compatible valid-pid topology; the spin was never a GData mystery, just a reply landing on a passive queue.
+> ★ REMAINING gate = the winmgr WINDOW (unchanged from the 4-proc brief): with WINMGR=1 INJECT_WMGR_ACK=0
+> (the STABLE config — Guppy survives 4573 lines, crash 0), winmgr SERVES Q_WMGR (0x30e, replies 208B GetScreens
+> to Guppy's 0x31e + skmgr's 0x313) but is stuck in its render-thread loop (`Q_read 0x30e → Ev_send(self,
+> 0x04000000) → Ev_receive(0x05011001)`) and never runs **WmModule::Initialize → 0 XCreateWindow** → no
+> VSoftKeyArea window → skmgr PutImage 0, InfoResponse 0 (login can't finish without the window). INJECT_WMGR_ACK=1
+> DOES make winmgr create its 5 windows but now reliably CRASHES Guppy (2/2, the duplicate-reply WmRecvReplyEx
+> serial-gap conflict). ⇒ the bar is gated SOLELY on winmgr's render-thread GUI handshake (the documented
+> /dev/events event→fd render-tick frontier, INJECT_WMGR_ACK=0) so it runs WmModule::Initialize → creates +
+> serves skmgr the REAL VSoftKeyArea window → skmgr draws the 19 loaded .bmx. The softkey half is done; this is
+> the last layer. Run: `PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1 INJECT_WMGR_ACK=0 bash run_3proc_skmgr_guppy.sh`.
+
 > ★★★★ THE SPIN RE'd THROUGH 6 LAYERS (2026-06-27, cont.) — the gate is the FModule SYNCHRONOUS-PORT poll, NOT a
 > plain queue read. Decompiled the full softkey-login receive chain (idalib across libSkMgrCtrl/libNcCtrlModule/
 > libbackend): `GUPPYSKMGR_::Connect@0xbc9a0` → `SkMgrCtrlInterfaceImpl::LogIn@0xc130` (sends SkMgrLogin
