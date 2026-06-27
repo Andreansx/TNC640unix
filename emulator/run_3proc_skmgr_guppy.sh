@@ -143,7 +143,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     i=0; while [ $i -lt 120 ]; do
       grep -qE "Q_create .Q_SkMgrCtrl" /tmp/sk.log 2>/dev/null && { echo "  skmgr created Q_SkMgr/Q_SkMgrCtrl at ${i}*0.5s"; break; }
       sleep 0.5; i=$((i+1)); done
-    sleep 6
+    sleep "${GUPPY_DELAY:-6}"
 
     for p in pystdout pystderr ncstdout ncstderr; do
       rm -f /tmp/__helogpipe_$p; mkfifo /tmp/__helogpipe_$p 2>/dev/null
