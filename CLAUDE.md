@@ -1117,6 +1117,24 @@
 > (body+32) — and thread them in (the handle ConnectionID 13 may be stable but the resource id is dynamic). The
 > wire-encoding half (the brief's long-standing 0x78 gate) is SOLVED + durable; the remaining work is this
 > multi-message resource-registration protocol — now mapped end-to-end (every handler + address known).
+> ★★★★ STRATEGIC FINDING (2026-06-27, decisive) — the direct-inject "drive skmgr with 3 messages" lever is
+> INSUFFICIENT; the bar needs the FULL softkey client protocol. `SkMgrGMsgController` has ~20 message handlers
+> (`OnCreateMenu@0x5c970`, `OnCreateSoftkey@0x5c9f0`, `OnAppendSoftkey@0x59250`, `OnShowMenu@0x59a50`,
+> `OnSetContent@0x5aa90`, `OnReplaceMenu@0x58b70`, `OnShowSoftkey@0x59b00`, `OnSetAttribute@0x59610`,
+> `OnRemoveSoftkey@0x59320`, `OnEnableRootMenu@0x58e70`, `OnSetState@0x597c0`, `OnActivation@0x5a5a0`,
+> `OnDeactivation@0x5a720`, `OnKeyQueue@0x5a370`, …) and there is **NO controller `OnOpen`** — the resource
+> registration (`SkMgrFrame::OnOpen→AddResource`) is reached via a richer path. So the OEM softkey bar is built
+> by a LONG client-driven sequence (register resource → create menu → create+append the softkeys → set content
+> → show → activate), each with dynamic ids (handle/resource/menu/softkey) threaded from the prior reply — this
+> is the full `libSkMgrCtrl` API, normally emitted by Guppy. ⇒ **the tractable path to the bar is NOT replicating
+> all ~20 messages via INJECT (a large multi-session build), but FIXING the Guppy GData connection wedge so
+> GUPPY (libSkMgrCtrl, which generates the whole correct protocol) drives skmgr** — i.e. the documented GData
+> cross-process connection-handshake frontier (the softkey thread 0x10a spin on the GUPPYSKMGR connection-state
+> atomic). The INJECT path proved the wire encoding (the brief's hard 0x78 gate — now solved + reusable for the
+> GData path too) and mapped the protocol exhaustively, but Guppy-drives is the higher-leverage route to actual
+> pixels. NEXT (re-prioritized): crack the Guppy 0x10a GUPPYSKMGR::Connect GData spin (the connection-ready value
+> skmgr must publish) so Guppy completes login→Open→…→Activate itself; the wire-encoding work remains the durable
+> deliverable from the INJECT line of attack.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
