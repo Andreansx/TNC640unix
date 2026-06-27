@@ -942,6 +942,14 @@ static uint32_t q_ident(const char*nm){
 }
 static int cfg_reply_route=-1;
 static int sk_reply_route=-1;
+static int sk_reply_force=-1;    /* HEROSCALL_SK_REPLY_FORCE=1: redirect Rts->Client even if Client is PASSIVE
+                                  * (no notify). The softkey reader reads its Client queue via the FModule
+                                  * sync-port PollInput (NOT via the ev_receive notify), so a passive Client
+                                  * IS the right destination. With valid pids (P_ident self) Client<tid> is
+                                  * created passive, so the notify-gate below wrongly blocked the redirect ->
+                                  * the SkMgrLoginQuit stranded on Rts<tid> -> the sync-port poll spun forever.
+                                  * VERIFIED: PIDENT_SELF=0 (old -1 topology, Client had notify) completes the
+                                  * login (serve 405, 402 InfoResponses, 19 .bmx); this restores that for valid pids. */
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x size %u\n",id,size); qhex("Q_FAIL",id,msg,size); return -9; }
     /* CFG_REPLY_ROUTE (HEROS_CFG_REPLY_ROUTE=1): ConfigServer resolves a per-client reply-to of ""
@@ -998,6 +1006,22 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
         if((mtype>>16)==0x28au){
             char cn[NAMELEN]; snprintf(cn,sizeof cn,"Client%s",C->queues[s].name+3);  /* "Rtsffffffff"+3 -> "Clientffffffff" */
             int rs=q_find_slot(cn);
+            if(sk_reply_force<0){ const char*e=getenv("HEROSCALL_SK_REPLY_FORCE"); sk_reply_force=(e&&e[0]=='1')?1:0; }
+            /* In the -1-pid collapse topology the same-suffix "Client<sfx>" IS the notify-bearing softkey-API
+             * reply queue, so the suffix match works. In the valid-pid topology (P_ident self) the reply-to is
+             * the FModule I/O thread's sync queue "Rts<ioTask>" (e.g. Rts108) while the softkey API CALLER reads
+             * its OWN notify-bearing "Client<callerTask>" (e.g. Client107, notify 0x02000000) on a DIFFERENT
+             * task — so the same-suffix "Client108" is the wrong (passive) queue. When SK_REPLY_FORCE is set and
+             * the suffix-matched Client is absent/passive, route to THE notify-bearing softkey Client queue
+             * (the one whose notify_bits include the 0x02000000 softkey-API notify) regardless of suffix. */
+            if(sk_reply_force && (rs<0 || !C->queues[rs].notify_bits)){
+                int best=-1;
+                for(int qi=0; qi<MAXQ; qi++){
+                    struct queue*q=&C->queues[qi];
+                    if(q->used && q->id && !strncmp(q->name,"Client",6) && (q->notify_bits&0x02000000u)){ best=qi; break; }
+                }
+                if(best>=0){ rs=best; snprintf(cn,sizeof cn,"%s",C->queues[best].name); }
+            }
             if(rs>=0 && rs!=s && C->queues[rs].name[0] && C->queues[rs].notify_bits){
                 LOG("SK_REPLY_ROUTE: redirect softkey reply \"%s\"(0x%x) -> \"%s\"(0x%x) (type %08x, %u bytes)\n",
                     C->queues[s].name,C->queues[s].id,cn,C->queues[rs].id,mtype,size);
@@ -2318,7 +2342,10 @@ long syscall(long n,...){
                 * Return the caller's own heros task id (a valid, non-(-1) pid). The NAMED form still reports
                 * NOT-FOUND (-1): AppStart::Processes::OnMessage(FmLoadProcess) reads p_ident(name)!=-1 as
                 * "already running" and throws "...twice" before the spawn, so a named lookup MUST stay -1. */
-        if(!p||!p[0]){ uint32_t self=task_self(); LOG("P_ident(self) -> 0x%x\n",self); return (long)(int32_t)self; }
+        if(!p||!p[0]){
+            static int ps=-1; if(ps<0){ const char*e=getenv("HEROSCALL_PIDENT_SELF"); ps=(e&&e[0]=='0')?0:1; }
+            if(!ps){ LOG("P_ident(self) -> -1 (PIDENT_SELF=0, old topology)\n"); return -1; }
+            uint32_t self=task_self(); LOG("P_ident(self) -> 0x%x\n",self); return (long)(int32_t)self; }
         { const char*pn=(const char*)(uintptr_t)p[0];
           if(strstr(pn,"winmgr")||strstr(pn,"mgr")) { fprintf(stderr,"[rtos] P_ident(\"%s\") -> -1 (Processes::OnMessage reached)\n",pn); fflush(stderr); }
           else LOG("P_ident(\"%s\") -> -1\n",pn); }
