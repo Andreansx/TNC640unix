@@ -830,6 +830,22 @@
 > (INJECT_SK_ACTIVATE) is verified-correct and fires the instant the chain reaches InfoResponses. Run batch
 > (warm-distribution test): all post-restart runs stuck at login=0 (warm state lost; needs the registry fix or
 > a clean/warm VM).
+> ★★ DEEPEST PIN (2026-06-27, the exact stuck syscall) + two simple fixes REFUTED: the softkey thread (g_pystderr
+> tail, t5872) does `T_ident → Q_send -> queue 0x339 → Ev_receive(0x08, poll) FOREVER`, and **NEVER sends
+> SkMgrLogin (0x028a0120) to skmgr (0x313/0x314)** (verified: 0 sends to 0x313/0x314 from BOTH g_mmi + g_pystderr;
+> skmgr's serve=4 is winmgr GetScreens 208B traffic, NOT softkey). NO exception/throw (so NOT the Connect=-1 throw
+> gate @0xbca26). So the stall is GUPPYSKMGR::Connect's **connection-setup handshake** (the `call [edx+24h]` vtable+36
+> @0xbca77, whose result gates the recurse @0xbca7f) — it sends a connect req to 0x339 and busy-polls Ev_receive
+> bit 0x08 for the answer that never comes (the GData connection-ready, gated on skmgr's winmgr handshake). 0x339
+> owner/role unidentified (DUMPQ was off; re-run with DUMPQ=1 + grep `Q_send[0x339]` to get the type-id + who reads
+> it — skmgr does NOT). ★ REFUTED this session (don't retry): (a) WARMTH — a 6-run batch + 15+ post-restart runs ALL
+> stuck at login=0 (the warm `test_wm1` serve-811 state did NOT return; a `limactl restart` destroys it — the
+> session's key mistake); (b) TIMING — `GUPPY_DELAY=30` (new tunable knob, was hard-coded sleep 6) gave skmgr full
+> handshake time before Guppy's Connect and changed NOTHING (574/serve4/login0), so the gate is STATE-dependent,
+> NOT startup ordering. NEXT (clean session, two paths): (1) DUMPQ the 0x339 send → identify the connect-req
+> type-id + intended reader → INJECT its reply (set Ev bit 0x08 on t5872) so Connect completes → SkMgrLogin fires →
+> bar; (2) recover a warm VM state (avoid restart) where the chain completes naturally. The draw half
+> (INJECT_SK_ACTIVATE) is proven-ready and fires the instant SkMgrLogin → InfoResponses flow.
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
