@@ -773,6 +773,22 @@
 > ConfigServer's full per-client config serve to Guppy so it proceeds to the peer+softkey phase), THEN
 > INJECT_SK_ACTIVATE=1 fires the SkMgrActivate → OnActivation → 0x3003 → BuildSoftkeyBar → PutImage. The inject
 > is the precise remaining mechanism; the blocker is purely getting the run back to the softkey phase.
+> ★ STALL PINPOINTED to the per-client config serve (2026-06-27, exact): ConfigServer DOES load+broadcast the
+> FULL config (cfgfix FULL-LOAD patch applies, 4380B broadcast to QEvtServer 0x307 present), so it is NOT
+> config-completeness. The deterministic stop is the **per-client dialogue**: Guppy sends config requests to
+> CfgServerQueue 0x303 (57/58/**137**B); ConfigServer reads the 137B (Q_read too-big -12 → caller doubles → 137B
+> re-read OK) and then goes IDLE on `Ev_receive(0x01011000, forever)` **without sending the reply** (ConfigServer
+> Guppy-CfgM replies stop at 7). So Guppy waits forever for that 8th per-client reply → never subscribes to peers
+> (0 IpoSrvLogin) → never reaches softkey login. The 137B request's reply is the gap (decode it next: what
+> config key/the per-client serve path that 137B triggers vs the served 57/58B ones). The pre-restart good run
+> served it (serve 811), so it is reproducible — the difference is warm-VM state, NOT a code bug.
+> ⇒ VM-STATE FINDING: a fresh `limactl restart` + FIRST run is the WORST (5-task rendezvous stalls, Guppy 124
+> lines, serve 0); warmed runs reach the 137B gap (Guppy ~595, serve ~6); the one good run (serve 811) needed
+> prolonged prior-session warmth that a restart destroys and re-runs don't rebuild (12 runs tried). So the
+> softkey-bar verification is gated on (a) the per-client 137B config serve, OR (b) restoring a warm-VM state
+> where the constellation flows to the softkey phase. The inject (INJECT_SK_ACTIVATE) is ready to fire the
+> instant a run reaches that phase. DO NOT restart the VM to "fix" a flaky run — it traded workable-flaky for
+> stuck (this session's lesson).
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
