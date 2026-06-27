@@ -1079,6 +1079,24 @@
 > a never-init gate); (c) if it's a precondition not yet met, drive skmgr's NcCtrl/screen init (or post the flow
 > only after it) so the handlers run with `this+5` live → draw. Tooling: `scratchpad/{build_setmenu.c,
 > gen_sk_wires.sh,sktest.sh}`. The wire-encoding half is DONE + durable; this is the next, more-advanced layer.
+> ★★ GATE RE-PINNED to the HANDLE THREADING (2026-06-27, cont., idalib trace of the live run) — the prior
+> "this+5 handler-precondition" framing is SUPERSEDED (this+5 IS set). Ran the byte-exact flow (screen=13) and
+> traced skmgr's actual response: **OnLogin RUNS** — after reading the 36B login skmgr REPLIES 36B (SkMgrLoginQuit)
+> + sends the WM handshake to winmgr — so the wire, the dispatch, AND `this+5` all WORK (refuting the screen-value
+> and this+5 theories). But after reading the SetMenu (72B) + Activate (32B) skmgr does NOTHING (0 .spj, 0 .bmx,
+> 0× 0x3003, no PFrame, 118 colours). ROOT (decompiled): **`SkMgrFrame::OnSetMenu@0x47340` gates on
+> `Connection = SkMgrClientManager::GetConnection(a3)` where a3 = the client HANDLE = the SetMenu's body+20**;
+> my injected SetMenu left body+20 ABSENT (=0) → `GetConnection(0)=0` → bail BEFORE the .spj parse → no views →
+> `OnActivation`/`SkMgrScreen::Activate@0x7fae0` (which iterates the per-group SkMgrViewManagers this+6..this+7,
+> created by the parse) finds nothing → no draw. **`SkMgrFrame::OnLogin@0x41790`** creates the client by NAME
+> (`SkMgrClientManager::CreateClient(a2)`) and assigns a **skmgr-generated ConnectionID** (`SkMgrClient::
+> GetConnectionID`) returned in the SkMgrLoginQuit reply; the SetMenu/Activate must carry THAT ConnectionID
+> (body+20). Since INJECT_SK_FLOW is fire-and-forget it never learns the handle. ⇒ **THE FIX (next iteration):**
+> make the emulator intercept skmgr's SkMgrLoginQuit (0x028a0140) reply to the injected login, extract the
+> ConnectionID, and post the SetMenu+Activate with body+20 = that handle (and the resource id at body+32). Then
+> OnSetMenu's GetConnection succeeds → parse .spj → load the 19 .bmx → create the views → OnActivation → PFrame →
+> 0x3003 (INJECT_AREA_ACK serves the rect) → BuildSoftkeyBar → PutImage. This is the precise, named remaining
+> mechanism — the wire/dispatch/login half is DONE + verified; only the runtime handle needs threading.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
