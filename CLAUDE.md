@@ -654,6 +654,43 @@
 > SkMgrCtrlConnectionHandler::RegisterConnection's publish, then INJECT/complete it. (Caveat also possible: FEX's
 > unaligned-atomic emulation cross-process coherence — but shared-mem reads ARE coherent, so a written value
 > would be seen; the likeliest root is skmgr not writing it.)
+> ## ★★★★★★ REAL winmgr HARVESTED from yeen (2026-06-27) — the exact softkey-area window layout (ground truth)
+> User-authorized harvest of the RUNNING real control on yeen (full-system VirtualBox, all 92 procs) to feed the
+> FEX-native (Track B) path — yeen is the ground-truth SOURCE, the FEX bar stays the deliverable. Got root in the
+> live HEROS5 guest (offline qemu-nbd SSH-key inject into the VMDK `~/tnc/vbox/TNC640/TNCvbProg-disk001.vmdk`
+> partition nbd0p1=HEROS5; `ssh yeen` passwordless sudo; guest reachable `ssh -p 2222 root@127.0.0.1` from yeen,
+> yeen's id_ed25519 injected into guest /root/.ssh/authorized_keys; PermitRootLogin yes). Ran `xwininfo`/strace on
+> the live winmgr(pid 8994)/skmgr(9028)/hesoftkeysqt(9079). FINDINGS (artifacts: `scratchpad/wm_full_tree.txt`
+> 1131-line window tree, `scratchpad/tnc640layout1024.xml`, `scratchpad/wm_harvest_facts.md`):
+> **(1) THE SOFTKEY-AREA WINDOW GEOMETRY (the thing the FEX bar needs):** winmgr creates, per operating-mode screen
+> ("Machine"/SCREEN_MACHINING screen 1, "Edit"/SCREEN_EDITOR screen 0, "OEM"/SCREEN_OEM desktopId=2), a fullscreen
+> mode window (1024x767/768 +0+0) whose CHILD `Screen<Mode>_HorizontalManager` (e.g. ScreenNC_HorizontalManager
+> 0x3e00061) is the **softkey strip at 1024x88 +0+680**, with a `_DefaultView` child (1024x88+0+0). Plus
+> `Screen<Mode>_VerticalManager` 134x559+890+103, and `PGuiBaseWindow [usage 'Clock'/'Prom'/'IconTray'/'Startup'/
+> 'Nc.Table_HOR_SK'/...]` area windows. **The layout XML** (`/mnt/sys/resource/tnc640layout1024.xml`, the EXACT one
+> the real winmgr loads — repo has it at `work/control/sysroot/resource/`) defines the OEM areas DIRECTLY:
+> **`HSoftKeyAreaOEM x=0 y=680 width=1024 height=88`** (the Guppy/HwViewer softkey bar) + `VSoftKeyAreaOEM x=890
+> y=103 w=134 h=559` + `MachiningAreaIn` ("guppy uses this areaID for python 'fullscreen'-window detection").
+> **(2) ARCHITECTURE (two softkey drawers, RESOLVES the bar-drawer question):** skmgr.elf (PID 9028, args
+> `SkManager:SkManager/skmgr -w -k` = IDENTICAL to my FEX) maps **libplibpp/libgui/libSkMgrCtrl** = the **PLib
+> softkey drawer for OEM/PLib screens (HwViewer)**. `hesoftkeysqt` (PID 9079, Qt/QML) is a SEPARATE drawer for the
+> Qt main-MMI — it owns its OWN top-level window `hesoftkeysqt_server` 0x440000c 1024x87+0+680 (positioned at the
+> bar area, NOT a child of the winmgr manager). So my FEX setup (skmgr, no hesoftkeysqt) is the CORRECT path for
+> the HwViewer OEM bar — skmgr draws it. (skmgr is DORMANT in the Qt main-MMI: X writev=0 there; it only draws when
+> an OEM/PLib screen is active.)
+> **(3) REAL winmgr INVOCATION (align my FEX to it):** `winmgr -m=5 -i=/mnt/sys/resource/tnc640layout1024.xml
+> -o=afk -s=1024x768 -k=.../keymap_te530_1024_vbox.xml -c=.../charmap_tncw.xml -f=.../functionkeymap_tnc.xml` —
+> **1024 layout @ 1024x768** (my FEX used 1280; a mismatch to fix). winmgr's idle Q_WMGR serve loop = syscall222
+> `0x12340011`(Ev_receive 0x5011001) / `0x1234000d`(Q_send size 0x14=20) / `0x1234002d`(P_name)/`0x12340009`(T_name).
+> **★ NOT yet captured (skmgr dormant in the Qt MMI; needs an active OEM screen to draw):** the exact skmgr↔winmgr
+> Q_WMGR area-window-acquisition exchange (which request fetches HSoftKeyAreaOEM + the reply's window-id/rect
+> fields). To capture it live needs Guppy/HwViewer active on the guest (risky to launch manually) — so RE it from
+> the binaries (winmgr.elf/libplibpp/libgui/libbackend, all in repo) instead, now grounded by the real geometry.
+> ⇒ APPLICATION to FEX: a winmgr-window stand-in (or fix the FEX winmgr render gate) that creates EXACTLY these
+> windows — the mode-fullscreen + HSoftKeyAreaOEM(0,680,1024x88) — and serves skmgr that window id via Q_WMGR →
+> skmgr's PLib PFrame gets a valid softkey-area window → BuildSoftkeyBar → PutImage the 19 loaded .bmx → bar
+> renders. (yeen VM left RUNNING for a possible return; `VBoxManage controlvm TNC640 poweroff` to stop.)
+
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
 > the softkey login does NOT need a deep GData bridge — it was a REPLY-ROUTING regression I introduced. Decisive
