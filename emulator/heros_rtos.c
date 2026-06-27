@@ -1075,14 +1075,19 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
             if(!sk_act_fired && sk_act_screen!=0xffffffffu && sk_act_count>=sk_act_thresh){
                 int qi=q_find_slot("Q_SkMgr");
                 if(qi>=0){
+                    /* BYTE-EXACT wire verified by the deterministic serializer (scratchpad/build_setmenu.c:
+                     * real libGMessageGui SkMgrActivate + GMessage::Write). Empty fields are ABSENT
+                     * ([code|0x80000000]); SkMgrSoftkeyScreen/Group are PRESENT ([code][value]).
+                     * Layout: type | U-absent | U-absent | Screen=val | Group=val | Bool[-absent]. */
+                    int sk_act_bool=-1; { const char*e=getenv("HEROSCALL_SK_ACT_BOOL"); sk_act_bool=e?atoi(e):0; }
                     unsigned char act[64]; int o=0;
                     put32(act+o,0x028A0200u);o+=4;                         /* type SkMgrActivate */
-                    put32(act+o,0x84u);o+=4; put32(act+o,1u);o+=4;          /* unsigned field 1 */
-                    put32(act+o,0x84u);o+=4; put32(act+o,sk_act_handle);o+=4;/* unsigned = login handle */
-                    put32(act+o,0x028A006Bu);o+=4; put32(act+o,sk_act_screen);o+=4; /* SkMgrSoftkeyScreen */
-                    put32(act+o,0x028A004Bu);o+=4; put32(act+o,sk_act_group);o+=4;  /* SkMgrSoftkeyGroup */
-                    put32(act+o,0xC6u);o+=4; put32(act+o,1u);o+=4;          /* bool = activate */
-                    put32(act+o,0x028A00E0u);o+=4; put32(act+o,0u);o+=4;    /* field_e0 */
+                    put32(act+o,0x80000084u);o+=4;                         /* GMsgUnsigned field 1 ABSENT */
+                    put32(act+o,0x80000084u);o+=4;                         /* GMsgUnsigned field 2 ABSENT */
+                    put32(act+o,0x028A006Bu);o+=4; put32(act+o,sk_act_screen);o+=4; /* SkMgrSoftkeyScreen PRESENT */
+                    put32(act+o,0x028A004Bu);o+=4; put32(act+o,sk_act_group);o+=4;  /* SkMgrSoftkeyGroup PRESENT */
+                    if(sk_act_bool){ put32(act+o,0x000000C6u);o+=4; put32(act+o,1u);o+=4; } /* GMsgBool PRESENT=true */
+                    else { put32(act+o,0x800000C6u);o+=4; }                /* GMsgBool ABSENT (verified default) */
                     sk_act_fired=1;
                     LOG("INJECT_SK_ACTIVATE: posting SkMgrActivate(0x028A0200 screen=%u group=%u handle=%u) to Q_SkMgr(0x%x), %d bytes\n",
                         sk_act_screen,sk_act_group,sk_act_handle,C->queues[qi].id,o);
@@ -1360,7 +1365,27 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode);   /* 
  * from INJECT_SK_ACTIVATE; SetMenu @0x23cd20 = [0x84,0x84,0xc6,0xe7,0x28a006b,0x28a028b,0x28a00cb]; Login
  * @0x23d68c = [0x84,0x1ef,0xe7]). Values iterated vs skmgr's GMsgEntityBody::Read deserializer. */
 static int sk_flow=-1, sk_flow_fired=0;
+/* Post a byte-exact wire file (produced by the deterministic serializer scratchpad/build_setmenu.c,
+ * which runs the REAL GMessage::Write -> NO schema-table guessing, NO GMsgException 0x78). */
+static int post_sk_wire_file(uint32_t qid, const char* path){
+    FILE* f=fopen(path,"rb"); if(!f) return 0;
+    static unsigned char buf[4096]; size_t n=fread(buf,1,sizeof buf,f); fclose(f);
+    if(n<8) return 0;
+    uint32_t t=buf[0]|(buf[1]<<8)|(buf[2]<<16)|((uint32_t)buf[3]<<24);
+    LOG("INJECT_SK_FLOW: post wire-file %s type 0x%08x (%zu bytes) -> queue 0x%x\n", path, t, n, qid);
+    q_send(qid, buf, (uint32_t)n, 0); return 1;
+}
 static void inject_sk_flow(uint32_t qid){
+    /* PREFERRED: byte-exact wires from the serializer (sk_login/sk_setmenu/sk_activate.bin).
+     * Falls through to the inline (schema-guessed, 0x78-prone) wires if the files are absent. */
+    { const char*dir=getenv("HEROSCALL_SK_FLOW_DIR"); if(!dir||!dir[0]) dir="/tmp";
+      char p[300]; int g1,g2,g3;
+      snprintf(p,sizeof p,"%s/sk_login.bin",dir);    g1=post_sk_wire_file(qid,p);
+      snprintf(p,sizeof p,"%s/sk_setmenu.bin",dir);  g2=post_sk_wire_file(qid,p);
+      snprintf(p,sizeof p,"%s/sk_activate.bin",dir); g3=post_sk_wire_file(qid,p);
+      if(g1&&g2&&g3){ LOG("INJECT_SK_FLOW: posted all 3 byte-exact wire files\n"); return; }
+      LOG("INJECT_SK_FLOW: wire files missing (%d/%d/%d) -> inline fallback\n",g1,g2,g3);
+    }
     unsigned char m[1024]; int o; uint32_t H=13;   /* login handle (good run = 13) */
     const char*cli="/mnt/sys/heros5/bin/Guppy.elf"; int cl=(int)strlen(cli);
     const char*spj="/mnt/sys/Python/HwViewer/sk/HwViewer.spj"; int sl=(int)strlen(spj);
