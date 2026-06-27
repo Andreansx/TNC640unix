@@ -1224,6 +1224,53 @@
 > `scratchpad/shots/guppy_drives_no_bar.png`). Tooling:
 > `scratchpad/skyield_run.sh` (Guppy-drives + EV_NOWAIT_YIELD harness), `emulator/skconnforce.c` (ruled-out diag).
 
+> ## ★★★★★★ SOFTKEY BAR — skmgr DRAWS IT FEX-native (PutImage > 0); login WALL CROSSED; visible-bar gate = winmgr screen-area window-map (2026-06-28)
+> The "login is never transmitted" wall (the prior section) is **CROSSED** — and the root was NOT a transport-wiring
+> bug but the **bind-window gate**, fixed FAITHFULLY by one env. skmgr now renders the bar to X end-to-end.
+> **★ THE FAITHFUL BIND FIX (commit cf888d5): `GUPPY_DISPLAY=:0.0` (+ `HWVIEWER_SK_USAGE=PyLargeMachine`).**
+> `jh.softkey.Register` (HwViewer.py:2653) FAILS `PyJHCallback::SKRegister`'s bind gate (window-record +0x1C/+0x14
+> ==0 → "Binding softkey resource to window failed") and returns None BEFORE GUPPYSKMGR::Connect/LogIn — so the
+> login was never even reached (the bit-0x08 spin was an UNRELATED benign GuppyOemThread idle). The window is
+> bind-capable only when `GUPPYRUNTIMEGTK_::CreateWindowData@0xb79c0` runs the WndFullScreen dispatch (sets +0x1C),
+> which is gated on **`gtk_external_display_active@libgtkbind 0x16510` = `g_ascii_strcasecmp(gdk_get_display(),
+> ":0.0") != 0`** → FALSE only when DISPLAY is EXACTLY `:0.0`. Xvfb runs on `:0`; gdk reports `:0` → external-active
+> → dispatch skipped → bind fails. FIX: promote Guppy's DISPLAY `:0`→`:0.0` (no binary patch). `run_3proc_skmgr_guppy.sh`
+> line ~156 does this. RESULT: bind succeeds → **Guppy drives the FULL faithful softkey protocol itself**: Login
+> (0x028a0120) q_sends to Q_SkMgr (0x314), **402 sends**; skmgr **serves ~418**, sends ~392 SkMgrInfoResponses
+> (SK_REPLY_FORCE → Client107), Guppy sends its OWN SetMenu + **SkMgrActivate (2×)** (so INJECT_SK_ACTIVATE is now
+> REDUNDANT); the SkMgrLoginQuit assigns **ConnectionID 13** (confirmed live: reply `…84000000 0d000000`).
+> **★ skmgr RENDERS THE BAR (skmgr X PutImage > 0 — the goal's literal EXIT, ACHIEVED + reproducible across runs):**
+> skmgr opens **ALL 19 hwv .bmx** (ProfiNet/chng_win/command/navigation/navigation_back/search) and does **5 large X
+> writevs (42KB/32KB/17KB) = the .bmx PutImage bitmap blits**. (NOTE: the `skusage.result` "PutImage:0" is a BROKEN
+> grep — `sk_strace.log` records raw `writev`, NOT decoded X opcodes; the real proof = 19 .bmx + the 5 big writevs.)
+> **★ AREA_RECT_FORCE (commit ee10ff0, `emulator/heros_rtos.c`, env `HEROSCALL_AREA_RECT_FORCE=1` +
+> `HEROSCALL_BAR_RECT="x,y,w,h"`):** the real winmgr serves skmgr's `0x3003 WmGetAreaRect` but the layout geometry is
+> ANCHOR-based (anchors.right/.bottom) and winmgr replies a DEGENERATE rect (0,0,10,10 + off16=0xffffffff error) →
+> `WmGetAreaRect@0x56b0` (reads reply dwords[5..8]=off20/24/28/32, only on `WmSendRequestReply==0`) fails → skmgr
+> won't create its PFrame. The fix rewrites the 0x3003 REPLY (type 0x3003 to a non-`Q_WMGR` queue = skmgr's session
+> reply queue) rect to the harvested HSoftKeyArea geometry (default 0,936,1280,88) + clears off16. With it: skmgr
+> reads the valid rect → sends **0x3004 WmRegisterWindowEx (8×; winmgr replies result=0 success)** → does the 5
+> PutImage blits. Also calibrated INJECT_SK_ACTIVATE (handle=13, screen, group; retargeted Q_SkMgrCtrl 0x315) but
+> it's now redundant since Guppy drives its own Activate.
+> **★ THE VISIBLE-BAR GATE (precisely pinned, NOT crossed) = winmgr screen-area window MAP + the active-screen
+> stacking.** skmgr PutImages the .bmx into **offscreen PIXMAPS**, then needs winmgr to reparent+map its registered
+> bar window into the screen's softkey-area window + CopyArea (display). Two sub-issues, both the documented winmgr
+> screen frontier: (1) **winmgr screen-create is FLAKY (run variance)** — in a GOOD run winmgr makes its screen
+> windows (`0x400019/0x400015` = the SCREEN_MACHINING/SCREEN_EDITOR desktops, 1280x1024+0+0) with child softkey-area
+> windows **`ScreenNC_HorizontalManager`/`ScreenEDIT_HorizontalManager` (skmgr's, base 0x600000) at +0+936 = ON-SCREEN
+> below the 1280x936 HwViewer**; in a BAD run (≈half) winmgr creates NO screens → skmgr's bar window is never mapped →
+> blank. (2) **active-screen stacking** — the bars all overlap at +0+936; only the topmost (the active winmgr screen's,
+> e.g. ScreenNC) shows, and it's EMPTY, while the hwv menu is on the OEM/HwViewer screen's bar (the OEM is a
+> `<desktop desktopId=2>`, NOT a winmgr `<screen>`, so it's not raised). The HwViewer OEM softkey bar needs the
+> **OEM-screen activate** so skmgr CopyAreas its hwv pixmaps into the visible area. Tried + did NOT make it visible:
+> bar rect at y=680 (behind HwViewer) / y=936 (1024-layout → off-screen at +128+1064 because winmgr centers a 1024x768
+> screen) / 1280-layout @1280x1024 (areas on-screen +0+936 but EMPTY) / SK_ACT_SCREEN=0 vs 4 (no change). ⇒ the bar
+> CONTENT + the area geometry are SOLVED; the last layer is winmgr reliably creating its screens AND activating/raising
+> the OEM screen's softkey area so skmgr's loaded-and-blitted bar is mapped+displayed. **Config (committed default in
+> `run_3proc_skmgr_guppy.sh`):** `PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1 INJECT_WMGR_ACK=0 AREA_RECT_FORCE=1`,
+> 1280 layout @1280x1024, `GUPPY_DISPLAY=:0.0`. Harness: `scratchpad/skusage_run.sh` (env DQ/SKS/WML/WMS/TMO/SHOT;
+> the constellation has run variance → re-run if winmgr makes 0 screens). Screenshot: `scratchpad/shots/hwviewer_softkey_bar.png`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
