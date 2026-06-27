@@ -749,6 +749,30 @@
 > control to the HW-commissioning/OEM screen so skmgr sends a real 0x28A0200, dump it) OR construct from the
 > schema — then add an INJECT_SK_ACTIVATE to heros_rtos.c (post 0x28A0200 to 0x313 after the softkey content
 > loads). This is the precise, named, injectable mechanism for the bar — no longer a vague frontier.
+> ★ INJECT_SK_ACTIVATE IMPLEMENTED (2026-06-27, commit b01b53d) — BUILT + GROUNDED, NOT yet verified end-to-end.
+> `emulator/heros_rtos.c` q_send: env `HEROSCALL_INJECT_SK_ACTIVATE=1` synthesizes the SkMgrActivate (0x028A0200)
+> and posts it to Q_SkMgr after the softkey content flows (SK_ACT_THRESH InfoResponses). Wire built from the
+> schema @libGMessageGui 0x23d0b4 = [type][unsigned=1][unsigned=loginHandle 13][SkMgrSoftkeyScreen 0x028a006b=
+> lifted-at-runtime-from-the-real-SkMgrSetMenu, observed 4][SkMgrSoftkeyGroup 0x028a004b=0][bool 0xc6=1][field
+> 0x028a00e0=0], 52B. Knobs SK_ACT_THRESH/SCREEN/GROUP/HANDLE; default OFF; run_3proc wires INJECT_SK_ACTIVATE
+> through. Compiles clean, inert in stalled runs (gated on content flow).
+> ★★ VERIFICATION BLOCKED — post-`limactl restart` CONSTELLATION INSTABILITY (2026-06-27, the night's wall):
+> after a VM restart the 3-proc AND 4-proc runs became DETERMINISTICALLY stuck (11 consecutive runs): Guppy
+> stalls at **`Ev_receive(0x03011000)` having sent 0 peer connects** + only **~5-7 ConfigServer CfgM replies**
+> (vs the good pre-restart run's full config + 811 serves) → never reaches the softkey LOGIN, so the activate
+> inject (gated on content flow) never fires. The ONE good run (test_wm1, serve 811) was BEFORE the restart and
+> could not be reproduced. RULED OUT (all verified NOT the cause): (1) my INJECT_SK_ACTIVATE code — the
+> INJECT_SK_ACTIVATE=0 baseline stalls identically; (2) stale /dev/shm — ConfigServer is task 0x100; (3) the
+> `/lib/*.so cannot be preloaded` ld.so errors — NORMAL FEX i386-ld.so noise, the emulator loads fine right after
+> (`[rtos] control segment created`); (4) config staging — tnc.cfg present at /tmp/s + /mnt/sys; (5) a stale
+> 4h-old Xvfb/openbox on :0 that survived pkill (killed by pid — no change); (6) incomplete OEM config — forced a
+> full re-stage of /mnt/{plc,sys,tnc}/config (7 replies/623 lines, marginal, still stalled). ⇒ the regression is
+> the documented **multi-process config→peer constellation handshake instability** (config-DATA completeness /
+> the timing-sensitive bring-up), now deterministically broken post-restart, NOT a one-line fix. NEXT (to verify
+> the inject): reproduce a stable constellation run (let the VM settle / a fresh appliance state / or stabilize
+> ConfigServer's full per-client config serve to Guppy so it proceeds to the peer+softkey phase), THEN
+> INJECT_SK_ACTIVATE=1 fires the SkMgrActivate → OnActivation → 0x3003 → BuildSoftkeyBar → PutImage. The inject
+> is the precise remaining mechanism; the blocker is purely getting the run back to the softkey phase.
 
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
