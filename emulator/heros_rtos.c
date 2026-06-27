@@ -950,6 +950,11 @@ static int sk_reply_force=-1;    /* HEROSCALL_SK_REPLY_FORCE=1: redirect Rts->Cl
                                   * the SkMgrLoginQuit stranded on Rts<tid> -> the sync-port poll spun forever.
                                   * VERIFIED: PIDENT_SELF=0 (old -1 topology, Client had notify) completes the
                                   * login (serve 405, 402 InfoResponses, 19 .bmx); this restores that for valid pids. */
+static int sk_activate=-1;          /* HEROSCALL_INJECT_SK_ACTIVATE: synthesize the SkMgrActivate screen-activate */
+static int sk_act_fired=0;
+static uint32_t sk_act_screen=0xffffffffu;   /* lifted from the real SkMgrSetMenu at runtime */
+static int sk_act_count=0, sk_act_thresh=-1; /* fire after this many InfoResponses have flowed */
+static uint32_t sk_act_handle=0xffffffffu, sk_act_group=0xffffffffu;
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x size %u\n",id,size); qhex("Q_FAIL",id,msg,size); return -9; }
     /* CFG_REPLY_ROUTE (HEROS_CFG_REPLY_ROUTE=1): ConfigServer resolves a per-client reply-to of ""
@@ -1026,6 +1031,53 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
                 LOG("SK_REPLY_ROUTE: redirect softkey reply \"%s\"(0x%x) -> \"%s\"(0x%x) (type %08x, %u bytes)\n",
                     C->queues[s].name,C->queues[s].id,cn,C->queues[rs].id,mtype,size);
                 s=rs; id=C->queues[rs].id;
+            }
+        }
+    }
+    /* INJECT_SK_ACTIVATE (HEROSCALL_INJECT_SK_ACTIVATE=1): skmgr draws the OEM softkey bar ONLY after it
+     * receives a SkMgrActivate (GMessage 0x028A0200) screen-activate -> SkMgrGMsgController::OnActivation
+     * -> SkMgrScreenManager::Activate -> SkMgrScreen::Activate -> create the PFrame softkey window (the
+     * 0x3003 WmGetAreaRect area query) -> PSoftkeyControl::BuildSoftkeyBar -> PutImage the 19 .bmx.
+     * HwViewer DOES activate (Prom::ActivateSelf) but over the GData/command path (OnRequest), which does
+     * not deliver cross-process under FEX -> skmgr stays primed (content + 19 .bmx loaded) but never draws
+     * (0 CreateWindow / 0 PutImage). Synthesize the SkMgrActivate and post it to Q_SkMgr after the softkey
+     * content has flowed. Schema @libGMessageGui 0x23d0b4 = type + unsigned(1) + unsigned(loginHandle) +
+     * SkMgrSoftkeyScreen(code 0x028a006b) + SkMgrSoftkeyGroup(0x028a004b) + bool(1=activate) + field(0x028a00e0).
+     * SCREEN is lifted at runtime from the real SkMgrSetMenu (0x028a02c0; observed = 4). */
+    if(msg && size>=8){
+        const unsigned char*sm=msg;
+        uint32_t mt=sm[0]|(sm[1]<<8)|(sm[2]<<16)|((uint32_t)sm[3]<<24);
+        if(sk_activate<0){ const char*e=getenv("HEROSCALL_INJECT_SK_ACTIVATE"); sk_activate=e&&e[0]=='1'; }
+        if(sk_activate){
+            if(sk_act_thresh<0){ const char*e=getenv("HEROSCALL_SK_ACT_THRESH"); sk_act_thresh=e?atoi(e):5; }
+            if(sk_act_handle==0xffffffffu){ const char*e=getenv("HEROSCALL_SK_ACT_HANDLE"); sk_act_handle=e?(uint32_t)strtoul(e,0,0):13u; }
+            if(sk_act_group ==0xffffffffu){ const char*e=getenv("HEROSCALL_SK_ACT_GROUP");  sk_act_group =e?(uint32_t)strtoul(e,0,0):0u; }
+            { const char*e=getenv("HEROSCALL_SK_ACT_SCREEN"); if(e&&e[0]&&sk_act_screen==0xffffffffu) sk_act_screen=(uint32_t)strtoul(e,0,0); }
+            /* lift SCREEN from the real SetMenu (scan for the SkMgrSoftkeyScreen code 0x028a006b) */
+            if(mt==0x028a02c0u){
+                for(uint32_t o=4;o+8<=size;o+=4){
+                    uint32_t c=sm[o]|(sm[o+1]<<8)|(sm[o+2]<<16)|((uint32_t)sm[o+3]<<24);
+                    if(c==0x028a006bu){ sk_act_screen=sm[o+4]|(sm[o+5]<<8)|(sm[o+6]<<16)|((uint32_t)sm[o+7]<<24);
+                        LOG("INJECT_SK_ACTIVATE: lifted SCREEN=%u from SkMgrSetMenu\n",sk_act_screen); break; }
+                }
+            }
+            if(mt==0x028a0740u) sk_act_count++;   /* skmgr InfoResponse = softkey content flowing */
+            if(!sk_act_fired && sk_act_screen!=0xffffffffu && sk_act_count>=sk_act_thresh){
+                int qi=q_find_slot("Q_SkMgr");
+                if(qi>=0){
+                    unsigned char act[64]; int o=0;
+                    put32(act+o,0x028A0200u);o+=4;                         /* type SkMgrActivate */
+                    put32(act+o,0x84u);o+=4; put32(act+o,1u);o+=4;          /* unsigned field 1 */
+                    put32(act+o,0x84u);o+=4; put32(act+o,sk_act_handle);o+=4;/* unsigned = login handle */
+                    put32(act+o,0x028A006Bu);o+=4; put32(act+o,sk_act_screen);o+=4; /* SkMgrSoftkeyScreen */
+                    put32(act+o,0x028A004Bu);o+=4; put32(act+o,sk_act_group);o+=4;  /* SkMgrSoftkeyGroup */
+                    put32(act+o,0xC6u);o+=4; put32(act+o,1u);o+=4;          /* bool = activate */
+                    put32(act+o,0x028A00E0u);o+=4; put32(act+o,0u);o+=4;    /* field_e0 */
+                    sk_act_fired=1;
+                    LOG("INJECT_SK_ACTIVATE: posting SkMgrActivate(0x028A0200 screen=%u group=%u handle=%u) to Q_SkMgr(0x%x), %d bytes\n",
+                        sk_act_screen,sk_act_group,sk_act_handle,C->queues[qi].id,o);
+                    q_send(C->queues[qi].id,act,o,0);
+                }
             }
         }
     }
