@@ -654,6 +654,23 @@
 > SkMgrCtrlConnectionHandler::RegisterConnection's publish, then INJECT/complete it. (Caveat also possible: FEX's
 > unaligned-atomic emulation cross-process coherence — but shared-mem reads ARE coherent, so a written value
 > would be seen; the likeliest root is skmgr not writing it.)
+> ★★★★ THE SPIN RE'd THROUGH 6 LAYERS (2026-06-27, cont.) — the gate is the FModule SYNCHRONOUS-PORT poll, NOT a
+> plain queue read. Decompiled the full softkey-login receive chain (idalib across libSkMgrCtrl/libNcCtrlModule/
+> libbackend): `GUPPYSKMGR_::Connect@0xbc9a0` → `SkMgrCtrlInterfaceImpl::LogIn@0xc130` (sends SkMgrLogin
+> 0x28A0100/seq) → **`WaitForExpectedMessage@0xb7e0` = a BUSY-POLL** `while(1){m=WaitForNextMessage(); if(m &&
+> IsA(m,0x28A0100) && m.seq==expected) break;}` (no blocking wait → the SIGBUS busy-loop) → `NcCtrlModule::
+> WaitForNextMessage@0x8a80` (asserts a "synchronous port" this+41, then) → **`FModule::PollInput@0x23940`** =
+> `(*(*(*(this+72)+4*idx)+40))(this)` → the input-port waitable's vtable+40 poll. On 0x28A0140 (SkMgrLoginQuit)
+> it sets this+14=handle(body+56)+`RegisterConnection`; on 0x28A01E0 it `FindGData(118620288)`+`GDataHdlBase<Gd
+> SkMgrCtrlServerResponse>::Connect`. ⇒ THE PRECISE GATE: the reply is received via the FModule **synchronous-
+> port waitable poll** (PollInput → vtable+40), whose readiness is a GData/shared-mem atomic (the BUS_ADRALN
+> spin) that the emulator's queue-notify (ev_send event word) does NOT satisfy — so even though skmgr's 36B
+> SkMgrLoginQuit sits in the Rts10a sync queue (0x321), the sync-port poll never reports ready → the busy-loop
+> never picks it up. (Normal FModule queue serves work via the event-word notify; the softkey SYNCHRONOUS port
+> uses a different GData-atomic readiness.) NEXT (two faithful options): (1) disassemble the input-port waitable's
+> vtable+40 to find the exact GData readiness atomic + have the emulator set it when delivering to a sync
+> ("Rts*") queue; (2) deliver the reply via the GData response channel 118620288 the 0x28A01E0 branch already
+> Connects. Full chain in `scratchpad/skmgr_softkey_findings.md`.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
