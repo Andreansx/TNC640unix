@@ -964,6 +964,33 @@
 > real SkMgrSetMenu/Activate wire** (gdb-dump or LD_PRELOAD-capture on the live control's skmgr/hesoftkeysqt while
 > an OEM/softkey screen is active) → replay byte-exact via INJECT_SK_FLOW (bypasses BOTH frontiers). Tools this
 > session: `scratchpad/{sktest,captest,acttest}.sh`, `skmgr_wire_schemas.md`, `cap_SkMgrLogin.bin`.
+> ## ★ YEEN gdb-HARVEST of the real SkMgrSetMenu wire — MECHANISM PROVEN, walled at OEM-screen activation (2026-06-27)
+> User chose the yeen gdb-harvest. Executed it; the control is LIVE on yeen (`VBoxManage list runningvms` = TNC640
+> running, all 92 procs; guest root via `ssh yeen` → `ssh -p 2222 root@127.0.0.1`, passwordless). Found the exact
+> targets: **skmgr.elf PID 9028** (`SkManager:SkManager/skmgr -w -k`, IDENTICAL to my FEX), hesoftkeysqt 9079, the
+> MMIs Fred/simulo/machoper/HrMmi 9350/9432/9525/9527. ★ CAPTURE MECHANISM PROVEN: skmgr.elf is **DYN/PIE with FULL
+> .symtab** (gdb breaks by name, fast attach), and `FMailslotQueue::ReadMessageNoAlert@libbackend 0x21f60` does
+> `q_read(buf=*(stream+vbase+52))` THEN `GMessage::Read(stream)` — so breaking on **`GMessage::Read@libgmsglib
+> 0x3b5a0`** (`_ZN8GMessage4ReadER12GMsgInStreamP13GMsgErrorListb`, non-recursive top-level) and reading
+> `*(stream + *(*(stream)-12) + 52)` gives the RAW WIRE before deserialize, no in-process code exec (gdb script
+> `scratchpad/yeen_capture.gdb`; filters type>>16==0x028a, dumps). gdb attaches + sets the bp + runs (YC_READY), 0
+> crashes. ★★ THE WALL: **skmgr is DORMANT** — it draws/receives SkMgrSetMenu **only for OEM/PLib screens**
+> (HwViewer/HW-commissioning), NOT the Qt main MMI. The live control is Programming/"Power interrupted" (Qt MMI
+> active → the bottom bar is drawn by hesoftkeysqt). skmgr received **0** messages across a clean 22s window AND
+> after triggering ENT/MOD(`1d 38 32 b2 b8 9d`)/PGM-MGT(`1d 38 19 99 b8 9d`)/SIMU/MANUAL — all standard screens use
+> hesoftkeysqt, which (a) is a poor gdb target (Qt many-thread → slow attach bogs the guest) and (b) never hit
+> `GMessage::Read` (it receives via a different libGMessageGui path). So the real SkMgrSetMenu only flows to skmgr
+> on an OEM screen, reachable only via deep **OEM-password-gated** navigation on the live control (the "Default OEM
+> passwords detected" notice is up) — NOT done blindly (risk to the user's running control). Control verified
+> HEALTHY after (all procs alive, VM running), guest tmp cleaned. ★ NEW useful RE en route: `SkMgrGMsgController::
+> OnSetMenu@skmgr 0x58c70` reads the deserialized body at body+20/+32/+44/+56/+68 (5 dwords) + body+72 (GMsgString
+> .spj) and **SkMgrIdentification is a SIMPLE DWORD (body+44), NOT a composite submsg** — so the SetMenu encoding
+> is simpler than feared. ★ CLEANEST NEXT PATH (deterministic, NO live-control risk, NO manual-encoding guesswork):
+> a small i386 program that constructs a SkMgrSetMenu via libGMessageGui (`SkMgrSetMenuBody::C2Ev@0x1f79c0`) + sets
+> the 5 dwords + .spj + **serializes via `GMsgEntityBody::Write`** → the EXACT wire (construction+serialization is
+> self-contained, no session/queue), run under FEX (libGMessageGui present); OR replay it via INJECT_SK_FLOW. The
+> alternative is to reach the OEM/HW-commissioning screen on yeen (needs the OEM password). Tooling:
+> `scratchpad/{yeen_capture.gdb, yeen_skmgr_investigate.sh, shots/livectl.png}`.
 >
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
