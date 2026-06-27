@@ -634,6 +634,26 @@
 > high RUN VARIANCE (~half the runs Guppy SIGSEGVs early / skmgr stalls at serve 3 before the login; the clean
 > default baseline = skmgr 341/serve 4, Guppy 4572, crash 0). All A/B knobs committed default-OFF (regression-clean
 > default verified). A/B: `EV_SIGWAKE=1` (CRASHES — diagnostic only).
+> ★★★ FRAMING CORRECTED (2026-06-27, cont.) — 0x10a is SPIN-blocked on the GData atomic, NOT wake-blocked; this
+> session's wake levers chased the WRONG model. Decisive: a `ppoll,poll,read`-strace of Guppy pinned the softkey
+> reader's OS tid (`task_self -> new id 0x10a … tid 36475`) and its terminal syscalls = a FLOOD of **SIGBUS
+> {BUS_ADRALN}** with **ZERO ppoll/poll** — i.e. 0x10a is in a BUSY-SPIN on UNALIGNED atomics (FEX trap-emulates
+> x86 unaligned atomics that ARM can't do natively; the guest DOES expose LSE `atomics`/`lrcpc`, so lever (c)
+> "expose host LSE" is MOOT — LSE still can't do unaligned). It is spinning on the GUPPYSKMGR **GData connection-
+> state atomic** waiting for skmgr to publish login-ready. So the 36B `SkMgrLoginQuit` (queue) is delivered but
+> IRRELEVANT — 0x10a never reads its queue because it's spinning in GUPPYSKMGR's GData connection setup, NOT
+> blocked on a queue wake. ⇒ EVERY wake lever this session (sibling /dev/events, QNOTIFY_LEVEL, cross-proc
+> SIGUSR1) was aimed at a non-existent queue-wake gate. The emulator's named regions ARE shared cross-process
+> (reg_attach: `/dev/shm/heros_reg_<name>` + MAP_SHARED — verified), so GData memory IS visible to both; the gate
+> is that **skmgr never writes the connection-ready value** 0x10a's spin polls (skmgr's own winmgr WM-handshake /
+> RegisterConnection doesn't complete the GData publish under FEX). ⇒ THE REAL GATE = the documented **GData
+> cross-process connection handshake** (brief's lever a): RE the exact `SkMgrCtrlInterfaceImpl+24` / GData channel
+> 118620288 login-ready value + make skmgr publish it (or INJECT it into the shared GData region so 0x10a's spin
+> exits → reads the login reply → 7 InfoRequests → skmgr draws). This SUPERSEDES the "0x10a queue-wake" framing
+> above. NEXT: RE GUPPYSKMGR::Connect's spin predicate (what value at the GData channel ends the spin) +
+> SkMgrCtrlConnectionHandler::RegisterConnection's publish, then INJECT/complete it. (Caveat also possible: FEX's
+> unaligned-atomic emulation cross-process coherence — but shared-mem reads ARE coherent, so a written value
+> would be seen; the likeliest root is skmgr not writing it.)
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
