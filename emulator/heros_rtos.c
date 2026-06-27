@@ -127,6 +127,7 @@ struct ctl {
      * server's fan-out to a late subscriber. */
     volatile uint32_t evt_ring_n;                    /* total broadcasts seen (ring index = n % EVTRING) */
     struct { uint32_t len; uint8_t data[EVTMSGCAP]; } evt_ring[EVTRING];
+    volatile uint32_t sk_flow_posted;                /* INJECT_SK_FLOW single-poster guard (CAS 0->1) */
 };
 static struct ctl *C;
 
@@ -1301,7 +1302,87 @@ static uint32_t deferred_evterr_rqid;
 static void post_evt_ans_error(uint32_t rqid);
 /* WMQ_BREAK per-queue consecutive-empty-no-wait-read counter (slot-indexed; reset on a real read). */
 static unsigned long wmq_empty_streak[1024];
+static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode);   /* fwd-decl */
+/* INJECT_SK_FLOW (HEROSCALL_INJECT_SK_FLOW=1): BYPASS Guppy's stuck GData softkey connect entirely —
+ * feed skmgr the softkey flow DIRECTLY (SkMgrLogin 0x028a0120 -> SkMgrSetMenu 0x028a02c0 -> SkMgrActivate
+ * 0x028a0200) on Q_SkMgr so skmgr's SkMgrFrame::{OnLogin@0x41790,OnSetMenu@0x47340,OnActivation@0x42170}
+ * run: register a client -> parse the HwViewer .spj + load the 19 .bmx -> create the PFrame (0x3003
+ * GetAreaRect to winmgr) -> PSoftkeyControl::BuildSoftkeyBar -> PutImage the bar. Wire = [type-id] then
+ * [code][value] per field, codes from the libGMessageGui .rodata schema tables (Activate @0x23d0b4 known-good
+ * from INJECT_SK_ACTIVATE; SetMenu @0x23cd20 = [0x84,0x84,0xc6,0xe7,0x28a006b,0x28a028b,0x28a00cb]; Login
+ * @0x23d68c = [0x84,0x1ef,0xe7]). Values iterated vs skmgr's GMsgEntityBody::Read deserializer. */
+static int sk_flow=-1, sk_flow_fired=0;
+static void inject_sk_flow(uint32_t qid){
+    unsigned char m[1024]; int o; uint32_t H=13;   /* login handle (good run = 13) */
+    const char*cli="/mnt/sys/heros5/bin/Guppy.elf"; int cl=(int)strlen(cli);
+    const char*spj="/mnt/sys/Python/HwViewer/sk/HwViewer.spj"; int sl=(int)strlen(spj);
+    /* 1) SkMgrLogin: [0x028a0120][0x84:0][0x1ef: longint 0,0][0xe7: client path] */
+    o=0; put32(m+o,0x028a0120u);o+=4;
+    put32(m+o,0x84u);o+=4; put32(m+o,0u);o+=4;
+    put32(m+o,0x1efu);o+=4; put32(m+o,0u);o+=4; put32(m+o,0u);o+=4;        /* GMsgLongInt = 8 bytes */
+    put32(m+o,0xe7u);o+=4; put32(m+o,(uint32_t)cl);o+=4; memcpy(m+o,cli,cl);o+=cl;
+    LOG("INJECT_SK_FLOW: post SkMgrLogin %d bytes -> queue 0x%x\n",o,qid); q_send(qid,m,(uint32_t)o,0);
+    /* 2) SkMgrSetMenu: [type][0x84:handle][0x84:0][0xc6:1][0xe7:.spj][0x28a006b:screen4][0x28a028b:0][0x28a00cb:0] */
+    o=0; put32(m+o,0x028a02c0u);o+=4;
+    put32(m+o,0x84u);o+=4; put32(m+o,H);o+=4;
+    put32(m+o,0x84u);o+=4; put32(m+o,0u);o+=4;
+    put32(m+o,0xc6u);o+=4; put32(m+o,1u);o+=4;
+    put32(m+o,0xe7u);o+=4; put32(m+o,(uint32_t)sl);o+=4; memcpy(m+o,spj,sl);o+=sl;
+    put32(m+o,0x028a006bu);o+=4; put32(m+o,4u);o+=4;
+    put32(m+o,0x028a028bu);o+=4; put32(m+o,0u);o+=4;
+    put32(m+o,0x028a00cbu);o+=4; put32(m+o,0u);o+=4;
+    LOG("INJECT_SK_FLOW: post SkMgrSetMenu %d bytes -> queue 0x%x\n",o,qid); q_send(qid,m,(uint32_t)o,0);
+    /* 3) SkMgrActivate (known-good schema from INJECT_SK_ACTIVATE) */
+    o=0; put32(m+o,0x028a0200u);o+=4;
+    put32(m+o,0x84u);o+=4; put32(m+o,1u);o+=4;
+    put32(m+o,0x84u);o+=4; put32(m+o,H);o+=4;
+    put32(m+o,0x028a006bu);o+=4; put32(m+o,4u);o+=4;
+    put32(m+o,0x028a004bu);o+=4; put32(m+o,1u);o+=4;
+    put32(m+o,0xc6u);o+=4; put32(m+o,1u);o+=4;
+    put32(m+o,0x028a00e0u);o+=4; put32(m+o,0u);o+=4;
+    LOG("INJECT_SK_FLOW: post SkMgrActivate %d bytes -> queue 0x%x\n",o,qid); q_send(qid,m,(uint32_t)o,0);
+}
+/* One-shot timer trigger for INJECT_SK_FLOW: the constellation processes are event-driven (they block
+ * on Ev_receive, doing very few q_reads), so a read-counter trigger never accumulates. A detached thread
+ * that sleeps a fixed delay then posts the flow is reliable regardless of read volume. Spawned in EVERY
+ * process; a shared CAS (C->sk_flow_posted) ensures exactly ONE actually posts (any process can — the
+ * q_send notify wakes skmgr's Ev_receive cross-process). */
+static void* sk_flow_thread_fn(void* arg){
+    long delay=(long)arg; struct timespec ts={delay,0}; nanosleep(&ts,0);
+    if(!C) return NULL;
+    /* Retry the Q_SkMgr lookup: skmgr may create its serve queue later than this process's timer fires
+     * (the constellation start is serialized). CRITICAL: take the single-poster CAS only AFTER Q_SkMgr is
+     * found, so a process whose timer fires before skmgr is up does NOT consume the token and strand the
+     * post (the earlier bug: ConfigServer's timer fired first, found nothing, and blocked skmgr's timer). */
+    for(int tries=0; tries<90; tries++){
+        lock(); int skq=q_find_slot("Q_SkMgr"); uint32_t skid=(skq>=0)?C->queues[skq].id:0; unlock();
+        if(skid){
+            if(__atomic_exchange_n(&C->sk_flow_posted,1,__ATOMIC_ACQ_REL)!=0) return NULL;  /* another posted */
+            fprintf(stderr,"[skflow] timer fired -> injecting softkey flow to Q_SkMgr 0x%x (pid %d)\n",skid,(int)getpid());
+            inject_sk_flow(skid); return NULL;
+        }
+        struct timespec r={1,0}; nanosleep(&r,0);   /* Q_SkMgr not up yet — retry ~1s */
+    }
+    fprintf(stderr,"[skflow] gave up: Q_SkMgr never appeared (pid %d)\n",(int)getpid());
+    return NULL;
+}
+static void sk_flow_spawn(void){
+    static int spawned=0; if(spawned) return;
+    if(sk_flow<0){ const char*e=getenv("HEROSCALL_INJECT_SK_FLOW"); sk_flow=e&&e[0]=='1'; }
+    if(!sk_flow){ spawned=1; return; }
+    long delay=75; const char*d=getenv("HEROSCALL_SK_FLOW_DELAY");
+    if(d){ delay=0; for(const char*p=d;*p>='0'&&*p<='9';p++) delay=delay*10+(*p-'0'); if(delay<=0)delay=75; }
+    spawned=1;
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at,PTHREAD_CREATE_DETACHED);
+    int rc=pthread_create(&th,&at,sk_flow_thread_fn,(void*)delay);
+    /* UN-GATED (not LOG, which is vrb-gated): always announce the timer so it is verifiable regardless
+     * of HEROSCALL_VERBOSE. */
+    fprintf(stderr,"[skflow] spawn timer thread pid=%d delay=%lds rc=%d\n",(int)getpid(),delay,rc);
+    pthread_attr_destroy(&at);
+}
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
+    sk_flow_spawn();   /* lazily start the INJECT_SK_FLOW timer thread (no-op unless HEROSCALL_INJECT_SK_FLOW=1) */
     int q_saved_errno=errno;   /* libc syscall() preserves errno on SUCCESS, sets it only on error; the
                                 * real heros.ko q_read does likewise. Our success path below calls
                                 * LOG()/ev_send()/q_send() which clobber errno via fprintf/futex, so we
