@@ -902,16 +902,25 @@
 > winmgr **replies 3x to skmgr's 0x313** (correct — only 3 of the 8 expect a reply), then skmgr **wedges in a 10s
 > retry loop** (`Tm_wkafter 0x2710`) doing **`P_name(-1)`/`T_name(-1)` = WM-client ProcessExists validation on an
 > UNRESOLVED pid -1** — so OnSetMenu never returns, the Activate is never read, OnActivation/the 0x3003 query never
-> fire (INJECT_AREA_ACK correct+ready but premature). ⇒ **LIKELY ROOT: the SYNTHETIC SkMgrLogin (INJECT_SK_FLOW) is
-> INCOMPLETE** — it lacks the real Guppy client's reply-to queue + pid/tid, so skmgr's RegisterConnection/ProcessExists
-> validates pid -1 → loops. (This is NOT the winmgr render-thread; winmgr is up + serving. SYSFIRE render-autofire is
-> a DEAD LEVER — it slowed the run so badly it didn't finish in 240s; the clean no-SYSFIRE baseline is correct.)
-> **NEXT levers (concrete):** (a) give the injected SkMgrLogin a VALID reply-to queue + client pid/tid (the real
-> Guppy softkey task id, available in-emulator) so skmgr's client-validation succeeds → OnSetMenu returns → skmgr
-> reads the Activate → OnActivation → 0x3003 → INJECT_AREA_ACK → draw; (b) decompile skmgr's OnLogin/OnSetMenu
-> RegisterConnection to read the exact client-identity fields it validates; (c) confirm whether skmgr draws into the
-> EXISTING Guppy GtkSocket 0x60001f (XEMBED) or its own winmgr-area window. The content/flow/draw-trigger half, the
-> WM handshake, AND the bar-area window all EXIST; the last layer is skmgr's client-validation + draw-completion.
+> fire (INJECT_AREA_ACK correct+ready but premature). ⇒ **★ ROOT CONFIRMED (the real one, supersedes the pid-guess):
+> the SYNTHETIC SkMgr messages FAIL `GMessage::Read` DESERIALIZATION.** The skmgr log carries an `EvtSendEvent`
+> reporting a **`GMsgException` (varstr "0x78") thrown from `GMessage::Read` ← `GMsgEntityBody::Read` ←
+> `GMessage::ReadMessageInternal` ← `ReadMessageRaw` ← `FMailslotQueue::Read`** right after skmgr reads the 100B
+> SkMgrSetMenu — i.e. my hand-built wire is MALFORMED (wrong attribute count / codes / kinds), so skmgr catches the
+> exception + proceeds with default/garbage state → the WM-validation wedge + no draw. **Decisive A/B: `INJECT_SK_FLOW=0`
+> → skmgr does NOTHING** (0 flow reads, PFrame ID0 **0**, no draw-path entry) — so the real Guppy softkey thread does
+> NOT complete a login on its own (it wedges, confirming the GData-spin); **the injection IS required**, but it must be
+> WELL-FORMED. (winmgr is up + serving (106-108 writev); SYSFIRE is a DEAD lever — slows the run; the softkey-area
+> window 0x60001f/0x80001f EXISTS but empty.) **THE REMAINING WORK = crack the exact wire format of the 3 SkMgr
+> messages** (the brief's documented multi-session "hard part", same as the EvtAnsErrorRequest saga — per-attribute
+> code/kind RE + DUMPQ calibration, but here NO real capture exists to calibrate against since Guppy wedges, so it
+> must come purely from the body/attribute decompile). **SCHEMA captured so far (idalib on libGMessageGui.so):
+> `SkMgrActivateBody`@0x1f5a40 = type-id 0x028A0200, 4 attrs: GMsgUnsigned@+24, SkMgrSoftkeyScreen@+36(def -1),
+> SkMgrSoftkeyGroup@+48(def -1), GMsgBool@+60** (my synthetic Activate wrongly used 6 attrs w/ guessed codes — exactly
+> the 0x78 cause). NEXT: decompile each attribute class' wire CODE + `SkMgrLoginBody`/`SkMgrSetMenuBody`/the
+> `GMessage::Write` path to build byte-exact wire for all 3, then they deserialize → OnLogin/OnSetMenu/OnActivation run
+> → 0x3003 → INJECT_AREA_ACK → draw. The content/flow/draw-trigger half, the WM handshake, AND the bar-area window all
+> EXIST; the last layer is the byte-exact SkMgr message wire format (+ then skmgr's draw-completion).
 > ★ HARNESS (critical, cost hours): run sktest.sh **FOREGROUND** in one `limactl shell` (detached nohup setsid dies
 > here); the lima Mac-mount is READ-ONLY from the VM (write to /tmp, `limactl copy` back); screenshot=/tmp/g_screen.xwd,
 > tree=/tmp/g_windows.txt. Run: `cp scratchpad/sktest.sh /tmp/ && bash /tmp/sktest.sh 0` (foreground). Knobs:
