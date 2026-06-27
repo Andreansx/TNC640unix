@@ -948,6 +948,22 @@
 > `code|0x80000000`). OR fix the Guppy post-login GData-wedge to capture them live, OR harvest the real SkMgrSetMenu
 > from yeen (navigate the live control to HwViewer). The Login is now well-formed; the SetMenu/Activate are the
 > last byte-exact pieces. Tooling: `scratchpad/captest.sh` (capture), `cap_SkMgrLogin.bin`.
+> ★ BOTH PATHS to the bar are now PROVEN to dead-end on the brief's documented multi-session frontiers
+> (verified this session, so the next attempt doesn't re-walk them): **(A) inject synthetic messages** — needs the
+> byte-exact SkMgrSetMenu/Activate wire; `GMessage::Read@libgmsglib 0x3b5a0` is a MASSIVE per-kind deserializer
+> (100+ vars, text+binary branches) and the schema-vs-body field counts don't align simply (SetMenu 7 codes vs 5
+> body fields; the SkMgr* field codes are composite enum/submsg kinds) → genuine multi-session GMessage RE (the
+> EvtAnsErrorRequest saga was ONE such message). **(B) let Guppy (Guppy_skpatch.elf, past the bind gate) send the
+> REAL well-formed Login/SetMenu** — Guppy sends the well-formed SkMgrLogin (captured, no 0x78) + skmgr replies
+> (SkMgrLoginQuit 36B, SK_REPLY_FORCE→Client107) but Guppy's softkey thread then **DETERMINISTICALLY wedges on
+> `Ev_receive(0x03011000)`** and never sends the SetMenu (serve stuck at 5, NOT the brief's 405 — NOT run variance,
+> reproduced 3×) = the reply-routing/secondary-thread-WAKE gate (the brief's deepest unsolved softkey frontier:
+> EV_SIGWAKE crashed FEX, QNOTIFY_LEVEL/EVDEV_SIBLING/periodic-tick all failed). So `INJECT_SK_ACTIVATE` can't lift
+> a screen (no real SetMenu arrives) and never posts. ⇒ the bar is gated on EITHER (A) the full GMessage encoding
+> OR (B) the Guppy post-login wake — both multi-session. The highest-leverage NEXT is the **yeen harvest of the
+> real SkMgrSetMenu/Activate wire** (gdb-dump or LD_PRELOAD-capture on the live control's skmgr/hesoftkeysqt while
+> an OEM/softkey screen is active) → replay byte-exact via INJECT_SK_FLOW (bypasses BOTH frontiers). Tools this
+> session: `scratchpad/{sktest,captest,acttest}.sh`, `skmgr_wire_schemas.md`, `cap_SkMgrLogin.bin`.
 >
 > ★★★★★ SOFTKEY LOGIN COMPLETES with winmgr's VALID PIDS (2026-06-27, cont.) — the spin was a REGRESSION from my own
 > P_ident fix; reconciled. The "6-layer FModule synchronous-port GData-atomic spin" framing below is SUPERSEDED:
