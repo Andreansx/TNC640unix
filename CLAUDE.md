@@ -810,9 +810,14 @@
 > **`KernelInterfaceHdlBase<astring>::Find@0x8f3b0`** → **`KernelInterfaceObjectManager::Find`** (defined in
 > **libNcCtrlModule.so**). If Find returns 0 (the `SkMgrCtrlInterface` is NOT in the shared registry), Connect
 > BAILS before `SkMgrCtrlInterfaceImpl::LogIn@0xc130` ever sends SkMgrLogin (0x028a0120) — exactly the observed
-> `login=0 / serve=4` stuck state. So the gate is **skmgr publishing `SkMgrCtrlInterface` into the shared GData
-> KernelInterface registry**, which (per the brief's GData frontier) skmgr does via `SkMgrCtrlConnectionHandler::
-> RegisterConnection` — gated on skmgr's OWN winmgr WM-handshake completing. ⇒ FULL CHAIN:
+> `login=0 / serve=4` stuck state. ★ CORRECTION (decompiled Register@0x7410/Find@0x7330): `KernelInterface
+> ObjectManager` is a **PER-PROCESS `std::_Hashtable`** (this+4), NOT a shared region — so `Find` looks up Guppy's
+> OWN LOCAL `SkMgrCtrlInterface` proxy. The stall is one of: (i) Guppy's local proxy not yet registered when
+> Connect runs (`Find`=0 → bail), or (ii) `Find` succeeds and the next call `KernelInterfaceHdl<SkMgrCtrlInterface>
+> ::Connect` (vtable+36, RECURSES GUPPYSKMGR_::Connect on non-zero) retries the CROSS-PROCESS connect to skmgr
+> (over Q_SkMgrCtrl + the GData connection) until skmgr is READY — skmgr's readiness gated on its OWN winmgr
+> WM-handshake (per `SkMgrCtrlConnectionHandler::RegisterConnection`). NEXT: TRACE which (Find=0 vs Connect
+> retrying) in the stuck run. ⇒ FULL CHAIN (the cross-process half (ii)):
 > winmgr serves skmgr → skmgr's RegisterConnection PUBLISHES SkMgrCtrlInterface in the registry → Guppy's
 > `KernelInterfaceObjectManager::Find` SUCCEEDS → Connect → LogIn → SkMgrLogin → skmgr serves (SK_REPLY_FORCE
 > routes the reply) → 7 InfoRequests → INFoResponses flow → INJECT_SK_ACTIVATE fires → skmgr 0x3003 GetAreaRect
