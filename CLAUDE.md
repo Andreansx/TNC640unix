@@ -1379,6 +1379,21 @@
 > of skmgr's strip (does skmgr send WmEmbedWindow 0x3B80700 after RegisterWindowEx 0x3004; what winmgr's
 > OnEmbedWindow does) + 1a screen-map reliability. The WM wire/dispatch/screen-key/desktop-switch mechanism is
 > ALL solved+verified; only the XEmbed map + 1a remain.
+> ★ WINDOW TOPOLOGY (from /tmp/g_windows.txt -tree): **HwViewer (0x800003, "Guppy.elf") is a SEPARATE root-level
+> GTK window 1280x936+0+0** (NOT inside winmgr's screen tree); winmgr's screens are `0x400001 "Machine" ->
+> 0x400015 -> 0x600001 "ScreenNC_HorizontalManager" (1280x88+0+936) -> 0x600002 -> 0x600003 "..._DefaultView"`,
+> and `ScreenEDIT_HorizontalManager` (0x60000d). There are only TWO strips (NC, EDIT) -- NO separate OEM strip.
+> The strips sit at **+0+936 = the free 88px below HwViewer's 936px** (no overlap). ★ FORCED-MAP RESULT
+> (`wmfloat`: reparent the ScreenNC strip subtree to root, override-redirect, XClearArea-Expose every descendant):
+> the bottom strip goes **1 -> 2 colours = the strip BACKGROUND renders**, but the 19 hwv .bmx BUTTONS do NOT
+> appear (mean 0.73, 2 colours). So skmgr blits the hwv bitmaps into PFrame PIXMAPS and CopyAreas them only on its
+> OEM-screen PFrame PAINT, which does NOT fire for the NC/EDIT strips (and an Expose on those windows doesn't
+> trigger it). ⇒ the buttons are gated on **skmgr creating + painting its OEM-screen PFrame window** (the
+> documented OEM-screen-activate -> PSoftkeyControl::BuildSoftkeyBar -> CopyArea gate), which produces no separate
+> OEM strip window here -- so there is nothing for an external map to show. The strip-background render (1->2
+> colours) is partial visual progress; the BUTTONS need skmgr's own OEM PFrame paint. NEXT: RE where skmgr's 7
+> hwv blits land (pixmap vs window) + what triggers PSoftkeyControl::BuildSoftkeyBar's CopyArea-to-window for the
+> OEM screen (likely a SoftkeyBarSetup/screen-paint event distinct from the login/InfoResponse flow already solved).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
