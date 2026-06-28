@@ -1515,6 +1515,67 @@
 > pattern, applied to winmgr's render thread). This is the SINGLE remaining gate; all of wire/dispatch/show-
 > mechanism/RENDER/draw/topology/the create->map guard is solved+coded above it.
 
+> ## ★★★★★ REAL OPERATOR-MMI SCOUT (2026-06-28) — Fred.elf RE'd to a NEW deterministic crash; simulo.elf reaches the render layer clean; the render gate = the documented winmgr render-thread frontier
+> Goal: scout the REAL operator MMI **Fred.elf** (Programming screen, channel "Ed", processName ~/mmi)
+> FEX-native, reuse the proven softkey-bar stack (winmgr/skmgr/PLib/cfgfix/INJECT_*), render its first
+> PLib window. **Harness: `emulator/run_fred.sh`** (adapted from run_3proc_skmgr_guppy.sh; toggles
+> WINMGR/SKMGR/CM; FRED_BIN/FRED_PROC/FRED_SHORT/FRED_ARGS parameterize the MMI). Invocation:
+> `Fred.elf -p=~/mmi mmi -i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60`. Closure resolves fully in /var/tmp/lr.
+> ★ ARCHITECTURE (idalib on Fred.elf, DB /tmp/Fred.elf.i64): Fred does **NOT import X11** -- like
+> skmgr/HwViewer it is a **winmgr-managed PLib app** (links libplibpp+libgui+libSkMgrCtrl+libGMessageGui;
+> FSoftkeyView/PWindow/WndFullScreen). FControl-derived; main module **MainCtrl@0xcf4d0** (Start/Initialize/
+> ReadConfig/OnClientIsConnected/DispatchMessage@0xd1790); controllers TncCtrl/TncEditCtrl/ProgramCtrl;
+> peer handlers `TncCtrl::OnIpoSrvLoginQuit@0x7d500` (IPO/simipo), `TncEditCtrl::OnCGraLoginResponse@0xb6a90`
+> (ContourGraphics). So Fred's "first window" is rendered by winmgr (Fred registers its WndFullScreen into
+> winmgr's screen), NOT by Fred itself -- the SAME winmgr+PLib architecture as the softkey bar.
+> ★ RUNTIME: **standalone** (ConfigServer+Fred) boots clean -- X connect (55 writev/Xlib), 5 queues,
+> config-connect 28B ACKs (0x30f/0x310), logs non-fatal `fresmgr.cpp:172 "/frontend.dat could not open"`
+> (FResMgr in libfrontend resolves the frontend resource with an EMPTY base; harness now symlinks
+> /frontend.dat -> %SYS%/resource/), sends the 52B FmProcessState notify to AppStartMaster (0x308), then
+> blocks BEFORE peer logins (the AppStartMaster/FModule registration). **Full stack** (WINMGR+SKMGR) pushes
+> Fred MUCH further (task 0x109): Q_ident **Q_WMGR** + 4 WM requests on 0x30e, Q_ident **Q_SkMgr**, reads
+> winmgr's 208B GetScreens, does the **0x1000 FModule GUI-sync ping-pong**, spawns the editor **FrameThread**
+> (libEditlib; `T_create task 0x10b parent 0x10a`, `Q_create "FrameServer" -> 0x31e`) -- which then SIGSEGVs.
+> ## ★ FRED'S BLOCKER (NEW, deterministic, RE'd end-to-end) -- the editor FrameThread FModule eval-context crash
+> `SEGV_MAPERR si_addr=0x18` on the FrameThread; backtrace (innermost): **`FThread::EvalContextModule+0x32`
+> (libbackend 0x28bc0)** <- `FrameThread::MainContext+0x4c` (libEditlib, = `EvalContextModule(this,
+> FrameModuleAlloc, "FrameModule")`) <- CreateContextFromCallback <- CreateMainContext <- FrameThread::
+> CreateContext <- (Run/ExceptionShell). Exact fault instr (0x28bc0+0x32 = **`call dword ptr [edx+18h]`**):
+> `eax=this.evalContext(this+0x4C); ecx=evalCtx[8]!=0 (skip CreateModule); edx=evalCtx[7](index);
+> eax=myChildren(this+0x60)[index]; edx=*eax (child vtable); call [edx+0x18]` -> **`*myChildren[evalCtx.index]
+> == 0`** (the eval-context replay references an editor child module whose **vtable is null** -- emplaced-
+> before-constructed OR an OOB index == myChildren.size(); there is even a one-branch-away
+> `AssertStartable("pEvalContext->index == myChildren.size()")` guard). **Deterministic** (identical with/
+> without CM channel peer), **peer-independent** (crashes before any IpoSrvLogin), **infrastructure not data**
+> (libbackend FThread/FModule eval-context machinery, only triggered by libEditlib's FrameThread declaring its
+> FrameModule+FrameServer children). **Editor-MMI-specific: only Fred.elf + machoper.elf link libEditlib/
+> FrameThread; simulo.elf does NOT.** Precise next lever: RE the libbackend FModule eval-context index/state
+> machine in `CreateContextFromCallback@0x27dc0` (the replay loop manipulating evalCtx[7]=index/evalCtx[8]=state
+> across passes) -> whether the FrameModule child is emplaced before its vtable is set, or the replay index
+> goes OOB by one; then fix the emulator-side replay divergence or complete the editor FrameModule construction.
+> ## ★ simulo.elf (Test/Sim, the goal-sanctioned fallback, `-k=SIM -o=Ed -f=25`) -- clean to the render layer
+> No libEditlib/FrameThread -> **AVOIDS Fred's crash entirely** (708-725 lines, **crash=0**). Config-connects,
+> X connect, sends 4 WM requests to Q_WMGR (0x30e), reads winmgr's 208B GetScreens, then BLOCKS at the WM
+> handshake -- never registers a WndFullScreen / never activates / never composites, because **winmgr is
+> DORMANT**.
+> ## ★★ THE RENDER GATE (both operator screens) = the documented winmgr render-thread frontier (confirmed every config)
+> winmgr serves Q_WMGR on its SERVE thread but its **RENDER thread is stuck at `Ev_receive(0x05011001, forever)`**
+> and NEVER runs `WmModule::Initialize` -> **0 XCreateWindow / 0 screen-layout windows** (0x400001 = Bad Drawable;
+> window tree = only Openbox helpers). Confirmed across full-stack, **INJECT_WMGR_ACK=1** (simulo still blank),
+> AND a **winmgr-only diag** (`scratchpad/run_wmdiag.sh`: 25 writev, **"Unhandled exception"** = the documented
+> `CreateMainWindow->WmRootWindow::Create returns 0` gate, still stuck at the AppStartMaster startup handshake).
+> = EXACTLY the softkey-saga gate (★★★★★ above): winmgr's render-thread WM-handshake must complete FAITHFULLY
+> (the **/dev/events render-tick bridge for winmgr's render thread**, bf0b579 pattern) so its map path runs and
+> it creates+maps its screen windows; cold-VM run-variance (winmgr maps in only ~half the runs). Precise next
+> levers: (1) the winmgr render-thread /dev/events render-tick bridge -> winmgr creates+maps its screen-layout
+> windows; (2) then drive simulo's FControl activation (an INJECT_SK_ACTIVATE-analogue screen-activate) so its
+> PLib composites its WndFullScreen into the screen's client area -> visible (or BARCOPY-surfaceable).
+> ## NET: NO FEX-native operator window rendered this session; both operator screens are gated at the render
+> layer -- Fred by the NEW libEditlib editor-FrameThread crash, simulo (and the whole PLib screen) by the
+> documented winmgr render-thread frontier. Both RE'd end-to-end with precise next levers.
+> Findings: `scratchpad/fred_findings.md`. Run: `bash emulator/run_fred.sh` (standalone scout);
+> `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=1 SKMGR=1 bash emulator/run_fred.sh` (simulo).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
