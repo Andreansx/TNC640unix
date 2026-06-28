@@ -1665,6 +1665,33 @@
 > run_wmdiag.sh` (winmgr-only → reaches Initialize); `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=1
 > SKMGR=1 WM_SEM_FORCE_OK=3000 WM_LAYOUT=%SYS%/resource/tnc640layout1280.xml WM_SIZE=1280x1024 bash emulator/run_fred.sh`
 > (integrated → render-thread gate).
+>
+> ## ★★★★★ OPERATOR-MMI SCOUT (2026-06-28, cont. 3) — BYPASS-winmgr path: simulo graphics gate CRACKED (GRF_STUB); simulo's pixel gate PINNED to the FControl CREATED state transition (DynamicCreate Module->+4==1)
+> Pivoted off the winmgr render-thread frontier to drive simulo's OWN window via the proven INJECT path (no winmgr).
+> **(1) NEW lever HEROSCALL_GRF_STUB — cracks simulo's graphics gate.** `grfOpenConnection@simulo 0x6b7c0` does
+> `p_ident("<proc>/graphicsSIM")` → on -1 bails "no process" → FControl never reaches CREATED. The SIM graphics
+> renderer (simipo/ContourGraphics "graphicsSIM") is absent. FIX = `HEROSCALL_GRF_STUB=1` (heros_rtos.c P_ident case
+> 0x29, gated default OFF): return a valid stub pid for any "graphics" process name. VERIFIED: `GRF_STUB:
+> P_ident(".../graphicsSIM") -> 0x106`, grfOpenConnection PROGRESSES (creates queues 0x318/0x319, returns, does NOT
+> block) → the graphics gate is CROSSED. Wired into run_fred.sh (GRF_STUB) + INJECT_AREA_ACK/BAR_RECT/MMI_SEM_FORCE_OK.
+> **(2) simulo's PIXEL GATE PINNED — the FControl CREATED state transition.** Even with GRF_STUB + the WM injects
+> (INJECT_WMGR_ACK + AREA_RECT_FORCE + INJECT_AREA_ACK) + MMI_SEM_FORCE_OK, simulo still posts **"necessary State
+> CREATED not reached" (fcontrol.cpp:2046)** and creates NO window (1 colour; 0x3003/0x3004 window-registration never
+> sent). Pinned: the watchdog is in **`FControl::DynamicCreate@0x81d80`** (libfrontend.so) — it creates a child
+> FView/window but FIRST checks **`Module->state (+4) == 1`** (1=CREATED); if not, it bails (no view). So simulo's
+> FControl never transitions its module to **state 1 (CREATED)** = `FControlSTM::TransitState@0x3c850` /
+> `FStartable::TransitState`, the SAME FModule state-machine frontier as winmgr's `WmModule::Initialize` + HrMmi's
+> active-state machine. Likely driven by the **ProM activation** (`FControl::OnProMActivateNotify@0x3c400` →
+> `ActivateMyApp@0x3c420`) / the ProM registration (`GetProMConnectId@0x823b0`; promview is absent). Confirmed NOT
+> the gate: the AppStartMaster-ack `Sm_request(0x207)` PASSES (count>0); graphics PASSES (GRF_STUB); config connects.
+> **★ ALL THREE operator/winmgr gates CONVERGE on the documented FModule/FStartable state-machine** (winmgr
+> Initialize / simulo CREATED / HrMmi active-state), each driven by its bring-up handshake (ProM activate + WM-
+> handshake completeness + the render handshake). NEXT precise levers: (a) inject the ProM activation
+> (PromActivateNotifyMsg → OnProMActivateNotify → ActivateMyApp → CREATED) so DynamicCreate creates simulo's FView;
+> (b) complete the WM-handshake INJECT coverage (302c/300c/the 156B); (c) winmgr render-thread /dev/events render-tick
+> bridge. Still NO FEX-native operator window — the FModule CREATED/Initialize transition is the convergent gate.
+> Run: `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=0 GRF_STUB=1 INJECT_WMGR_ACK=1 AREA_RECT_FORCE=1
+> INJECT_AREA_ACK=1 BAR_RECT="0,0,1280,936" MMI_SEM_FORCE_OK=3000 bash emulator/run_fred.sh`.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under

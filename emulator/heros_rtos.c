@@ -2837,6 +2837,14 @@ long syscall(long n,...){
             if(!ps){ LOG("P_ident(self) -> -1 (PIDENT_SELF=0, old topology)\n"); return -1; }
             uint32_t self=task_self(); LOG("P_ident(self) -> 0x%x\n",self); return (long)(int32_t)self; }
         { const char*pn=(const char*)(uintptr_t)p[0];
+          /* HEROSCALL_GRF_STUB=1: stub the SIMULATION-GRAPHICS renderer peer. simulo's grfOpenConnection
+           * (@0x6b7c0) does p_ident("<proc>/graphicsSIM"); on -1 it bails "no process" -> FControl never
+           * reaches CREATED -> no WndFullScreen window. The real graphics renderer (simipo/ContourGraphics
+           * "graphicsSIM") is absent in this minimal constellation. Return a valid stub pid for any
+           * "graphics" process name so grfOpenConnection passes the no-process gate (t_ident already returns
+           * a valid id for unknown names; the GRFQ_ queue auto-creates). Gated, default OFF. */
+          static int grfstub=-1; if(grfstub<0){ const char*e=getenv("HEROSCALL_GRF_STUB"); grfstub=e&&e[0]=='1'; }
+          if(grfstub && strstr(pn,"graphics")){ uint32_t self=task_self(); fprintf(stderr,"[rtos] GRF_STUB: P_ident(\"%s\") -> 0x%x (graphics-peer stub)\n",pn,self); fflush(stderr); return (long)(int32_t)self; }
           if(strstr(pn,"winmgr")||strstr(pn,"mgr")) { fprintf(stderr,"[rtos] P_ident(\"%s\") -> -1 (Processes::OnMessage reached)\n",pn); fflush(stderr); }
           else LOG("P_ident(\"%s\") -> -1\n",pn); }
         return (uint32_t)-1;
