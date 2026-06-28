@@ -1271,6 +1271,43 @@
 > 1280 layout @1280x1024, `GUPPY_DISPLAY=:0.0`. Harness: `scratchpad/skusage_run.sh` (env DQ/SKS/WML/WMS/TMO/SHOT;
 > the constellation has run variance → re-run if winmgr makes 0 screens). Screenshot: `scratchpad/shots/hwviewer_softkey_bar.png`.
 
+> ## ★★★★★ VISIBLE SOFTKEY BAR (2026-06-28, Direction 1) — gate pinned to the WINDOW-MAP; external mapping RULED OUT; faithful lever = winmgr screen-ACTIVATE (WmActivateWinMgrMsg 0x03B800E0 → OnActivate)
+> The bar CONTENT is DONE (good runs: skmgr serve 425, **19 .bmx loaded + 7 Xrender blits**, 118 colours); the
+> bar is INVISIBLE purely because **skmgr's softkey windows are never MAPPED**. RE'd the map mechanism (idalib on
+> winmgr.elf) through 3 layers + RULED OUT every cheap external lever, leaving one faithful path.
+> **Map mechanism:** (1) `WmEmbedWindowImpl::OnChild@0x5d940` (XEmbed) maps the child iff `_XEMBED_INFO` mapped-flag
+> set OR socket viewable — **NOT the path here** (0 "Embed:" logs; skmgr sets NO `_XEMBED_INFO`; skmgr created
+> 0x600001 directly under winmgr's screen via RegisterWindowEx 0x3004). (2) `WindowManager::OnDesktopChanged@0x16200`
+> → `WmScreen::Map`+`WmRootWindow::Activate` maps the screen's windows on a desktop CHANGE; triggered by
+> `CheckRootPropChange` (root `_NET_CURRENT_DESKTOP`) / `WmRootWindow::CheckState@0x54c40` — but CheckState runs on
+> winmgr's RENDER thread (`WmTimer::TimerTick@0x32e86`), **STUCK without SYSFIRE** (SYSFIRE perturbs the constellation).
+> (3) skmgr's own map = libplibpp `PWindow::Show` (skmgr.elf calls NO XMapWindow — it's in libplibpp/libgui),
+> gated on the screen-active state + a WM screen-active notify. **ROOT complication:** skmgr's PLib REQUIRES an
+> EWMH WM (sig6 aborts without one; winmgr alone doesn't satisfy its check) → openbox runs alongside winmgr;
+> **openbox reparents winmgr's screen window `0x400001` into a frame `0x2001c0` and keeps it WITHDRAWN because
+> winmgr never maps 0x400001 (no activate)** → the whole subtree (0x400015→0x600001 strip) is unviewable.
+> **RULED OUT (built+tested, scratchpad/{mapwin,wmpoke,wmshow,wmfloat}.c):** mapwin (force-map+Expose: skmgr drew
+> into the unmapped window = content discarded, no backing store, **does NOT redraw on Expose**); wmpoke (set root
+> `_NET_CURRENT_DESKTOP`: winmgr doesn't react — CheckState on the stuck render thread); wmshow (continuous in-place
+> subtree map: stays unviewable — withdrawn openbox frame); wmfloat (reparent strip to root, even override-redirect:
+> reparent does NOT stick — **winmgr actively re-reparents 0x600001 back under its screen** each serve loop; winmgr
+> issues 0 XUnmapWindow). **Even SYSFIRE's render-thread activate maps the screen (0x400015 viewable) but NOT skmgr's
+> softkey window** (that needs the screen-active NOTIFY to skmgr).
+> **★ PROVABLE BLOCKER:** a visible bar requires **winmgr's OWN screen-activate** (maps screens in place → openbox
+> maps the frame; AND notifies skmgr → libplibpp `PWindow::Show` maps+REDRAWS while mapped). External X can't
+> substitute (openbox keeps the frame withdrawn; winmgr undoes reparents; content rendered-while-unmapped is lost +
+> no Expose redraw). **★ FAITHFUL NEXT LEVER (precise): INJECT_WMGR_ACTIVATE** — post `WmActivateWinMgrMsg`
+> (type-id `0x03B800E0`/62390496) to winmgr's FModule queue (Q_WMGRMSG); `WmModule::DispatchMessage@0x49550` (the
+> ALIVE serve thread that replies to skmgr's 0x3003/0x3004 — **bypasses the stuck render thread**) routes it to
+> `WmModule::OnActivate@0x48500` → `WmRootWindow::Activate` (Activate branch fires when `GMessage::IsValid` is
+> FALSE, so a degenerate msg suffices). GATED ON: building a winmgr-family GMessage wire GMessage::Read accepts =
+> the documented multi-session GMessage-build effort (same class as the SkMgr-wire/build_setmenu.c saga; NO live
+> capture exists since nobody activates winmgr in the 4-proc → schema from libwinmgrlib/libGMessage* + the solved
+> present/absent encoding). Tooling committed: scratchpad/{mapwin,wmpoke,wmshow,wmfloat}.c, barrun.sh (SYSFIRE/
+> WMPOKE/WMSHOW/WMFLOAT/WININSPECT knobs), wm_re{,2..6}.py + sk_re.py (idalib RE). `run_3proc_skmgr_guppy.sh`
+> gained env-gated default-OFF knobs WMPOKE/WMSHOW/WMFLOAT/WININSPECT/MAPFORCE (baseline unchanged). Findings:
+> `scratchpad/skmgr_softkey_findings.md` (2026-06-28 section).
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

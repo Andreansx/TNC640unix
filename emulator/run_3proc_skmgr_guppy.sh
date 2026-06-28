@@ -101,7 +101,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_EV_TRACE_BIT="${EV_TRACE_BIT:-0}" HEROSCALL_EV_TRACE_TASK="${EV_TRACE_TASK:-0}" HEROSCALL_EV_TRACE_BUDGET="${EV_TRACE_BUDGET:-24}" HEROSCALL_EV_TRACE_EXACT="${EV_TRACE_EXACT:-0}" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" NO_NCK_WINMGR="${NO_NCK_WINMGR:-}" WMFORCE="${WMFORCE:-}" SKFORCE="${SKFORCE:-}" \
   HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" HWVIEWER_GEOMETRY="${HWVIEWER_GEOMETRY:-}" WINMGR="${WINMGR:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" SYSFIRE="${SYSFIRE:-0}" SYSFIRE_MASK="${SYSFIRE_MASK:-00ff0000}" WM_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" WM_FIRE_YIELD="${WM_FIRE_YIELD:-0}" \
-  GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" GUPPY_DISPLAY="${GUPPY_DISPLAY:-}" HWV_FORCE_FS="${HWV_FORCE_FS:-}" LANG=C LC_ALL=C \
+  GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" GUPPY_DISPLAY="${GUPPY_DISPLAY:-}" HWV_FORCE_FS="${HWV_FORCE_FS:-}" SHOT_AT="${SHOT_AT:-150}" WININSPECT="${WININSPECT:-0}" MAPFORCE="${MAPFORCE:-}" WMPOKE="${WMPOKE:-}" WMSHOW="${WMSHOW:-}" WMFLOAT="${WMFLOAT:-}" LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
     mount --make-rprivate /; mount --bind "$R/etc" /etc
@@ -148,6 +148,19 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       sleep 0.5; i=$((i+1)); done
     sleep "${GUPPY_DELAY:-6}"
 
+    if [ -n "${WMPOKE:-}" ] && [ -x /tmp/wmpoke ]; then
+      echo "### wmpoke desktop ${WMPOKE} (bg, drives winmgr CheckRootPropChange->OnDesktopChanged->Activate) ###"
+      ( DISPLAY=$DISP /tmp/wmpoke ${WMPOKE} "${MMI_TIMEOUT:-200}" 800 > /tmp/wmpoke.log 2>&1 ) &
+    fi
+    if [ -n "${WMSHOW:-}" ] && [ -x /tmp/wmshow ]; then
+      echo "### wmshow (bg, winmgr screen-show stand-in: maps winmgr+skmgr subtree continuously) ###"
+      ( DISPLAY=$DISP /tmp/wmshow "${MMI_TIMEOUT:-200}" 250 > /tmp/wmshow.log 2>&1 ) &
+    fi
+    if [ -n "${WMFLOAT:-}" ] && [ -x /tmp/wmfloat ]; then
+      echo "### wmfloat (bg, reparent skmgr softkey strip to root@0,936 + map subtree, continuously) ###"
+      ( DISPLAY=$DISP /tmp/wmfloat "${MMI_TIMEOUT:-200}" 200 > /tmp/wmfloat.log 2>&1 ) &
+    fi
+
     for p in pystdout pystderr ncstdout ncstderr; do
       rm -f /tmp/__helogpipe_$p; mkfifo /tmp/__helogpipe_$p 2>/dev/null
       ( timeout "${MMI_TIMEOUT:-200}" cat /tmp/__helogpipe_$p > /tmp/g_$p.log 2>/dev/null & )
@@ -156,7 +169,10 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     GDISP="${GUPPY_DISPLAY:-$DISP}"   # faithful bind: gtk_external_display_active() (libgtkbind 0x16510) returns FALSE only when gdk_get_display()==":0.0" EXACTLY; then CreateWindowData runs the WndFullScreen dispatch (sets window-record +0x1C) so jh.softkey.Register binds -> login q_sends to Q_SkMgr -> skmgr serves. A plain ":0" gives gdk_get_display()==":0" -> external active -> dispatch skipped -> "Binding softkey resource to window failed". So promote :0 -> :0.0 for Guppy (Xvfb still on :0). NO binary patch, proper window geometry.
     case "$GDISP" in :0) GDISP=:0.0;; esac
     echo "### Guppy ($GUPPY_BIN $GUPPY_ARGS, DISPLAY=$GDISP) ###"
-    [ "$USE_XVFB" = "1" ] && ( sleep "${SHOT_AT:-150}"; rm -f /tmp/g_screen.xwd; DISPLAY=$DISP xwininfo -root -tree > /tmp/g_windows.txt 2>&1; DISPLAY=$DISP xwd -root -out /tmp/g_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/g_screen.xwd 2>/dev/null)" ) &
+    [ "$USE_XVFB" = "1" ] && ( sleep "${SHOT_AT:-150}"; rm -f /tmp/g_screen.xwd /tmp/skwin_*.png /tmp/skwin_info.txt; DISPLAY=$DISP xwininfo -root -tree > /tmp/g_windows.txt 2>&1;
+      if [ -n "${MAPFORCE:-}" ] && [ -x /tmp/mapwin ]; then ids=""; for nm in $MAPFORCE; do case "$nm" in 0x*) id="$nm";; *) id=$(grep -E "\"$nm\"" /tmp/g_windows.txt | grep -oE "0x[0-9a-f]+" | head -1);; esac; [ -n "$id" ] && ids="$ids $id"; done; echo "  MAPFORCE [$MAPFORCE] -> [$ids]"; [ -n "$ids" ] && DISPLAY=$DISP /tmp/mapwin $ids 2>&1 | sed "s/^/  /"; sleep 2; DISPLAY=$DISP xwininfo -root -tree > /tmp/g_windows.txt 2>&1; fi;
+      DISPLAY=$DISP xwd -root -out /tmp/g_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/g_screen.xwd 2>/dev/null)";
+      if [ "${WININSPECT:-0}" = "1" ]; then for wid in $(grep -E "\+0\+936|HwViewer|Machine|Edit|0x80001f|0x4000[0-9a-f][0-9a-f]|0x2001c0|Screen" /tmp/g_windows.txt | grep -oE "0x[0-9a-f]+" | sort -u); do echo "=== $wid ===" >> /tmp/skwin_info.txt; DISPLAY=$DISP xwininfo -id $wid -stats 2>&1 | grep -E "Window id|Map State|Width:|Height:|Corners|Override" >> /tmp/skwin_info.txt 2>&1; DISPLAY=$DISP xwd -id $wid -out /tmp/skwin_$wid.xwd 2>/dev/null && DISPLAY=$DISP convert /tmp/skwin_$wid.xwd /tmp/skwin_$wid.png 2>/dev/null && rm -f /tmp/skwin_$wid.xwd; done; fi ) &
     timeout -s KILL "${MMI_TIMEOUT:-200}" /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/g_strace.log \
       env DISPLAY="$GDISP" HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 PYTHONHOME=/usr NO_NCK_WINMGR="$NO_NCK_WINMGR" WMFORCE="$WMFORCE" SKFORCE="$SKFORCE" HWVIEWER_SK_USAGE="$HWVIEWER_SK_USAGE" HWVIEWER_GEOMETRY="$HWVIEWER_GEOMETRY" HEROSCALL_WMQ_BREAK="${WMQ_BREAK:-0}" HEROSCALL_WMQ_BREAK_N="${WMQ_BREAK_N:-2000}" HEROSCALL_EMPTYPOLL_YIELD="${EMPTYPOLL_YIELD:-0}" HEROSCALL_WMGR_ROOT="${WMGR_ROOT:-0}" HEROSCALL_WMGR_SCREEN="${WMGR_SCREEN:-0}" HWV_FORCE_FS="${HWV_FORCE_FS:-}" HEROSCALL_EV_NOWAIT_YIELD="${EV_NOWAIT_YIELD:-0}" HEROSCALL_EV_NOWAIT_YIELD_N="${EV_NOWAIT_YIELD_N:-64}" LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/$GUPPY_BIN" -p=~/Guppy Guppy $GUPPY_ARGS > /tmp/g_mmi.log 2>&1 || true
