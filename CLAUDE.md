@@ -1426,6 +1426,15 @@
 > root are ALL solved+verified this session; the two remaining layers are 1a (render-thread reliability, the
 > prerequisite) and 1b (screen-activate timing). NEXT SESSION: fix 1a first (winmgr render-tick /dev/events
 > bridge) -- without a reliably-mapped screen strip, 1b cannot land pixels.
+> ★ FORCED-LEVER EXHAUSTION (all tried, none reveal the buttons -- so the next session does NOT re-walk them):
+> wmfloat reparent-to-root + map + Expose-all-descendants (per 200ms AND 10ms), wmshow in-place map, MAPFORCE,
+> AND **backing_store=Always** on every skmgr window (so a composite would be retained even while unmapped --
+> Xvfb has backing-store, no -bs) -> ALL leave the strip at the empty grey BACKGROUND (2 colours). DEFINITIVE
+> reason: skmgr `RenderCreatePicture`s the window 0x600006 but **only RenderComposites the .bmx into it on the
+> softkey-SHOW** (which winmgr drives by mapping the strip); with no show, 0x600006 is never composited = empty,
+> so no external map/backing-store can reveal content that was never drawn. ⇒ the FAITHFUL softkey-show (winmgr
+> maps the strip on the screen/softkey activate -> skmgr composites -> visible) is MANDATORY; it is gated on 1a
+> (winmgr render-thread reliably mapping its strip) + the show signal. External forcing is a confirmed dead end.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
