@@ -128,6 +128,7 @@ struct ctl {
     volatile uint32_t evt_ring_n;                    /* total broadcasts seen (ring index = n % EVTRING) */
     struct { uint32_t len; uint8_t data[EVTMSGCAP]; } evt_ring[EVTRING];
     volatile uint32_t sk_flow_posted;                /* INJECT_SK_FLOW single-poster guard (CAS 0->1) */
+    volatile uint32_t wm_activate_posted;            /* INJECT_WMGR_ACTIVATE single-poster guard (CAS 0->1) */
 };
 static struct ctl *C;
 
@@ -1630,8 +1631,85 @@ static void sk_flow_spawn(void){
     fprintf(stderr,"[skflow] spawn timer thread pid=%d delay=%lds rc=%d\n",(int)getpid(),delay,rc);
     pthread_attr_destroy(&at);
 }
+/* INJECT_WMGR_ACTIVATE (HEROSCALL_INJECT_WMGR_ACTIVATE=1): the 4-proc has no AppStartMaster/MMI to send
+ * winmgr the screen-activate, so winmgr never maps its screen windows (openbox keeps winmgr's screen frame
+ * 0x2001c0 WITHDRAWN) and never notifies skmgr to Show+draw its softkey window -> the fully-rendered bar is
+ * invisible. Synthesize the REAL WmActivateWinMgrMsg (type-id 0x03B800E0; body = GMsgBool@+12 + GMsgString
+ * @+24, codes 0xc6/0xe7 per the libGMessageGui schema table @.rodata 0x241348 / WmActivateWinMgrMsgBody
+ * ctor @0x213030) and post it to winmgr's FModule queue Q_WMGRMSG. WmModule::DispatchMessage@0x49550 (the
+ * ALIVE serve thread that replies to skmgr's 0x3003/0x3004 -- bypasses the stuck render thread) routes
+ * 0x03B800E0 -> WmModule::OnActivate@0x48500 -> WmRootWindow::Activate. The Activate branch fires unless
+ * (IsValid && bool==0), so the bool is PRESENT=1; the GMsgString is unused by OnActivate (it passes nullptr
+ * to Activate) so it's left ABSENT. Posted only by winmgr (the Q_WMGRMSG owner) = a self-injected FModule
+ * message, exactly how the real activate arrives; re-posted every ~8s to cover the constellation's variable
+ * bring-up timing (re-activate is idempotent). */
+static int wm_activate=-1;
+static void inject_wmgr_activate(uint32_t qid){
+    /* (1) WmSelectForegroundMsg (type-id 0x03B80340; body = SCREEN_ID@+12, wire code 0x63=GMsgInt per the
+     * libGMessageGui schema table @.rodata 0x240630). OnSelectForeground@0x43a00 -> WindowManager::
+     * SelectForeground@0x15070 selects the screen whose key==SCREEN_ID, SETS it current, WmScreen::Map's it,
+     * and WmRootWindow::Activate's it -> maps the screen + its embedded softkey windows + notifies skmgr.
+     * Without this, OnActivate's Activate is a no-op (no current screen selected). Screen id from
+     * HEROSCALL_WMACT_SCREEN (default 1 = SCREEN_MACHINING, where skmgr draws the hwv bar). */
+    int scr=1; const char*se=getenv("HEROSCALL_WMACT_SCREEN");
+    if(se){ scr=0; int neg=0; const char*p=se; if(*p=='-'){neg=1;p++;} for(;*p>='0'&&*p<='9';p++) scr=scr*10+(*p-'0'); if(neg) scr=-scr; }
+    { unsigned char s[12]; int o=0;
+      put32(s+o,0x03B80340u);o+=4;                       /* WmSelectForegroundMsg type-id */
+      put32(s+o,0x00000063u);o+=4; put32(s+o,(uint32_t)scr);o+=4;  /* SCREEN_ID (GMsgInt 0x63) PRESENT = scr */
+      fprintf(stderr,"[wmact] post WmSelectForegroundMsg screen=%d %d bytes -> Q_WMGRMSG 0x%x\n",scr,o,qid);
+      q_send(qid,s,(uint32_t)o,0);
+    }
+    /* (2) WmActivateWinMgrMsg (type-id 0x03B800E0; body = GMsgBool@+12 + GMsgString@+24, codes 0xc6/0xe7).
+     * OnActivate@0x48500 -> WmRootWindow::Activate (re-activate the now-current screen). bool PRESENT=1 so
+     * the Activate branch fires; the GMsgString is unused by OnActivate so it's ABSENT. */
+    { unsigned char w[16]; int o=0;
+      put32(w+o,0x03B800E0u);o+=4;                       /* WmActivateWinMgrMsg type-id */
+      put32(w+o,0x000000C6u);o+=4; put32(w+o,1u);o+=4;   /* GMsgBool PRESENT = 1 (activate) */
+      put32(w+o,0x800000E7u);o+=4;                       /* GMsgString ABSENT */
+      fprintf(stderr,"[wmact] post WmActivateWinMgrMsg %d bytes -> Q_WMGRMSG 0x%x\n",o,qid);
+      q_send(qid,w,(uint32_t)o,0);
+    }
+}
+static void* wm_activate_thread_fn(void* arg){
+    long delay=(long)arg; struct timespec ts={delay,0}; nanosleep(&ts,0);
+    if(!C) return NULL;
+    /* Find Q_WMGRMSG (winmgr's FModule queue), then CLAIM the single-poster token (any process may post —
+     * q_send notifies winmgr's main thread cross-process; CAS prevents 4-process spam). NB: the timer runs
+     * on a NEW pthread, whose task_self() is a fresh id != winmgr's 0x106, so an owner==self check would
+     * never fire — that's why we post from whichever process wins the CAS, not the queue owner. */
+    int claimed=0, rounds=0;
+    for(int tries=0; tries<180 && rounds<14; tries++){
+        lock(); int q=q_find_slot("Q_WMGRMSG"); uint32_t qid=(q>=0)?C->queues[q].id:0; unlock();
+        if(qid){
+            if(!claimed){
+                if(__atomic_exchange_n(&C->wm_activate_posted,1,__ATOMIC_ACQ_REL)!=0) return NULL; /* another won */
+                claimed=1;
+                fprintf(stderr,"[wmact] timer fired -> activating Q_WMGRMSG 0x%x (pid %d)\n",qid,(int)getpid());
+            }
+            inject_wmgr_activate(qid); rounds++;
+            struct timespec r={8,0}; nanosleep(&r,0);   /* re-activate every 8s to cover bring-up timing */
+        } else {
+            struct timespec r={1,0}; nanosleep(&r,0);   /* Q_WMGRMSG not up yet — retry ~1s */
+        }
+    }
+    return NULL;
+}
+static void wm_activate_spawn(void){
+    static int spawned=0; if(spawned) return;
+    if(wm_activate<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_ACTIVATE"); wm_activate=e&&e[0]=='1'; }
+    if(!wm_activate){ spawned=1; return; }
+    long delay=20; const char*d=getenv("HEROSCALL_WMACT_DELAY");
+    if(d){ delay=0; for(const char*p=d;*p>='0'&&*p<='9';p++) delay=delay*10+(*p-'0'); if(delay<=0)delay=20; }
+    spawned=1;
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at,PTHREAD_CREATE_DETACHED);
+    int rc=pthread_create(&th,&at,wm_activate_thread_fn,(void*)delay);
+    fprintf(stderr,"[wmact] spawn timer thread pid=%d delay=%lds rc=%d\n",(int)getpid(),delay,rc);
+    pthread_attr_destroy(&at);
+}
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
     sk_flow_spawn();   /* lazily start the INJECT_SK_FLOW timer thread (no-op unless HEROSCALL_INJECT_SK_FLOW=1) */
+    wm_activate_spawn(); /* lazily start INJECT_WMGR_ACTIVATE timer (no-op unless HEROSCALL_INJECT_WMGR_ACTIVATE=1) */
     int q_saved_errno=errno;   /* libc syscall() preserves errno on SUCCESS, sets it only on error; the
                                 * real heros.ko q_read does likewise. Our success path below calls
                                 * LOG()/ev_send()/q_send() which clobber errno via fprintf/futex, so we
