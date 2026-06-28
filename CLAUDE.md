@@ -1391,9 +1391,25 @@
 > trigger it). ⇒ the buttons are gated on **skmgr creating + painting its OEM-screen PFrame window** (the
 > documented OEM-screen-activate -> PSoftkeyControl::BuildSoftkeyBar -> CopyArea gate), which produces no separate
 > OEM strip window here -- so there is nothing for an external map to show. The strip-background render (1->2
-> colours) is partial visual progress; the BUTTONS need skmgr's own OEM PFrame paint. NEXT: RE where skmgr's 7
-> hwv blits land (pixmap vs window) + what triggers PSoftkeyControl::BuildSoftkeyBar's CopyArea-to-window for the
-> OEM screen (likely a SoftkeyBarSetup/screen-paint event distinct from the login/InfoResponse flow already solved).
+> colours) is partial visual progress; the BUTTONS need skmgr's own OEM PFrame paint.
+> ★★ DRAW METHOD DECODED (sk_strace writev opcodes): skmgr draws the bar via the **RENDER extension** (major
+> opcode 0x8B), not core PutImage -- `RenderCreatePicture` (minor 4) for **window 0x600006** (1280x88, a real
+> 0x600xxx window, IsUnviewable=mapped-but-ancestor-unmapped) sourced from **pixmap 0x60001b** (NOT in the window
+> tree). So skmgr composites the hwv bitmaps from a pixmap INTO window 0x600006, ONCE, and the content is LOST
+> because 0x600006 is never viewable at composite time + skmgr does NOT re-composite on Expose. ★ EXHAUSTIVE
+> external-map attempts ALL fail to show the buttons: wmfloat (reparent the strip to root + map subtree + Expose
+> every descendant, at per=200ms AND per=10ms) -> the strip BACKGROUND renders (1->2 colours, mean 0.73) but the
+> buttons never appear -- winmgr re-unmaps the strip and/or skmgr composited before the map, and the one-time
+> RENDER composite to an unviewable window is discarded with no Expose redo. ⇒ **DEFINITIVE: external X
+> manipulation cannot show the bar; only the FAITHFUL winmgr OEM-screen-activate can** -- it must (1) reliably
+> create+map the OEM softkey-area window (the OEM is `AddDesktop`, which creates NO HorizontalManager strip --
+> only `AddScreen` NC/EDIT do -- so the OEM softkey-area window is missing) BEFORE skmgr composites, (2) keep it
+> mapped, and (3) the screen-paint re-fires skmgr's RENDER composite into the now-viewable window. NEXT (the real
+> multi-sub-gate frontier): RE how the OEM desktop gets its softkey-area window (does `AddDesktop`/the OEM-screen
+> activate create it, or does skmgr; why winmgr makes NC/EDIT strips but no OEM one) + the 1a screen-map
+> reliability. The wire/dispatch/mechanism/topology/draw-method are ALL solved+verified; the visible bar is gated
+> on the winmgr OEM-softkey-area-window creation + skmgr's composite landing while it's viewable.
+> Knob: WMFLOAT_PER (run_3proc, default 200) for the float period.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under

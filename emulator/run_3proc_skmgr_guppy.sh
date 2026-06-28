@@ -159,7 +159,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     fi
     if [ -n "${WMFLOAT:-}" ] && [ -x /tmp/wmfloat ]; then
       echo "### wmfloat (bg, reparent skmgr softkey strip to root@0,936 + map subtree, continuously) ###"
-      ( DISPLAY=$DISP /tmp/wmfloat "${MMI_TIMEOUT:-200}" 200 > /tmp/wmfloat.log 2>&1 ) &
+      ( DISPLAY=$DISP /tmp/wmfloat "${MMI_TIMEOUT:-200}" "${WMFLOAT_PER:-200}" > /tmp/wmfloat.log 2>&1 ) &
     fi
 
     for p in pystdout pystderr ncstdout ncstderr; do
