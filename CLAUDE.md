@@ -1337,6 +1337,36 @@
 > WMACT_SCREEN/WMSCR, WMACT_DELAY. (1a run variance persists: IWA=0 good, ~half of cold runs serve 0; do NOT
 > restart the VM.)
 
+> ## ★★★★★★ WM ACTIVATE/SELECT WIRES CRACKED BYTE-EXACT (the SCREEN_ID GMsgException is GONE) — visible-bar gate now = winmgr map-on-activate (1a-coupled) (2026-06-28 cont.)
+> SUPERSEDES the "SelectForeground wire needs calibration / is timing-disruptive" framing above. The
+> WmSelectForegroundMsg wire is now byte-exact via the GENUINE libGMessageGui serializer (`scratchpad/
+> build_wmwire.c` + `gen_wm_wires.sh`, same dlopen+GMessage::Write method as build_setmenu.c). ★ KEY discovery:
+> the WIRE FACTORY-KEY != the body type-id. `WmSelectForegroundMsg::C2Ev@0x209da0` = `GMessage::GMessage(this,
+> 0x3B801C0)` -> the wire header is **0x03B801C0**, NOT 0x03B80340 (the body's type-id, which I had hand-coded
+> -> factory miss -> GMsgException). SCREEN_ID extends GMsgUnsigned, code **0x03B80044** (`SCREEN_ID::C2Ev
+> @0x208620`). Serializer output: `wm_select.bin (12B) = c0 01 b8 03 | 44 00 b8 03 | <screen>`; `wm_activate.bin
+> (16B) = e0 00 b8 03 | c6 00 00 00 | 01 00 00 00 | e7 00 00 80`. INJECT_WMGR_ACTIVATE now LOADS these .bin
+> (post_wm_wire_file; inline fallback for activate). **VERIFIED: byte-exact wires deserialize + are non-disruptive**
+> -- WMACT_SELECT=1 -> winmgr reads all 28 posts off Q_WMGRMSG (0x30f), **ZERO GMsgException** (was 1 with the
+> wrong header), run healthy (serve 425, 19 .bmx, 7 blits, 118 colours). So the GMsgException WAS the disruptor.
+> **Dispatch confirmed** (winmgr.elf): DispatchMessage@0x49550 case 0x3B801C0 -> SelectForeground(*(body+20)),
+> case 0x3B800E0 -> OnActivate@0x48500 -> WmRootWindow::Activate. The posts ARE read by winmgr's MAIN task
+> **t106** (reads both 0x30e WM-protocol + 0x30f FModule), so the wire reaches the dispatch thread. **Screen keys**
+> (ReadLayout@0x164e0): AddScreen(0,"NC")=key 0 (SCREEN_MACHINING), AddDesktop(2,"OEM")=key 2 (SCREEN_OEM).
+> ★ **REMAINING GATE (precisely pinned): the activate produces 0 MapWindow** -- skmgr's strip 0x600001
+> ("ScreenNC_HorizontalManager", 1280x88) stays IsUnMapped, bottom strip stays 1 colour. Two COUPLED causes:
+> (1) **1a run variance** -- winmgr's screen windows (0x400001 etc.) are IsViewable in some runs, IsUnMapped in
+> others (the documented render-thread flakiness); when unmapped there's nothing to map skmgr's strip into;
+> (2) **map-on-activate** -- selecting an ALREADY-foreground screen is a no-op (no re-map), and skmgr's strip needs
+> the XEmbed step (winmgr OnEmbedWindow reparent+map into the screen's softkey-area window) which is a separate
+> protocol layer. (The "Switching" log goes to HeLogger not wm.log, so its absence isn't proof.) ⇒ the wire +
+> dispatch + screen-key half is SOLVED+verified; the visible bar is gated on winmgr reliably mapping its screens
+> (1a) AND the activate/XEmbed actually mapping skmgr's strip = the documented winmgr render/XEmbed frontier.
+> Tooling: `scratchpad/{build_wmwire.c,gen_wm_wires.sh,barrun.sh}` (IWA/WSEL/WMSCR), wm_select.bin/wm_activate.bin.
+> NEXT: (a) make winmgr's screen-map deterministic (the 1a render-tick bridge), then (b) RE the XEmbed step
+> (OnEmbedWindow@0x3B80700) -- whether skmgr sends the embed and what maps the strip on activate -- or force the
+> embed/map of the foreground screen's softkey-area window so skmgr's 7 blits become visible.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
