@@ -942,13 +942,31 @@ static uint32_t sem_ident(const char*nm){
 static int sem_request(uint32_t id,uint32_t timeout){      /* P / wait */
     int s=sem_slot(id); if(s<0) return -7;
     volatile int32_t *cnt=&C->sems[s].count;
+    /* HEROSCALL_SEM_FORCE_OK=<ms>: the real HeROS Sm_request RETURNS (timeout error) after its
+     * timeout; the emulator otherwise loops forever re-waiting (it never returns the timeout).
+     * winmgr's bring-up does Q_send(FmProcessState "winmgr:" -> AppStartMaster 0x308) THEN
+     * Sm_request(sem 0x204, 100s) = the AppStartMaster START ack the (absent) real AppStartMaster
+     * would V/release; with no AppStartMaster it blocks forever -> WmModule::Initialize (CreateMain
+     * Window + ReadLayout -> the screen windows) NEVER runs. With this knob, a blocking Sm_request
+     * returns SUCCESS after ~<ms> (simulate the ack arriving / the documented timeout-then-proceed),
+     * unblocking winmgr toward Initialize. Gated, default OFF (force_ms=0 -> original loop-forever). */
+    static long force_ms=-1;
+    if(force_ms<0){ const char*e=getenv("HEROSCALL_SEM_FORCE_OK"); force_ms=e?atol(e):0; }
+    int waited=0;
     for(;;){
         int32_t c=__atomic_load_n(cnt,__ATOMIC_ACQUIRE);
         if(c>0){ if(__atomic_compare_exchange_n(cnt,&c,c-1,1,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) return 0; continue; }
         if(timeout==0) return -0x3d;                       /* would block, nowait */
+        if(force_ms>0 && waited){
+            LOG("SEM_FORCE_OK: Sm_request id 0x%x still blocked after ~%ldms -> forced success (simulate AppStartMaster ack)\n", id, force_ms);
+            return 0;
+        }
         struct timespec ts,*tp=0;
-        if(timeout!=0xffffffff){ ts.tv_sec=timeout/1000; ts.tv_nsec=(timeout%1000)*1000000L; tp=&ts; }
+        uint32_t eff=timeout;
+        if(force_ms>0) eff=(uint32_t)force_ms;             /* cap the wait so we force-return quickly */
+        if(eff!=0xffffffff){ ts.tv_sec=eff/1000; ts.tv_nsec=(eff%1000)*1000000L; tp=&ts; }
         futex(cnt,FUTEX_WAIT,c,tp);
+        if(force_ms>0) waited=1;
     }
 }
 static int sem_release(uint32_t id){                        /* V / signal */

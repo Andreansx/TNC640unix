@@ -1627,6 +1627,44 @@
 > WmProcess::MainContext 0x4b300, WmWindowDesc::Resync 0x36c00; simulo grfOpenConnection 0x6b7c0. `run_fred.sh` now
 > wires WM_FIRE_LIMIT/WM_FIRE_MASK/WMGR_SCREEN. Run: `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=1
 > SKMGR=1 AREA_RECT_FORCE=1 DUMPQ=1 bash emulator/run_fred.sh`.
+>
+> ## ★★★★★ OPERATOR-MMI SCOUT (2026-06-28, cont. 2) — NEW emulator bug FIXED (sem_request loop-forever) → winmgr-only REACHES WmModule::Initialize; integrated gate NARROWED to the render-thread 0x00011004 handshake (blind fire = SPIN, not progress)
+> Two genuine advances on the winmgr render-thread frontier (the prior section's "the FModule chain never DISPATCHES
+> the Initialize transition" is now resolved into a concrete bug + a precisely-pinned remaining gate).
+> **(1) NEW EMULATOR BUG FOUND + FIXED — `sem_request` loops forever on timeout.** `emulator/heros_rtos.c`
+> `sem_request()` re-loops `futex(FUTEX_WAIT,timeout)` forever; after the timeout elapses it just RE-WAITS and NEVER
+> returns the timeout to the caller (the real HeROS Sm_request RETURNS a timeout error). winmgr's bring-up does
+> `Q_send(FmProcessState "winmgr:" -> AppStartMaster 0x308)` THEN **`Sm_request(sem 0x204, 100s)`** = the
+> AppStartMaster START-ack the (absent) real AppStartMaster would V/release; with no AppStartMaster the emulator
+> blocks FOREVER (not even the 100s timeout fires) → `WmModule::Initialize` (the screen-window create path) NEVER
+> runs. Proven: winmgr-only diag at 160s is still on `Sm_request(0x204)` as its last action (1 occurrence, blocking).
+> FIX = **`HEROSCALL_SEM_FORCE_OK=<ms>`** (gated, default OFF → original loop-forever preserved, no regression): a
+> blocking Sm_request returns SUCCESS after ~<ms> (simulate the ack / the documented timeout-then-proceed). Wired:
+> `run_wmdiag.sh` (SEM_FORCE_OK), `run_fred.sh` (WM_SEM_FORCE_OK, scoped to winmgr).
+> **(2) winmgr-only now REACHES `WmModule::Initialize`** (real advance past the cold-VM block): `run_wmdiag.sh`
+> ConfigServer+winmgr, sole WM, `SEM_FORCE_OK=4000`: SEM_FORCE_OK fired 2× (0x204 then 0x205), winmgr X writev 34→**100**,
+> winmgr ran `WmModule::Initialize` → threw the documented **"Unhandled exception: PKc"** (CreateMainWindow→`WmRoot
+> Window::Create` returns 0 = OpenDisplay-class failure; caught/non-fatal) then a **sub-thread SIGSEGV** (t11a in the
+> FModule 0x1000 ping-pong) = the documented "standalone sub-thread crash (no peers)". So forcing the semaphore
+> double-faults STANDALONE (CreateMainWindow=0 + no-peers SEGV).
+> **(3) INTEGRATED-run gate NARROWED — it's the RENDER-THREAD handshake, NOT the semaphore.** `run_fred.sh
+> FRED_BIN=simulo.elf WINMGR=1 SKMGR=1 WM_SEM_FORCE_OK=3000`: ConfigServer/simulo/winmgr crash=0, screenshot still
+> 1-colour/0 screen windows. Thread topology (3 winmgr threads): the **serve thread** does `Sm_request(0x204)`+`(0x205)`
+> which **SUCCEED IMMEDIATELY** (count>0 from HEROSCALL_SEM_INIT=1 — NO force needed here) then serves Q_WMGR (replies
+> to simulo) but **never calls Initialize**; the **render thread** signals main (Ev_send 0x1000) then blocks at
+> **`Ev_receive(0x00011004, forever)`** — `WmModule::Initialize` ends in `FStartable::TransitState`, gated on this
+> render handshake completing. **DECISIVE: firing the render bit BLINDLY does NOT advance it** — `SYSFIRE=1
+> WM_FIRE_MASK=00010000 WM_FIRE_LIMIT=400` made the render thread loop `Ev_receive(0x00011004)` **402× (≈400 fires to
+> the cap) then block** = it SPINS-and-re-waits, never reaches window creation, serve thread never runs Initialize,
+> result identical to no-fire (blank). ⇒ the render-thread 0x00011004 handshake needs **FAITHFUL completion** (a real
+> X-render event / the proper sibling 0x00010000 signal), i.e. the documented **/dev/events render-tick bridge for
+> winmgr's render thread** (bf0b579 pattern applied to winmgr), NOT autofire — the single, named, still-open lever to
+> make winmgr create+map its screen windows → simulo (operator MMI) composites. **NET: still NO FEX-native operator
+> window** (the render-thread handshake is the last gate); but the gate is now a real emulator bug fixed + the exact
+> remaining mechanism pinned. Run: `SEM_FORCE_OK=4000 INJECT_WMGR_ACK=0 SYSFIRE=0 WM_TIMEOUT=80 bash scratchpad/
+> run_wmdiag.sh` (winmgr-only → reaches Initialize); `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=1
+> SKMGR=1 WM_SEM_FORCE_OK=3000 WM_LAYOUT=%SYS%/resource/tnc640layout1280.xml WM_SIZE=1280x1024 bash emulator/run_fred.sh`
+> (integrated → render-thread gate).
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
