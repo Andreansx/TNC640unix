@@ -1450,6 +1450,48 @@
 > 1b show mechanism is solved + coded + waiting. The full chain (wire/dispatch/screen-key/SelectForeground->
 > WmScreen::Map->Resync->XMapWindow strip / RENDER composite / topology / AddScreen-vs-AddDesktop root) is RE'd
 > and implemented; ONLY 1a (winmgr screen-create reliability) stands between this and visible pixels.
+> ★★★★ 1a PRECISELY PINNED (the decisive measurement, supersedes "screen-create reliability"): in the current VM
+> state winmgr does **4 XCreateWindow but 0 XMapWindow** (651-655 writev total -- it IS active: fonts/GCs/
+> properties), i.e. it CREATES its screen windows (0x400001 exists, IsUnMapped) but its render thread BLOCKS
+> BEFORE the MapWindow step. An earlier WARM run DID map (0x400001 IsViewable), so the same code path completes
+> when timing allows -- the map is timing/handshake-gated, not impossible. RULED OUT as the map trigger (none
+> produce a single XMapWindow): the byte-exact faithful SelectForeground+Activate (1b, deserializes clean, winmgr
+> reads it), the alt-select re-Map (select OEM->select NC), bounded render-tick SYSFIRE (WM_FIRE_LIMIT 30/120,
+> mask 0x00010000) -- so **the MapWindow gate is NOT the render sysevent 0x00010000** (the prior framing). It is a
+> winmgr-INTERNAL condition between AddScreen(create) and the XMapWindow (the warm-vs-cold render-thread handshake
+> / a peer or state guard). ⇒ THE PRECISE NEXT-SESSION RE TARGET: decompile winmgr's render-thread flow AFTER
+> `WmRootWindow::AddScreen` to find the **XMapWindow call site + its guard** (what condition gates create->map),
+> then satisfy that condition faithfully so winmgr maps its screen+strip reliably -> 1b's SelectForeground->
+> WmScreen::Map->Resync shows the strip -> skmgr's RENDER composite is visible. Everything else (wire/dispatch/
+> screen-key/show-mechanism/RENDER/topology/root) is solved+coded; the single remaining unknown is winmgr's
+> create->map guard.
+> ★★★★★ THE create->map GUARD FOUND (decompile, the concrete next-session lever): winmgr's ONLY XMapWindow is at
+> 0x8d4c4 (a WmClient X-op wrapper, vtable+20), reached via **`WmWindowDesc::Resync@0x36c00`**. Resync MAPS only
+> when: `this+6 != null` (WmClient set) && `this+24 == null` (no pending update obj) && **`this+20 != 0`** (the
+> desc's "should-be-visible" byte) -> then it calls WmClient vtable+36 (unmap-old) + **vtable+20 (MAP, args = the
+> desc's x/y/w/h/window @this+19..23)** + WmScreen::AddWindow + ReportMapped. (The other branch this+24!=null ->
+> OnWindowUpdate.) So the map is per-WmWindowDesc, and a WmWindowDesc is created+flagged-visible by winmgr's
+> **window-registration handshake** (`WmRegisterWindowEx` 0x3004, which skmgr sends 8x): the client registers its
+> window -> winmgr makes a WmWindowDesc with this+20!=0 -> Resync maps it. winmgr's 0 XMapWindow ⇒ either the
+> 0x3004 handler doesn't create/flag the desc, or Resync isn't invoked on it (the registration state machine
+> doesn't complete in the 4-proc; AREA_RECT_FORCE/INJECT_AREA_ACK answer skmgr's 0x3003/0x3004 from the EMULATOR,
+> so the REAL winmgr never processes the RegisterWindow -> never builds the desc -> never maps). ⇒ PRECISE NEXT
+> LEVER: decompile winmgr's `WmRegisterWindowEx`/0x3004 handler (-> WmWindowDesc create + this+20 set + Resync) and
+> let the REAL winmgr serve skmgr's 0x3003/0x3004 (turn OFF INJECT_AREA_ACK/AREA_RECT_FORCE for winmgr, or feed
+> the real winmgr the area rect it needs) so it builds the WmWindowDesc, sets this+20, and Resync XMapWindows the
+> strip -> skmgr's RENDER composite lands visible. The map is per-registered-window via Resync's this+20 gate --
+> that is the single concrete mechanism left.
+> ★ TESTED (IAA=0 ARF=1, real winmgr serves 0x3004): STILL 0 XMapWindow -- winmgr's ENTIRE map path is dormant in
+> the cold VM (0 XMapWindow for ANY window: screen, strip, OR registered). skmgr DOES draw (opens all 19 .bmx + 7
+> big RENDER blits >9000B) but those blits go to its PIXMAP; the pixmap->visible-window composite (the "show")
+> never fires because winmgr never maps the target window. The earlier WARM run mapped 0x400001 -> so winmgr's
+> map path CAN run but is timing/handshake-gated and currently stuck cold. The ONLY config that ever made winmgr
+> MapWindow was INJECT_WMGR_ACK=1 (synthetic WM replies complete winmgr's handshake -> it maps its 5 windows,
+> strip 1->2 colours) BUT that duplicate-replies-crash Guppy. ⇒ DEFINITIVE binding blocker: winmgr's render-thread
+> WM-handshake must complete FAITHFULLY (INJECT_WMGR_ACK=0, no Guppy crash) so its map path runs and it XMapWindows
+> the screen+strip -- the documented winmgr render-thread frontier (the /dev/events render-tick bridge, bf0b579
+> pattern, applied to winmgr's render thread). This is the SINGLE remaining gate; all of wire/dispatch/show-
+> mechanism/RENDER/draw/topology/the create->map guard is solved+coded above it.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
