@@ -1610,7 +1610,12 @@
 > **SYSFIRE is INERT for winmgr** (its waits use timeout=0; HEROSCALL_SYSEVENT_AUTOFIRE only fires on timeout=
 > 0xffffffff → autofire=0). **COLD-VM determinism:** the good-variance/warm state that produced the visible softkey
 > bar earlier today is gone; winmgr creates 0 windows even alone (VM healthy: 5.3GB free, load 0.03 — NOT resource
-> pressure; do NOT restart — that destroys warm state).
+> pressure; do NOT restart — that destroys warm state). **CONFIRMED both ways:** re-running the proven
+> softkey-bar-VISIBLE config (BARCOPY/SK_REPLY_FORCE/WINMGR/AREA_RECT_FORCE) NOW gives **118 colours / no bar,
+> skmgr serve=3** — the bar that was visible earlier today is blank too. So the winmgr render-thread frontier is
+> FULLY BLOCKING in the current VM, gating BOTH the softkey bar AND the operator MMI. (The 118-colour HwViewer GTK
+> window still draws — it's the Guppy GTK/Python path, which does NOT depend on winmgr's screen windows; the PLib
+> operator screens DO, so they're blank.)
 > **★ NEXT LEVERS (for pixels):** (a) **winmgr-window STAND-IN** (most direct, forced, sanctioned): a helper that
 > creates the screen-layout X windows per tnc640layout1280.xml + serves simulo's WM protocol with VALID window ids
 > (decode the 156B; reuse INJECT_WMGR_ACK+WMGR_SCREEN+AREA_RECT_FORCE/INJECT_AREA_ACK) → simulo registers + its PLib
