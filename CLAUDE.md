@@ -1410,6 +1410,22 @@
 > reliability. The wire/dispatch/mechanism/topology/draw-method are ALL solved+verified; the visible bar is gated
 > on the winmgr OEM-softkey-area-window creation + skmgr's composite landing while it's viewable.
 > Knob: WMFLOAT_PER (run_3proc, default 200) for the float period.
+> ★★★ DEFINITIVE ROOT (decompile-proven): `WmRootWindow::AddScreen@0x5a450` creates the strip windows
+> (XCreateSimpleWindow x3 + XCreateWindow), but **`WmRootWindow::AddDesktop@0x53200` creates NO X windows**
+> (`return xwm_get_desktop_window` = just an EWMH virtual-desktop ref). The OEM is `AddDesktop` -> so it has NO
+> softkey-area window; skmgr's RENDER target 0x600006 is therefore a child of a real SCREEN strip (NC/EDIT), and
+> the hwv bar can only show when that screen's strip is mapped (screen foreground) at composite time. ★ THE
+> BINDING CONSTRAINT IS NOW 1a: across runs winmgr's screen windows (0x400001) are IsViewable in only ~half the
+> runs and IsUnMapped in the rest (the documented render-thread flakiness) -- so even the screen-activate (1b)
+> can't be reliably tested: in an unmapped-screen run there is no viewable strip to map 0x600006 into. ⇒ the
+> visible bar requires, IN ORDER: (1a) make winmgr's render thread reliably run WmModule::Initialize ->
+> create+MAP its screen strips EVERY run (the faithful /dev/events render-tick bridge for winmgr's render thread,
+> the AppStartMP-logo fix bf0b579 applied to winmgr -- NOT blind autofire), THEN (1b) activate the screen whose
+> strip holds 0x600006 (SelectForeground -> the now-working WM wire) so it maps before/at skmgr's composite. The
+> WM wire + dispatch + screen-keys + EWMH-desktop + RENDER draw-method + window topology + the AddScreen/AddDesktop
+> root are ALL solved+verified this session; the two remaining layers are 1a (render-thread reliability, the
+> prerequisite) and 1b (screen-activate timing). NEXT SESSION: fix 1a first (winmgr render-tick /dev/events
+> bridge) -- without a reliably-mapped screen strip, 1b cannot land pixels.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
