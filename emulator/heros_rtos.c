@@ -1665,6 +1665,10 @@ static void inject_wmgr_activate(uint32_t qid){
      * (wm_select.bin, header 0x03B801C0). Without this OnActivate's Activate is a no-op (no current screen). */
     const char* wsel=getenv("HEROSCALL_WMACT_SELECT");
     if(wsel&&wsel[0]=='1'){
+        /* Post the ALT-screen select FIRST (switch away), then the target -- forces WmScreen::Map(target) to
+         * re-run (SelectForeground no-ops if the target is already the current foreground; the strip windows
+         * are created AFTER the initial Map, so a switch-away-then-back re-Maps them now that they exist). */
+        snprintf(p,sizeof p,"%s/wm_select2.bin",dir); post_wm_wire_file(qid,p);
         snprintf(p,sizeof p,"%s/wm_select.bin",dir);
         if(!post_wm_wire_file(qid,p)) fprintf(stderr,"[wmact] %s missing (run gen_wm_wires.sh)\n",p);
     }

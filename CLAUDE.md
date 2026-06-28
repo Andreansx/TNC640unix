@@ -1435,6 +1435,21 @@
 > so no external map/backing-store can reveal content that was never drawn. ⇒ the FAITHFUL softkey-show (winmgr
 > maps the strip on the screen/softkey activate -> skmgr composites -> visible) is MANDATORY; it is gated on 1a
 > (winmgr render-thread reliably mapping its strip) + the show signal. External forcing is a confirmed dead end.
+> ★★ THE 1b SHOW MECHANISM — fully RE'd + IMPLEMENTED (ready for when 1a is fixed): `WindowManager::SelectForeground
+> @0x15070` calls **`WmScreen::Map@0x2e590`** for the target screen, which sets the screen's mapped-flag (this+108=1)
+> + iterates the screen's window-desc Rb-tree calling **`WmWindowDesc::Resync`** (the actual XMapWindow of the strip
+> windows). So the now-working SelectForeground wire DOES drive the strip-map -- EXCEPT SelectForeground no-ops if
+> the target is already the current foreground (the strip windows are created AFTER the initial Map, so the first
+> Map Resyncs an empty set). FIX implemented: the inject posts an ALT-screen select (WM_SCR2, default 2=OEM) THEN
+> the target (WM_SCR, e.g. 0=NC) each round -> forces `WmScreen::Map(target)` to RE-RUN with the strip windows now
+> existing (gen_wm_wires.sh emits wm_select2.bin; inject_wmgr_activate posts select2->select->activate; knobs
+> WMSCR/WMSCR2). ★★★ BUT verification is BLOCKED by 1a: in the current VM state winmgr CONSISTENTLY does NOT
+> create/map its screen windows (0x400001=IsUnMapped across many consecutive runs; it WAS IsViewable in an earlier
+> warm run) -- so WmScreen::Map(target) Resyncs an empty window set and there is no strip to show. ⇒ 1a (winmgr
+> render-thread / t_create reliably creating+mapping its screen windows EVERY run) is the hard prerequisite; the
+> 1b show mechanism is solved + coded + waiting. The full chain (wire/dispatch/screen-key/SelectForeground->
+> WmScreen::Map->Resync->XMapWindow strip / RENDER composite / topology / AddScreen-vs-AddDesktop root) is RE'd
+> and implemented; ONLY 1a (winmgr screen-create reliability) stands between this and visible pixels.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
