@@ -102,7 +102,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_EV_TRACE_BIT="${EV_TRACE_BIT:-0}" HEROSCALL_EV_TRACE_TASK="${EV_TRACE_TASK:-0}" HEROSCALL_EV_TRACE_BUDGET="${EV_TRACE_BUDGET:-24}" HEROSCALL_EV_TRACE_EXACT="${EV_TRACE_EXACT:-0}" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" NO_NCK_WINMGR="${NO_NCK_WINMGR:-}" WMFORCE="${WMFORCE:-}" SKFORCE="${SKFORCE:-}" \
   HWVIEWER_SK_USAGE="${HWVIEWER_SK_USAGE:-}" HWVIEWER_GEOMETRY="${HWVIEWER_GEOMETRY:-}" WINMGR="${WINMGR:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" SYSFIRE="${SYSFIRE:-0}" SYSFIRE_MASK="${SYSFIRE_MASK:-00ff0000}" WM_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" WM_FIRE_YIELD="${WM_FIRE_YIELD:-0}" \
-  GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" GUPPY_DISPLAY="${GUPPY_DISPLAY:-}" HWV_FORCE_FS="${HWV_FORCE_FS:-}" SHOT_AT="${SHOT_AT:-150}" WININSPECT="${WININSPECT:-0}" MAPFORCE="${MAPFORCE:-}" WMPOKE="${WMPOKE:-}" WMSHOW="${WMSHOW:-}" WMFLOAT="${WMFLOAT:-}" LANG=C LC_ALL=C \
+  GUPPY_BIN="$GUPPY_BIN" GUPPY_ARGS="$GUPPY_ARGS" GUPPY_C="$GUPPY_C" SK_ARGS="$SK_ARGS" GUPPY_DISPLAY="${GUPPY_DISPLAY:-}" HWV_FORCE_FS="${HWV_FORCE_FS:-}" SHOT_AT="${SHOT_AT:-150}" WININSPECT="${WININSPECT:-0}" MAPFORCE="${MAPFORCE:-}" WMPOKE="${WMPOKE:-}" WMSHOW="${WMSHOW:-}" WMFLOAT="${WMFLOAT:-}" BARCOPY="${BARCOPY:-}" BARCOPY_PER="${BARCOPY_PER:-150}" LANG=C LC_ALL=C \
   unshare -m bash -c '
     set -u; ulimit -c 0
     mount --make-rprivate /; mount --bind "$R/etc" /etc
@@ -160,6 +160,10 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     if [ -n "${WMFLOAT:-}" ] && [ -x /tmp/wmfloat ]; then
       echo "### wmfloat (bg, reparent skmgr softkey strip to root@0,936 + map subtree, continuously) ###"
       ( DISPLAY=$DISP /tmp/wmfloat "${MMI_TIMEOUT:-200}" "${WMFLOAT_PER:-200}" > /tmp/wmfloat.log 2>&1 ) &
+    fi
+    if [ -n "${BARCOPY:-}" ] && [ -x /tmp/barcopy ]; then
+      echo "### barcopy (bg, copy skmgr BAR PIXMAP to visible override-redirect window at 0,936) ###"
+      ( DISPLAY=$DISP /tmp/barcopy "${MMI_TIMEOUT:-200}" "${BARCOPY_PER:-150}" > /tmp/barcopy.log 2>&1 ) &
     fi
 
     for p in pystdout pystderr ncstdout ncstderr; do

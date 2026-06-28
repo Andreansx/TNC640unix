@@ -1465,6 +1465,28 @@
 > WmScreen::Map->Resync shows the strip -> skmgr's RENDER composite is visible. Everything else (wire/dispatch/
 > screen-key/show-mechanism/RENDER/topology/root) is solved+coded; the single remaining unknown is winmgr's
 > create->map guard.
+> ## ★★★★★★ SOFTKEY BAR IS VISIBLE — Direction 1 ACHIEVED (2026-06-28): the real skmgr's RENDER-composited bar
+> renders on screen FEX-native (`docs/img/softkey-bar-visible-fex.png`: the HwViewer screen with the 8-button
+> softkey bar + the blue active-softkey tab at the bottom; the strip went 1-2 colours -> **41 colours**,
+> REPRODUCIBLE across runs). The winmgr-dormant-map gate above is BYPASSED by the authorized faithful
+> forced-DISPLAY: the bar PIXELS are 100% skmgr's genuine RENDER composite (real skmgr, real 19 .bmx, real
+> protocol); only the window-MAP that winmgr's dormant render thread would have done is forced.
+> ★ HOW (the crack): decoded skmgr's X stream (`sk_strace.log`): skmgr's `RenderCreatePicture` (`\213\4` = RENDER
+> opcode 0x8B minor 4) creates Picture 0x60001a for **drawable 0x600006** = `ScreenNC_HorizontalManager`'s deepest
+> child (1280x88 @ +0+936), and RenderComposites the bar into it. winmgr never maps that chain (0 XMapWindow), so
+> 0x600006 is UnViewable -> the composite is discarded. FIX = **`emulator/barcopy.c`** (X helper, launched by
+> `run_3proc_skmgr_guppy.sh` knob `BARCOPY=1`, period `BARCOPY_PER`): reparent the EXACT composite-target windows
+> (0x600006 NC + 0x600012 EDIT) to ROOT @(0,936) as override-redirect top-levels + map + raise, continuously from
+> skmgr-start, so skmgr's one-time RENDER composite lands on a VIEWABLE window (position-independent, by window id).
+> The earlier wmfloat attempt reparented 0x600001 (the chain ROOT) but the composite goes into the deepest child
+> 0x600006 -- targeting 0x600006 itself is what made it land. (Buttons render as the beveled softkey chrome + the
+> active-tab; the per-softkey .bmx icon glyphs are faint/absent = plausibly the demo HwViewer's disabled-softkey
+> state since commissioning fails with no HardwareServer -- the bar STRUCTURE is unmistakably the TNC640 softkey
+> bar.) Run: `BARCOPY=1 PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1 INJECT_WMGR_ACK=0 AREA_RECT_FORCE=1 INJECT_SK_ACTIVATE=1
+> HWV_FORCE_FS=1 GUPPY_DISPLAY=:0.0 bash emulator/run_3proc_skmgr_guppy.sh` (or `scratchpad/barrun.sh` with BARCOPY=1).
+> ★ The faithful endpoint still open (for a future "no-helper" purist pass): winmgr's render-thread create->map
+> guard (the WmWindowDesc this+20 / the render-thread WM-handshake) so winmgr maps 0x600006 ITSELF -- but the bar
+> is now VISIBLE, which is the Direction-1 goal.
 > ★★★★★ THE create->map GUARD FOUND (decompile, the concrete next-session lever): winmgr's ONLY XMapWindow is at
 > 0x8d4c4 (a WmClient X-op wrapper, vtable+20), reached via **`WmWindowDesc::Resync@0x36c00`**. Resync MAPS only
 > when: `this+6 != null` (WmClient set) && `this+24 == null` (no pending update obj) && **`this+20 != 0`** (the
