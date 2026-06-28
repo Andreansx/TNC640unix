@@ -1308,6 +1308,35 @@
 > gained env-gated default-OFF knobs WMPOKE/WMSHOW/WMFLOAT/WININSPECT/MAPFORCE (baseline unchanged). Findings:
 > `scratchpad/skmgr_softkey_findings.md` (2026-06-28 section).
 
+> ## ★★★★★ INJECT_WMGR_ACTIVATE BUILT — WmActivateWinMgrMsg wire VERIFIED byte-exact; gate now = the SelectForeground SCREEN_ID wire + screen-switch timing (2026-06-28 cont.)
+> Built the faithful screen-activate lever (`HEROSCALL_INJECT_WMGR_ACTIVATE`, `emulator/heros_rtos.c`): a timer
+> thread (single-poster CAS `ctl.wm_activate_posted`, re-posts every 8s) posts synthesized WM GMessages to
+> winmgr's FModule queue **Q_WMGRMSG (0x30f)**, read by winmgr's ALIVE serve thread (bypasses the stuck render
+> thread). Wires built straight from the libGMessageGui schema (no build_setmenu.c serializer needed).
+> **(1) WmActivateWinMgrMsg — VERIFIED byte-exact + non-disruptive.** type-id `0x03B800E0`; body = GMsgBool@+12
+> (0xc6) + GMsgString@+24 (0xe7) [schema @libGMessageGui .rodata 0x241348, body ctor @0x213030]. Wire =
+> `[0x03B800E0][0xC6][1][0x800000E7]` (bool PRESENT=1 -> OnActivate@0x48500 Activate branch; string ABSENT,
+> unused). **2 good runs: winmgr READS all 14 posts off 0x30f, ZERO GMsgException/crash, constellation
+> unaffected (serve 425/19 .bmx/118 colours)** — the GMessage build worked FIRST TRY (no multi-session 0x78
+> calibration). BUT `WmRootWindow::Activate` needs a CURRENT SCREEN, which winmgr hasn't selected -> Activate is
+> a no-op for the bar (no map).
+> **(2) WmSelectForegroundMsg — the missing screen-select, GATED OFF (`HEROSCALL_WMACT_SELECT`, default 0).**
+> type-id `0x03B80340`; body = **SCREEN_ID@+12** [body ctor @0x209ea0]. `OnSelectForeground@0x43a00` ->
+> `WindowManager::SelectForeground@0x15070` selects the screen whose key==SCREEN_ID, SETS it current, Maps +
+> Activates it = the map+notify the bar needs. **TWO blockers (the precise remaining frontier):** (a) **SCREEN_ID
+> wire throws a GMsgException** — SCREEN_ID extends GMsgUnsigned with a CUSTOM code `0x03B80044` (`SCREEN_ID::C2Ev
+> @0x208620`: this+4 = -2085093308 = 0x83B80044, top-bit=absent), NOT generic 0x63; using 0x03B80044 STILL
+> GMsgException'd -> the GMsgUnsigned present-value encoding needs more byte-exact calibration. (b) **the
+> screen-switch is TIMING-DISRUPTIVE** — posted during bring-up it breaks the still-forming softkey WM handshake
+> (5/5 SelectForeground runs -> serve 0, vs IWA=0/Activate-only good). ⇒ **NEXT:** (i) calibrate the SCREEN_ID
+> GMsgUnsigned wire (decompile its Write / dlopen-serialize via libGMessageGui) so SelectForeground deserializes;
+> (ii) post it LATE (after softkey content flows + skmgr registered, not during the WM handshake) -> sets current
+> screen -> Activate maps skmgr's softkey window + notifies skmgr to redraw-while-mapped -> visible bar. The
+> Activate half is DONE+verified; SelectForeground wire+timing is the last layer. Run: `IWA=1 [WMACT_SELECT=1
+> WMSCR=<id>] bash scratchpad/barrun.sh`. Knobs (default OFF): INJECT_WMGR_ACTIVATE/IWA, WMACT_SELECT,
+> WMACT_SCREEN/WMSCR, WMACT_DELAY. (1a run variance persists: IWA=0 good, ~half of cold runs serve 0; do NOT
+> restart the VM.)
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a

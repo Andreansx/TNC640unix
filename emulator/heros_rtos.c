@@ -1653,9 +1653,18 @@ static void inject_wmgr_activate(uint32_t qid){
      * HEROSCALL_WMACT_SCREEN (default 1 = SCREEN_MACHINING, where skmgr draws the hwv bar). */
     int scr=1; const char*se=getenv("HEROSCALL_WMACT_SCREEN");
     if(se){ scr=0; int neg=0; const char*p=se; if(*p=='-'){neg=1;p++;} for(;*p>='0'&&*p<='9';p++) scr=scr*10+(*p-'0'); if(neg) scr=-scr; }
-    { unsigned char s[12]; int o=0;
+    /* WmSelectForegroundMsg gated OFF by default (HEROSCALL_WMACT_SELECT=1 to enable): it switches winmgr's
+     * foreground screen, which (posted during bring-up) DISRUPTS the still-forming softkey WM handshake
+     * (skmgr/Guppy never complete -> serve 0), AND its SCREEN_ID wire still needs byte-exact calibration
+     * (a GMsgException persists despite the corrected 0x03B80044 code). The Activate-only path below is
+     * verified non-disruptive (winmgr reads it cleanly). See CLAUDE.md 2026-06-28 for the remaining work. */
+    const char*wsel=getenv("HEROSCALL_WMACT_SELECT");
+    if(wsel&&wsel[0]=='1'){ unsigned char s[12]; int o=0;
       put32(s+o,0x03B80340u);o+=4;                       /* WmSelectForegroundMsg type-id */
-      put32(s+o,0x00000063u);o+=4; put32(s+o,(uint32_t)scr);o+=4;  /* SCREEN_ID (GMsgInt 0x63) PRESENT = scr */
+      /* SCREEN_ID extends GMsgUnsigned with a CUSTOM code 0x03B80044 (from SCREEN_ID::C2Ev @libGMessageGui
+       * 0x208620: this+4 = -2085093308 = 0x83B80044, top-bit cleared for PRESENT). NOT the generic 0x63 -
+       * that mismatch threw a GMsgException in winmgr and disrupted its serve. */
+      put32(s+o,0x03B80044u);o+=4; put32(s+o,(uint32_t)scr);o+=4;  /* SCREEN_ID (GMsgUnsigned 0x03B80044) PRESENT = scr */
       fprintf(stderr,"[wmact] post WmSelectForegroundMsg screen=%d %d bytes -> Q_WMGRMSG 0x%x\n",scr,o,qid);
       q_send(qid,s,(uint32_t)o,0);
     }
