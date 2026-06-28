@@ -1366,6 +1366,19 @@
 > NEXT: (a) make winmgr's screen-map deterministic (the 1a render-tick bridge), then (b) RE the XEmbed step
 > (OnEmbedWindow@0x3B80700) -- whether skmgr sends the embed and what maps the strip on activate -- or force the
 > embed/map of the foreground screen's softkey-area window so skmgr's 7 blits become visible.
+> ★ MAP MECHANISM RE'd (the crisp next-session path): `WmRootWindow::Activate@0x544e0` (WM-present branch) reads
+> the foreground screen `GetInstance()+44` (set by SelectForeground), compares its desktop index `*(v18+1)` to
+> `xwm_get_current_desktop_index()`, and switches the openbox EWMH **_NET_CURRENT_DESKTOP** to it -- winmgr puts
+> each screen on an openbox virtual desktop and the activate switches desktops. `AddDesktop(2,"OEM")@0x15ff0`
+> inserts key 2 into the SAME Rb-tree `SelectForeground@0x15070` searches, so **OEM IS selectable via
+> WmSelectForegroundMsg(screen=2)**. ⇒ SelectForeground(2)+Activate sets foreground=OEM + switches to OEM's
+> desktop -- it STILL showed blank only because skmgr's strip 0x600001 is IsUnMapped (a desktop switch can't show
+> an unmapped window). skmgr draws the bar into PIXMAPS (the 7 writevs); the MAP of its registered softkey window
+> is **winmgr's job via XEmbed** (reparent skmgr's window into the screen's softkey-area window + map; then skmgr
+> CopyAreas the pixmap) and that embed/reparent-map is NOT completing. So the LAST layer = the XEmbed reparent-map
+> of skmgr's strip (does skmgr send WmEmbedWindow 0x3B80700 after RegisterWindowEx 0x3004; what winmgr's
+> OnEmbedWindow does) + 1a screen-map reliability. The WM wire/dispatch/screen-key/desktop-switch mechanism is
+> ALL solved+verified; only the XEmbed map + 1a remain.
 
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
