@@ -1576,6 +1576,53 @@
 > Findings: `scratchpad/fred_findings.md`. Run: `bash emulator/run_fred.sh` (standalone scout);
 > `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=1 SKMGR=1 bash emulator/run_fred.sh` (simulo).
 
+> ## ★★★★★ OPERATOR-MMI SCOUT (2026-06-28, cont.) — simulo render = THREE gates, all RE'd; NEW second gate = the SIM graphics-renderer peer (grfOpenConnection → FControl CREATED)
+> Pushed the **simulo** (Test/Sim) path far past the prior "blocks at the WM handshake" framing. The operator-MMI
+> first window is gated on THREE end-to-end-RE'd frontiers (NO FEX-native operator window rendered — the gates are
+> the documented multi-process/winmgr frontiers, now characterized completely). Findings: `scratchpad/fred_findings.md`.
+> **(1) simulo's exact WM handshake (DUMPQ):** task 0x109 creates WMQ00109(0x31b)/QMmiGeneral(0x31c)/QSimuloServer
+> (0x31d)/QBlockDisplay(0x31e); to **Q_WMGR (0x30e)** it sends 28B connect→3×208B GetScreens(0x31b), 32B StartTimer
+> →16B, then a **156B request that gets NO reply** (winmgr dormant) → P_name(-1)/T_name(-1) + Tm_wkafter 0x2710 (10s)
+> retry. (Decode the 156B next — it needs winmgr's screen windows to exist to answer with a valid window id.)
+> **(2) ★ NEW SECOND GATE — simulo's FControl never reaches CREATED because `grfOpenConnection` FAILS.** After the
+> 156B send simulo tries its SIMULATION-GRAPHICS connection and posts a 467B EvtSendEvent to QEvtServer: *"grfOpen
+> Connection failed! (GRFErrSevere) … 'necessary State CREATED not reached' … fcontrol.cpp:2046 … idclient:=Simulo.
+> Simulo"*. RE (idalib): `grfOpenConnection@simulo 0x6b7c0` (GRFProcessEnum PAR/SIM/NOM; simulo uses **SIM**) builds
+> the graphics-process name `"<procNameCurrent>/graphics<SIM>"` (cf. strings `Sim/graphicsSIM.VIEW/.MODEL`) + idents
+> a `GRFQ_%08lX` queue, and FAILS with **"no process"** (the SIM graphics renderer peer is ABSENT). ⇒ simulo's PLib
+> FControl gates the **CREATED state (→ the WndFullScreen window)** on the **simulation-graphics PEER** (the
+> "graphicsSIM"/ContourGraphics-cgp family) — a PEER-process gate (INJECT_PEER_ACK / bring-up class), DISTINCT from
+> the winmgr gate. simulo needs BOTH the winmgr screen AND the graphics peer to render, not winmgr alone.
+> **(3) PLib operator screens REQUIRE an EWMH WM (confirmed):** NO_OPENBOX → simulo `"PLIB++ application waiting for
+> X-WindowManager… 5,4,3,2,1"` → terminate(PException) → **sig6**. So openbox is MANDATORY (the EWMH WM PLib polls
+> for); winmgr — stuck before Initialize — never becomes an EWMH WM, so openbox is NOT a substitute (openbox satisfies
+> the PLib WM-check; winmgr provides the screen-layout windows + WM protocol).
+> **(4) THE winmgr gate re-pinned with the FULL window-creation path decompiled** (the shared frontier): winmgr
+> NEVER runs **`WmModule::Initialize@0x480f0`** → 0 XCreateWindow (window tree = only Openbox helpers, in BOTH the
+> integrated run AND the winmgr-only diag). The create path is SOLVED: `CreateMainWindow@0x114f0` → `WmRootWindow::
+> Create@0x58ba0` **does** XCreateWindow whenever reached (the `xwm_is_windowmanager_present` WM-present check only
+> SHRINKS the window 1px — NOT a blocker; the only return-0 is OpenDisplay failure, and the display opens fine). ⇒
+> the gate is purely that **the FModule chain never DISPATCHES the WmModule Initialize transition.** winmgr's startup
+> (HSTRACE): main **t110 ↔ WmProcess render thread t111** do the 0x1000 FModule GUI-sync ping-pong (t111 waits bit
+> 0x04 + sends 0x1000), then t110 blocks at **`Sm_request(sem 0x204, timeout 100s)`** and t111 at Ev_receive(0x1000,
+> 100s) — the 90s diag was killed before the 100s timeout. In the INTEGRATED run winmgr's main DOES reach its Q_WMGR
+> serve loop (clients wake it) but STILL 0 XCreateWindow → Initialize is an FModule chain message that never arrives.
+> **SYSFIRE is INERT for winmgr** (its waits use timeout=0; HEROSCALL_SYSEVENT_AUTOFIRE only fires on timeout=
+> 0xffffffff → autofire=0). **COLD-VM determinism:** the good-variance/warm state that produced the visible softkey
+> bar earlier today is gone; winmgr creates 0 windows even alone (VM healthy: 5.3GB free, load 0.03 — NOT resource
+> pressure; do NOT restart — that destroys warm state).
+> **★ NEXT LEVERS (for pixels):** (a) **winmgr-window STAND-IN** (most direct, forced, sanctioned): a helper that
+> creates the screen-layout X windows per tnc640layout1280.xml + serves simulo's WM protocol with VALID window ids
+> (decode the 156B; reuse INJECT_WMGR_ACK+WMGR_SCREEN+AREA_RECT_FORCE/INJECT_AREA_ACK) → simulo registers + its PLib
+> composites into the ClientArea → visible (openbox maps) / BARCOPY-surfaceable. (b) **graphics peer**: bring up the
+> "graphicsSIM" renderer (ContourGraphics family) OR INJECT a synthetic grfOpenConnection success (the GRFQ_ queue +
+> a "process exists" P_ident) so FControl reaches CREATED. (c) **faithful winmgr fix**: RE the FModule chain
+> transition that fires WmModule::Initialize (the t110↔t111 0x1000 handshake exit + the Sm_request 0x204 signaler)
+> in libbackend. winmgr addrs: Initialize 0x480f0, CreateMainWindow 0x114f0, WmRootWindow::Create 0x58ba0,
+> WmProcess::MainContext 0x4b300, WmWindowDesc::Resync 0x36c00; simulo grfOpenConnection 0x6b7c0. `run_fred.sh` now
+> wires WM_FIRE_LIMIT/WM_FIRE_MASK/WMGR_SCREEN. Run: `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=1
+> SKMGR=1 AREA_RECT_FORCE=1 DUMPQ=1 bash emulator/run_fred.sh`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
