@@ -20,11 +20,19 @@ FRED_SHORT="${FRED_SHORT:-mmi}"
 FRED_ARGS="${FRED_ARGS:--i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60}"
 
 echo "=== build preloads ==="
-$CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $REPO/emulator/cfgfix.c -ldl || exit 1
-$CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/arena.map -o $R/lib/arena_stub.so $REPO/emulator/arena_stub.c || exit 1
-$CC -shared -fPIC -O2 -Wl,--version-script=$REPO/emulator/nolimit.map -o $R/lib/nolimit.so $REPO/emulator/nolimit.c || exit 1
+# The Mac mount is virtiofs and intermittently throws I/O errors reading source files
+# ("Input/output error" / ld "read in flex scanner failed"). Stage sources to VM-local
+# disk first (retrying the copy), then compile from there.
+EMSRC=/var/tmp/emsrc; mkdir -p $EMSRC
+# Best-effort refresh from the (flaky) virtiofs mount; if it fails, use whatever was
+# pre-staged into /var/tmp/emsrc via SSH (limactl copy of a tarball). Do NOT gate on it.
+cp -f $REPO/emulator/*.c $REPO/emulator/*.map $EMSRC/ 2>/dev/null || echo "  (virtiofs copy failed; using pre-staged /var/tmp/emsrc)"
+ccr(){ local i; for i in 1 2 3 4 5; do "$@" 2>/tmp/ccr.err && return 0; sleep 1; done; cat /tmp/ccr.err >&2; return 1; }
+ccr $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $EMSRC/cfgfix.c -ldl || exit 1
+ccr $CC -shared -fPIC -O2 -Wl,--version-script=$EMSRC/arena.map -o $R/lib/arena_stub.so $EMSRC/arena_stub.c || exit 1
+ccr $CC -shared -fPIC -O2 -Wl,--version-script=$EMSRC/nolimit.map -o $R/lib/nolimit.so $EMSRC/nolimit.c || exit 1
 for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree skspy skforce wmstub; do
-  [ -f $REPO/emulator/$s.c ] && { $CC -shared -fPIC -O2 -o $R/lib/$s.so $REPO/emulator/$s.c -ldl || exit 1; }
+  [ -f $EMSRC/$s.c ] && { ccr $CC -shared -fPIC -O2 -o $R/lib/$s.so $EMSRC/$s.c -ldl || exit 1; }
 done
 
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW"

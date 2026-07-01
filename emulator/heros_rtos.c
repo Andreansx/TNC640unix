@@ -2484,7 +2484,17 @@ static uint32_t reg_ident(const char*name){
     uint32_t id=C->regs[s].id; unlock();
     LOG("M_ident \"%s\" -> 0x%x (new)\n",name,id); return id;
 }
+/* Per-process cache of attached region mappings. Real HeROS M_attach of a named
+ * region returns a stable view of the SAME physical memory; a program that attaches
+ * the same region repeatedly (e.g. simulo polls TR_en / IPO_SHARED_MEMORY hundreds of
+ * times) must NOT leak a fresh 64 MB mmap each call. Without this the i386 process's
+ * 32-bit address space exhausts after ~48 attaches -> mmap returns MAP_FAILED ->
+ * M_attach returns 0 -> the guest's IpoSharedMemory/PciHardware code throws
+ * PciHardware::Exception and aborts. Cache is a plain static -> per-process (private),
+ * while the /dev/shm file keeps the physical memory shared across processes. */
+static struct { uint32_t id; void* ptr; } attach_cache[MAXREG];
 static void* reg_attach(uint32_t id){
+    for(int i=0;i<MAXREG;i++) if(attach_cache[i].ptr&&attach_cache[i].id==id) return attach_cache[i].ptr;
     int s=-1; for(int i=0;i<MAXREG;i++) if(C->regs[i].used&&C->regs[i].id==id){ s=i; break; }
     if(s<0){ LOG("M_attach 0x%x UNKNOWN\n",id); return 0; }
     char path[64]; /* shared file so all procs map the SAME physical region */
@@ -2495,7 +2505,8 @@ static void* reg_attach(uint32_t id){
     raw5(SYS_ftruncate,fd,C->regs[s].size,0,0,0);
     void*m=mmap(0,C->regs[s].size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     raw5(SYS_close,fd,0,0,0,0);
-    if(m==MAP_FAILED) return 0;
+    if(m==MAP_FAILED){ LOG("M_attach \"%s\" 0x%x -> MAP_FAILED\n",C->regs[s].name,id); return 0; }
+    for(int i=0;i<MAXREG;i++) if(!attach_cache[i].ptr){ attach_cache[i].id=id; attach_cache[i].ptr=m; break; }
     LOG("M_attach \"%s\" 0x%x -> %p\n",C->regs[s].name,id,m);
     return m;
 }
