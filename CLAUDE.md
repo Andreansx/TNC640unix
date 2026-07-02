@@ -1693,6 +1693,42 @@
 > Run: `FRED_BIN=simulo.elf FRED_ARGS="-k=SIM -o=Ed -f=25" WINMGR=0 GRF_STUB=1 INJECT_WMGR_ACK=1 AREA_RECT_FORCE=1
 > INJECT_AREA_ACK=1 BAR_RECT="0,0,1280,936" MMI_SEM_FORCE_OK=3000 bash emulator/run_fred.sh`.
 
+> ## ★★★★ OPERATOR-MMI (2026-07-02) — a REAL EMULATOR BUG FIXED (reg_attach address-space LEAK, crash 1→0); simulo's gate re-pinned to the graphicsSIM RENDERER peer (GRF_STUB is COUNTERPRODUCTIVE — it skips the real grafik launch)
+> Picked up the simulo (Test/Sim) frontier. In the current WARMED VM the simulo run is DETERMINISTIC (~2129
+> lines), and it turned out the prior "cont.3b loops on WMQ, no crash" state was MASKING a deterministic crash
+> that only surfaces once the VM is warm enough for simulo to reach the graphics/IPO layer.
+> **★ ROOT-CAUSE + FIX (verified crash 1→0, committed 94d1794): `reg_attach` leaked address space.** The warm
+> simulo run CRASHED — `terminate ... PciHardware::Exception` → SIGABRT on the MAIN thread (0x106), right after
+> `M_attach IPO_SHARED_MEMORY`. RE'd end-to-end: the throw is libhwaccess `IpoSharedMemory::GetMemoryPointer@0x4a70`
+> / `GetVirtPciBaseSingle@0x4e10` when their `m_attach` returns NULL. The emulator's `reg_attach` (heros_rtos.c)
+> **mmap'd a FRESH 64 MB region on EVERY M_attach** (no per-process cache); simulo attaches **TR_en (0x4001) 322×**
+> + IPO_SHARED_MEMORY repeatedly, so the returned addresses climb +64 MB each (0x8ead5000→0xd330d000) = an
+> address-space LEAK that exhausts the i386 32-bit space after ~48 attaches → mmap MAP_FAILED → M_attach 0 →
+> PciHardware::Exception → abort. FIX = a per-process `attach_cache[MAXREG]` keyed by region id (re-attach returns
+> the SAME view; the /dev/shm file keeps the physical memory shared cross-process — correct HeROS semantics).
+> **VERIFIED: simulo crash 1→0** (2129 lines); **REGRESSION-CLEAN** — ConfigServer crash=0 (1670 lines) same run,
+> and a winmgr-only diag with the fix = crash=0, M_attach IPO_SHARED_MEMORY returns a valid pointer (no
+> exhaustion), winmgr unchanged at its documented render-thread/PKc frontier (so the fix is orthogonal to — and
+> does not regress — the winmgr gate). This is a GENERAL emulator fix (helps ANY proc that re-attaches a region).
+> **★ GATE RE-PINNED (precise) = the graphicsSIM RENDERER peer.** With the crash gone, simulo's MAIN thread reaches
+> its graphics-command loop: grfOpenConnection (GRF_STUB) makes the queues `graphics`(0x316)/`GRFEvt`(0x317)/
+> `<proc>/graphicsSIM`(0x318 send)/**`GRFQ_00000106`(0x31a = the graphics REPLY queue)**/`QStatusDisplay`(0x31b); it
+> sends a 12B GrfCmd → graphicsSIM (0x318) and then **DEAD-BLOCKS on `Q_read(GRFQ_00000106 0x31a)`** (0 successful
+> reads) waiting for the peer's 68B reply that never comes. **★ GRF_STUB is COUNTERPRODUCTIVE** (RE of
+> grfOpenConnection@0x6b7c0 tail): when `p_ident("<proc>/graphicsSIM")` returns -1 it would **LAUNCH the real
+> renderer** — `RunProcess("SYS:/bin/grafik", <proc>, "VIEW", <SIM>, ...)` → `ev_receive(0x80000)` for it to come up.
+> GRF_STUB fakes the p_ident → the launch branch is SKIPPED → simulo talks to a peer that doesn't exist → blocks.
+> The renderer binary = **`graphics.elf`** (461KB) / `ContourGraphics.elf` (+ libContourMessageHandling/libgeo*
+> closure). `FControl::DynamicCreate` also posts "CREATED not reached" (fcontrol.cpp:2046) once (no activation yet).
+> ⇒ FAITHFUL NEXT LEVERS (in order): (1) DROP GRF_STUB + make `RunProcess("SYS:/bin/grafik")` spawn `graphics.elf`
+> under FEX (the HEROS_PCREATE_FEX class, as AppStartMP's constellation spawn did) so it registers `graphicsSIM`
+> and the real GrfCmd protocol runs; (2) bring up `graphics.elf` as a standalone harness peer; (3) synthesize the
+> graphicsSIM GrfCmd/GrfValue replies (deep multi-message RE). simulo IS the graphics view, so the renderer peer is
+> fundamental, not optional — the crash fix removed the deterministic PciHardware abort ABOVE this gate. Harness:
+> the Mac virtiofs mount intermittently throws I/O errors reading emulator sources under load → stage sources to
+> VM-local disk via SSH (tarball + `limactl copy`; Mac wrapper `/tmp/simstage_run.sh` → `/var/tmp/emsrc`);
+> run_fred.sh build is now best-effort with a pre-staged fallback. Findings: `scratchpad/fred_findings.md`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
