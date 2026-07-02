@@ -87,6 +87,8 @@ static const char* msascii(const void*p,uint32_t n){
 #define NAMELEN 32
 
 struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
+              char pname[NAMELEN];                   /* process (-p=) name, set on the MAIN task (tid==tgid);
+                                                        P_ident(name)/P_name resolve it (HEROSCALL_PNAME). */
               volatile uint32_t events;              /* futex word (events) */
               volatile uint32_t started;             /* futex word (t_create<->t_start rendezvous) */
               uint32_t ctx_dst, arg_dst, msgsize;    /* delivery slots (process-local ptrs) */
@@ -173,6 +175,10 @@ static int task_slot(uint32_t id){ for(int i=0;i<MAXTASK;i++) if(C->tasks[i].use
 
 /* process-local (not shared) tid->id cache; benign races only (a miss just rescans) */
 static struct { int32_t tid; uint32_t id; } tcache[128];
+/* this process's own -p= name (captured from /proc/self/cmdline at init), registered
+ * on its MAIN task's pname so peers' P_ident(name) can resolve it. HEROSCALL_PNAME. */
+static char self_pname[NAMELEN]={0};
+static int  pname_reg=0;
 static uint32_t task_self(void){
     int32_t tid =(int32_t)raw5(SYS_gettid,0,0,0,0,0);
     unsigned h=((unsigned)tid)&127;
@@ -184,8 +190,11 @@ static uint32_t task_self(void){
     int s=-1; for(int i=0;i<MAXTASK;i++) if(!C->tasks[i].used){ s=i; break; }
     if(s<0){ unlock(); return 0x101; }
     C->tasks[s].used=1; C->tasks[s].id=C->next_task++; C->tasks[s].tgid=tgid; C->tasks[s].tid=tid;
-    C->tasks[s].events=0; C->tasks[s].name[0]=0;
+    C->tasks[s].events=0; C->tasks[s].name[0]=0; C->tasks[s].pname[0]=0;
     C->tasks[s].as_pending=0; C->tasks[s].as_mask=0;
+    /* the process's MAIN thread (tid==tgid) carries the -p= process name so P_ident(name)
+     * from a peer resolves to this task id (= the HeROS process id). */
+    if(pname_reg && tid==tgid && self_pname[0]){ strncpy(C->tasks[s].pname,self_pname,NAMELEN-1); C->tasks[s].pname[NAMELEN-1]=0; }
     uint32_t id=C->tasks[s].id; unlock();
     tcache[h].tid=tid; tcache[h].id=id;
     LOG("task_self -> new id 0x%x (tgid %d tid %d)\n",id,tgid,tid);
@@ -196,6 +205,29 @@ static uint32_t task_by_name(const char*nm){
     for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&!strncmp(C->tasks[i].name,nm,NAMELEN-1)){
         uint32_t id=C->tasks[i].id; unlock(); return id; }
     unlock(); return 0;
+}
+/* Resolve a HeROS PROCESS name (the -p= name a peer registered on its main task) to that
+ * process's main task id — the id p_ident(name) should return. 0 if no such process. */
+static uint32_t proc_by_name(const char*nm){
+    if(!nm||!nm[0]) return 0;
+    lock();
+    for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&C->tasks[i].pname[0]&&!strncmp(C->tasks[i].pname,nm,NAMELEN-1)){
+        uint32_t id=C->tasks[i].id; unlock(); return id; }
+    unlock(); return 0;
+}
+/* Capture this process's own -p=<name> from /proc/self/cmdline (raw syscalls to avoid any
+ * open() interposition + recursion). Falls back to $HEROS_PROC_NAME. Called once at init. */
+static void parse_self_pname(void){
+    self_pname[0]=0;
+    int fd=(int)raw5(SYS_open,(long)"/proc/self/cmdline",O_RDONLY,0,0,0);
+    if(fd>=0){
+        char buf[4096]; long n=raw5(SYS_read,fd,(long)buf,sizeof(buf)-1,0,0); raw5(SYS_close,fd,0,0,0,0);
+        if(n>0){ buf[n]=0; long i=0;
+            while(i<n){ const char*arg=buf+i;
+                if(arg[0]=='-'&&arg[1]=='p'&&arg[2]=='='&&arg[3]){ strncpy(self_pname,arg+3,NAMELEN-1); self_pname[NAMELEN-1]=0; break; }
+                while(i<n&&buf[i]) i++; i++; } }
+    }
+    if(!self_pname[0]){ const char*e=getenv("HEROS_PROC_NAME"); if(e&&e[0]){ strncpy(self_pname,e,NAMELEN-1); self_pname[NAMELEN-1]=0; } }
 }
 
 /* ---------------- /dev/events wake bridge ----------------------------------------
@@ -2558,6 +2590,8 @@ static void ensure_init(void){
         const char *ipa=getenv("HEROSCALL_INJECT_PEER_ACK"); inject_peer_ack=ipa&&ipa[0]=='1';
         const char *ir=getenv("HEROSCALL_INJECT_REREAD"); inject_reread=ir&&ir[0]=='1';
         const char *ep=getenv("HEROS_EVENTS_PIPE"); events_bridge=ep&&ep[0]=='1';
+        const char *pnm=getenv("HEROSCALL_PNAME"); pname_reg=pnm&&pnm[0]=='1';
+        if(pname_reg) parse_self_pname();
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -2848,6 +2882,11 @@ long syscall(long n,...){
             if(!ps){ LOG("P_ident(self) -> -1 (PIDENT_SELF=0, old topology)\n"); return -1; }
             uint32_t self=task_self(); LOG("P_ident(self) -> 0x%x\n",self); return (long)(int32_t)self; }
         { const char*pn=(const char*)(uintptr_t)p[0];
+          /* HEROSCALL_PNAME registry: resolve a peer that registered this -p= name on its main task
+           * (e.g. graphics.elf as "~/graphicsSIM"). This is the FAITHFUL cross-process p_ident — it
+           * lets simulo find the real SIM graphics renderer peer so grfOpenConnection connects to it
+           * instead of stubbing/launching. Only matches processes actually running with that name. */
+          if(pname_reg){ uint32_t id=proc_by_name(pn); if(id){ LOG("P_ident(\"%s\") -> 0x%x (pname registry)\n",pn,id); return (long)(int32_t)id; } }
           /* HEROSCALL_GRF_STUB=1: stub the SIMULATION-GRAPHICS renderer peer. simulo's grfOpenConnection
            * (@0x6b7c0) does p_ident("<proc>/graphicsSIM"); on -1 it bails "no process" -> FControl never
            * reaches CREATED -> no WndFullScreen window. The real graphics renderer (simipo/ContourGraphics
@@ -2859,6 +2898,26 @@ long syscall(long n,...){
           if(strstr(pn,"winmgr")||strstr(pn,"mgr")) { fprintf(stderr,"[rtos] P_ident(\"%s\") -> -1 (Processes::OnMessage reached)\n",pn); fflush(stderr); }
           else LOG("P_ident(\"%s\") -> -1\n",pn); }
         return (uint32_t)-1;
+    case 0x2d: { /* P_name(buf@p[0], taskid@p[2]) — write the process name into the caller's buffer.
+                  * processNameCurrent() -> processNameFromId(-1) -> p_name(buf,-1). Left unimplemented,
+                  * the caller read an UNINITIALISED buffer -> a GARBAGE namespace -> the "<ns>/graphicsSIM"
+                  * peer name was corrupt (grfOpenConnection couldn't find/name the renderer). Return the
+                  * process's own -p= name (self, taskid==-1) or the named task's process name. The HeROS
+                  * buffer is small (~29B, processNameFromId src[29]) so cap the write. HEROSCALL_PNAME. */
+        if(pname_reg && p && p[0]){
+            int32_t tid=(int32_t)p[2]; char *buf=(char*)(uintptr_t)p[0]; char out[NAMELEN]; out[0]=0;
+            if(tid==-1){ strncpy(out,self_pname,NAMELEN-1); out[NAMELEN-1]=0; }
+            else { lock(); int s=task_slot((uint32_t)tid);
+                if(s>=0){ int32_t tg=C->tasks[s].tgid;
+                    for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&C->tasks[i].tgid==tg&&C->tasks[i].pname[0]){
+                        strncpy(out,C->tasks[i].pname,NAMELEN-1); out[NAMELEN-1]=0; break; } }
+                unlock(); }
+            size_t L=strlen(out); if(L>28)L=28; memcpy(buf,out,L); buf[L]=0;
+            LOG("P_name(tid=%d) -> \"%s\"\n",(int)tid,buf);
+            return 0;
+        }
+        return 0;
+    }
     default:
         return 0;   /* T_create,T_start,As,P_childstat,P_signal,Tm etc — success stub for now */
     }

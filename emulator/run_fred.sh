@@ -5,7 +5,10 @@ set -u
 # Toggles:  WINMGR=1  SKMGR=1  CM=1  (peers).  Default = standalone scout (ConfigServer + Fred).
 # Batch (TNC640heros.txt, subsystem "Ed"): ~/mmi = Fred.elf  -i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60
 REPO=/Users/andreansx/Documents/TNC640unix
-CFG=$REPO/work/control/sysroot
+# CFG holds config/batch/resource/default. The Mac virtiofs mount intermittently TRUNCATES files
+# under load ("Resource deadlock avoided" -> 0-byte frontend.dat -> "can't find SoftkeyView"). Prefer
+# a VM-local staged copy (CFG_DIR=/var/tmp/csys, populated by a tarball) to bypass virtiofs entirely.
+CFG="${CFG_DIR:-$REPO/work/control/sysroot}"
 TGT=$REPO/work/target/rootfs
 R=/var/tmp/lr
 CC=i686-linux-gnu-gcc
@@ -37,6 +40,11 @@ done
 
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW"
 sudo cp -aL "$CFG/config" "$SYSW/config"; sudo cp -aL "$CFG/batch" "$SYSW/batch"; sudo cp -aL "$CFG/resource" "$SYSW/resource" 2>/dev/null
+# The Mac virtiofs cp intermittently TRUNCATES files under load ("Resource deadlock avoided" ->
+# 0-byte frontend.dat -> FResMgr "can't find SoftkeyView"). Repair the resource dir from a complete
+# VM-local mirror if one was staged (RES_LOCAL, default /var/tmp/csys/resource, via a verified tarball).
+RES_LOCAL="${RES_LOCAL:-/var/tmp/csys/resource}"
+[ -d "$RES_LOCAL" ] && { sudo cp -aL "$RES_LOCAL/." "$SYSW/resource/" 2>/dev/null; echo "  resource dir repaired from $RES_LOCAL"; }
 sudo chmod -R a+rwX "$SYSW"
 OEMW=/var/tmp/oemw; sudo rm -rf "$OEMW"; sudo cp -aL "$CFG/default/oem" "$OEMW" 2>/dev/null; sudo chmod -R a+rwX "$OEMW" 2>/dev/null
 ln -sfn "$SYSW" /tmp/s; ln -sfn "$OEMW" /tmp/o; ln -sfn $R/heros5/bin /tmp/b
@@ -80,6 +88,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROSCALL_INJECT_WMGR_ACK="${INJECT_WMGR_ACK:-0}" HEROSCALL_AREA_RECT_FORCE="${AREA_RECT_FORCE:-0}" HEROSCALL_INJECT_AREA_ACK="${INJECT_AREA_ACK:-0}" HEROSCALL_BAR_RECT="${BAR_RECT:-0,936,1280,88}" HEROSCALL_GRF_STUB="${GRF_STUB:-0}" DISP="$DISP" \
   CFGPRE="$CFGPRE" MMIPRE="$MMIPRE" SKPRE="$SKPRE" USE_XVFB="$USE_XVFB" \
   WINMGR="${WINMGR:-0}" SKMGR="${SKMGR:-0}" CM="${CM:-0}" WM_LAYOUT="${WM_LAYOUT:-}" WM_SIZE="${WM_SIZE:-}" WM_VERBOSE="${WM_VERBOSE:-1}" SYSFIRE="${SYSFIRE:-0}" WM_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" WM_FIRE_MASK="${WM_FIRE_MASK:-00ff0000}" WMGR_SCREEN="${WMGR_SCREEN:-0}" WM_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-0}" \
+  GRAPHICS="${GRAPHICS:-0}" PNAME="${PNAME:-0}" GRAPHICS_PROC="${GRAPHICS_PROC:-Sim/graphicsSIM}" GRAPHICS_SHORT="${GRAPHICS_SHORT:-graphicsSIM}" GRAPHICS_ARGS="${GRAPHICS_ARGS:-Sim/mmi Sim/mmi.mmi SIM -k=SIM}" \
   FRED_BIN="$FRED_BIN" FRED_PROC="$FRED_PROC" FRED_SHORT="$FRED_SHORT" FRED_ARGS="$FRED_ARGS" SK_ARGS="${SK_ARGS:--w -k}" \
   SHOT_AT="${SHOT_AT:-100}" MMI_TIMEOUT="${MMI_TIMEOUT:-150}" MMI_SEM_FORCE_OK="${MMI_SEM_FORCE_OK:-0}" MMI_VERBOSE="${MMI_VERBOSE:-1}" LANG=C LC_ALL=C \
   unshare -m bash -c '
@@ -91,7 +100,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     cd /; ln -sfn /tmp/s "/%SYS%"; ln -sfn /tmp/o "/%OEM%"; ln -sfn /tmp/s "/%USR%"
     # FResMgr in libfrontend resolves the frontend resource as /frontend.dat with an empty base, so ENOENT.
     # Provide it at root base plus 1280 sized variant so the PLib frontend resource bundle loads.
-    for fd in frontend.dat frontend1280.dat mmiPrg1280.dat mmiOnlG1280.dat mmiMan1280.dat Fred1280.dat; do
+    for fd in frontend.dat frontend1280.dat mmiPrg1280.dat mmiOnlG1280.dat mmiMan1280.dat Fred1280.dat Fred.dat Simulo.dat Simulo1280.dat; do
       [ -e /tmp/s/resource/$fd ] && ln -sfn /tmp/s/resource/$fd /$fd; done
 
     echo "### ConfigServer (bg) ###"
@@ -135,6 +144,19 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       sleep 6
     fi
 
+    if [ "${GRAPHICS:-0}" = "1" ]; then
+      echo "### graphics.elf (SIM renderer peer, -p=$GRAPHICS_PROC $GRAPHICS_SHORT $GRAPHICS_ARGS) ###"
+      # graphics.elf must run WITHOUT INJECT_WMGR_ACK/AREA forces: they synthesize duplicate WM replies
+      # that SIGSEGV graphics (same duplicate-reply crash as Guppy). It only needs to register its pname
+      # (so simulo p_ident resolves it) and stay alive; it may block on its own WM handshake harmlessly.
+      ( env DISPLAY=$DISP HEROSCALL_VERBOSE=1 HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_PNAME=1 HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_INJECT_WMGR_ACK=0 HEROSCALL_AREA_RECT_FORCE=0 HEROSCALL_INJECT_AREA_ACK=0 HEROSCALL_SEM_FORCE_OK="${MMI_SEM_FORCE_OK:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
+          LD_PRELOAD="$MMIPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/f_grf_strace.log \
+          FEXInterpreter "$R/heros5/bin/graphics.elf" -p=$GRAPHICS_PROC $GRAPHICS_SHORT $GRAPHICS_ARGS > /tmp/f_grf.log 2>&1 ) &
+      GRFPID=$!
+      i=0; while [ $i -lt 120 ]; do grep -qaE "Q_create|graphicsSIM|serve|Ev_receive" /tmp/f_grf.log 2>/dev/null && { echo "  graphics peer active at ${i}*0.5s"; break; }; sleep 0.5; i=$((i+1)); done
+      sleep 6
+    fi
+
     for p in pystdout pystderr ncstdout ncstderr; do
       rm -f /tmp/__helogpipe_$p; mkfifo /tmp/__helogpipe_$p 2>/dev/null
       ( timeout "${MMI_TIMEOUT:-150}" cat /tmp/__helogpipe_$p > /tmp/f_$p.log 2>/dev/null & )
@@ -145,10 +167,10 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       DISPLAY=$DISP xwininfo -root -tree > /tmp/f_windows.txt 2>&1;
       DISPLAY=$DISP xwd -root -out /tmp/f_screen.xwd 2>/dev/null && echo "  screenshot bytes: $(wc -c </tmp/f_screen.xwd 2>/dev/null)" ) &
     timeout -s KILL "${MMI_TIMEOUT:-150}" /usr/bin/strace -f -qq -e trace=openat,connect,writev -o /tmp/f_strace.log \
-      env DISPLAY="$DISP" HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_SEM_FORCE_OK="${MMI_SEM_FORCE_OK:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="$MMIPRE" \
+      env DISPLAY="$DISP" HEROSCALL_VERBOSE="${MMI_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_SEM_FORCE_OK="${MMI_SEM_FORCE_OK:-0}" HEROSCALL_PNAME="${PNAME:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 LD_PRELOAD="$MMIPRE" \
       FEXInterpreter "$R/heros5/bin/$FRED_BIN" -p=$FRED_PROC $FRED_SHORT $FRED_ARGS > /tmp/f_mmi.log 2>&1 || true
     echo "### Fred done ###"
-    pkill -KILL -x strace 2>/dev/null; kill $CFGPID ${SKPID:-} ${WMPID:-} ${CMPID:-} 2>/dev/null
+    pkill -KILL -x strace 2>/dev/null; kill $CFGPID ${SKPID:-} ${WMPID:-} ${CMPID:-} ${GRFPID:-} 2>/dev/null
   '
 sudo pkill -KILL -x FEXInterpreter 2>/dev/null
 G2=$(md5sum /etc/passwd | awk '{print $1}'); [ "$GUARD" = "$G2" ] && echo "GUARD OK" || echo "*** /etc CHANGED ***"
@@ -156,6 +178,8 @@ echo ""
 echo "=== Fred scout result ==="
 echo "  ConfigServer: lines=$(sudo wc -l </tmp/f_cfg.log 2>/dev/null) crash=$(sudo grep -acE "signal 6|signal 11|terminating signal" /tmp/f_cfg.log 2>/dev/null)"
 echo "  Fred: lines=$(sudo wc -l </tmp/f_mmi.log 2>/dev/null) crash=$(sudo grep -acE "signal 6|signal 11|terminating signal" /tmp/f_mmi.log 2>/dev/null)"
+[ "${GRAPHICS:-0}" = "1" ] && echo "  graphics.elf: lines=$(sudo wc -l </tmp/f_grf.log 2>/dev/null) crash=$(sudo grep -acE "signal 6|signal 11|terminating signal" /tmp/f_grf.log 2>/dev/null) pname=$(sudo grep -acE "pname registry|graphicsSIM" /tmp/f_grf.log 2>/dev/null)"
+echo "  Fred grf: pident-registry-hit=$(sudo grep -acE "pname registry" /tmp/f_mmi.log 2>/dev/null) grfOpenConn-fail=$(sudo grep -acE "grfOpenConnection.*no |CREATED not reached" /tmp/f_mmi.log 2>/dev/null)"
 echo "  Fred config connect (Connected): $(sudo grep -acE "Connected|OnCfgClientIsConnected" /tmp/f_mmi.log 2>/dev/null)"
 echo "  Fred queues created: $(sudo grep -acE "Q_create" /tmp/f_mmi.log 2>/dev/null)  Q_ident: $(sudo grep -acE "Q_ident" /tmp/f_mmi.log 2>/dev/null)"
 echo "  Fred X11 connect: $(sudo grep -acE "X11-unix" /tmp/f_strace.log 2>/dev/null)  writev->X: $(sudo grep -acE "writev\(" /tmp/f_strace.log 2>/dev/null)"
