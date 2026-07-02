@@ -1729,6 +1729,46 @@
 > VM-local disk via SSH (tarball + `limactl copy`; Mac wrapper `/tmp/simstage_run.sh` → `/var/tmp/emsrc`);
 > run_fred.sh build is now best-effort with a pre-staged fallback. Findings: `scratchpad/fred_findings.md`.
 
+> ## ★★★★★ OPERATOR-MMI (2026-07-02, cont.) — graphicsSIM-peer frontier RESOLVED: P_name(0x2d) + process-name registry; simulo crosses graphics, converges on the winmgr frontier
+> The graphicsSIM RENDERER-peer gate (prior section: simulo dead-blocks on `Q_read(GRFQ_00000106)` / posts
+> "grfOpenConnection failed / CREATED not reached") is CROSSED — and GRF_STUB was RIGHTLY dropped. ROOT CAUSE of
+> the peer never resolving: the emulator never implemented **P_name (heroscall 0x2d)**. simulo's
+> `grfOpenConnection@0x6b7c0` builds the SIM renderer name via `processNameCurrent()`→`processNameFromId(-1)`→
+> `p_name(buf,-1)`; with P_name a no-op the buffer stayed UNINITIALISED → a GARBAGE `"<junk>/graphicsSIM"` peer
+> name (the observed corrupt namespace) → p_ident could never match a real peer, and GRF_STUB only masked it
+> (returned self → black-hole queue → dead-block). (So the crash fix in the prior section removed the PciHardware
+> abort ABOVE this, and this fix removes the peer-resolution gate itself.)
+> **FIX (`emulator/heros_rtos.c`, gated `HEROSCALL_PNAME=1`, default OFF, REGRESSION-CLEAN, commit d08c5e8):**
+> (a) capture this process's own `-p=` name from /proc/self/cmdline at init + register it on the process MAIN task
+> (tid==tgid) via a new `struct task.pname`; (b) **P_name (0x2d)** writes the process's -p= name into the caller
+> buffer (self for tid==-1, else the named task's pname, capped to the ~29B HeROS buffer) → `processNameCurrent()`
+> now returns the CORRECT "Sim/mmi"/"Sim/graphicsSIM"; (c) **P_ident (0x29)** resolves a NAMED lookup against the
+> process-name registry (`proc_by_name`) = faithful cross-process p_ident. General emulator improvement (any
+> peer-by-name resolution), not simulo-specific.
+> **HARNESS (`emulator/run_fred.sh`):** new `GRAPHICS=1` launches `graphics.elf` as a real peer with the batch
+> args (`-p=Sim/graphicsSIM graphicsSIM Sim/mmi Sim/mmi.mmi SIM -k=SIM`), forced WITHOUT INJECT_WMGR_ACK (those
+> synthetic WM replies SIGSEGV graphics — the same duplicate-reply crash as Guppy) so it stays alive+registered.
+> Also FIXED a real harness bug: the Mac virtiofs cp TRUNCATES `frontend.dat` to 0 bytes under load ("Resource
+> deadlock avoided") → FResMgr "can't find SoftkeyView" — repair the resource dir from a complete VM-local mirror
+> (`RES_LOCAL=/var/tmp/csys/resource`, staged via an md5-verified tarball; virtiofs+`limactl copy` are BOTH flaky,
+> so verify by md5 and beware concurrent writers corrupting the tarball).
+> **VERIFIED (faithful no-inject baseline `GRAPHICS=1 PNAME=1 GRF_STUB=0`, reproducible):** graphics.elf runs as a
+> peer (`P_name(-1)->"Sim/graphicsSIM"`, registers, crash=0, 137 lines); simulo (605 lines, crash=0)
+> `P_name(-1)->"Sim/mmi"`, `P_ident("Sim/graphicsSIM")->0x106 (pname registry)`, **grfOpenConnection SUCCEEDS —
+> "no process" AND "CREATED not reached" both ELIMINATED** (the defining graphicsSIM symptoms); simulo crosses
+> config+graphics and blocks at the **WM handshake** (`Q_send->Q_WMGRMSG 0x30f`, winmgr dormant). With
+> INJECT_WMGR_ACK (simulo only) + AREA_RECT_FORCE/INJECT_AREA_ACK + MMI_SEM_FORCE_OK + the frontend.dat repair,
+> simulo advances FURTHER — past the WM handshake, past a NON-FATAL `FControl::LoadResources` ("can't load simulo
+> resources": simulo requests `simulo.xml.zip`/`simulo_sym.xml.zip` (lowercase, zipped XML) but only `Simulo.dat`/
+> `Simulo.xml` (capital) ship — no `.xml.zip` in the extraction; simulo CONTINUES anyway) — into the **FModule
+> 0x1000 / WM render handshake = the convergent winmgr render-thread frontier** (the SAME gate as the softkey saga
+> / AppStartMP logo / `WmModule::Initialize`; needs the /dev/events render-tick bridge for winmgr's render thread,
+> bf0b579 pattern — NOT blind autofire). NET: the graphicsSIM peer gate is RESOLVED; simulo now converges on the
+> ONE documented winmgr frontier with graphics + config satisfied. Two clearly-pinned downstream gates remain (both
+> beyond the resolved frontier): (i) simulo's `simulo.xml.zip` resource (non-fatal; would need generating the
+> zipped-XML form the FResMgr requests); (ii) the winmgr render-thread create→map handshake (the shared frontier).
+> Run: `GRAPHICS=1 PNAME=1 GRF_STUB=0 FRED_BIN=simulo.elf FRED_PROC=Sim/mmi FRED_SHORT=mmi FRED_ARGS="-k=SIM -o=Ed -f=25" bash emulator/run_fred.sh`.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
