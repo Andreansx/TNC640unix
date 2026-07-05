@@ -122,7 +122,10 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
     if [ "${WINMGR:-0}" = "1" ]; then
       echo "### winmgr (bg) ###"
       WM_LAYOUT="${WM_LAYOUT:-%SYS%/resource/tnc640layout1280.xml}"; WM_SIZE="${WM_SIZE:-1280x1024}"
-      ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_SYSEVENT_AUTOFIRE="${SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${WM_FIRE_MASK:-00ff0000}" HEROSCALL_WMGR_SCREEN="${WMGR_SCREEN:-0}" HEROSCALL_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
+      # ★ winmgr render-crossing config (2026-07-05): SEM_INIT=0 + SEM_FORCE_OK -> the start-ack
+      # sems block then force -> WmModule::Initialize -> screen-layout windows; PNAME=1 fixes the
+      # P_name(-1) garbage sub-thread SIGSEGV. (readfix in the preload chain fixes the EIO crash.)
+      ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_SEM_INIT="${WM_SEM_INIT:-0}" HEROSCALL_PNAME="${WM_PNAME:-1}" HEROSCALL_SYSEVENT_AUTOFIRE="${SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${WM_FIRE_MASK:-00ff0000}" HEROSCALL_WMGR_SCREEN="${WMGR_SCREEN:-0}" HEROSCALL_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-4000}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
           LD_PRELOAD="$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/f_wm_strace.log \
           FEXInterpreter "$R/heros5/bin/winmgr.elf" -p=~/winmgr winmgr -m=5 -i=$WM_LAYOUT -o=afk -s=$WM_SIZE \
           -k=%SYS%/resource/keymap_us101.xml -c=%SYS%/resource/charmap_us101.xml -f=%SYS%/resource/functionkeymap_us101.xml \

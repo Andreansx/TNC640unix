@@ -1818,6 +1818,58 @@
 > gets THERE deterministically, so it can finally be worked on without fighting the crash. Tools:
 > `emulator/{readfix,segvbt,throwcatch}.c`, `scratchpad/wmcrash.sh` (HEU/KABS/STRACE knobs). Commit: this session.
 
+> ## ★★★★★★ winmgr RENDER FRONTIER *CROSSED* (2026-07-05, cont.) — winmgr CREATES ITS SCREEN-LAYOUT WINDOWS FEX-native, reproducibly (winmgr-only 2/2 AND integrated 4-proc); the ~10-session gate for BOTH the softkey bar AND the operator MMI is CROSSED
+> With the readfix crash fixed (above), the winmgr render-thread frontier — the documented single gate
+> "winmgr reaches the render handshake but NEVER runs `WmModule::Initialize`, creates 0 windows / run
+> variance" — is **CROSSED** and **DETERMINISTIC (2/2 identical winmgr-only runs, + confirmed in the full
+> 4-proc)**. ★ **NO new emulator code — a CONFIG discovery stacking THREE fixes that already exist in-tree.**
+> **Winning config (winmgr-only repro `scratchpad/wmwin.sh` = ConfigServer + winmgr + Xvfb :99 + openbox +
+> heuserver):** `readfix.so` + **`HEROSCALL_PNAME=1`** + **`HEROSCALL_SEM_INIT=0`** +
+> **`HEROSCALL_SEM_FORCE_OK=4000`** (+ PIDENT_SELF=1). **RESULT: crash=0, X connect + ~124 writev, and winmgr
+> CREATES ITS SCREEN-LAYOUT WINDOWS** — `xwininfo -root -tree` shows **`0x400001 "Machine"` (SCREEN_MACHINING)
+> + `0x400017 "Edit"` (SCREEN_EDITOR) + `0x400018 "_JH_FOCUSPROXY"`** + children `0x400015`/`0x400019`, **184
+> windows**, all mapped inside openbox frames — EXACTLY the yeen harvest (`scratchpad/wm_full_tree.txt`).
+> **THE THREE STACKED FIXES (each solves a distinct crash/gate, all pre-existing):**
+> (1) **readfix.so** (commit dad28bf) — the transient-EIO `read()` crash (the "cold-VM variance"). Crash #1.
+> (2) **`HEROSCALL_PNAME=1`** (commit d08c5e8, 2026-07-02) — `P_name(-1)` (self-name query) left the caller's
+>     buffer UNINITIALISED → the guest used a GARBAGE process name → **sub-thread SIGSEGV** (the documented
+>     "standalone sub-thread crash in the 0x1000 ping-pong"; the tracker had attributed it vaguely to "no
+>     peers"). `run_wmdiag` predated PNAME so it ALWAYS crashed there. `heros_rtos.c` case 0x2d writes the
+>     process's own `-p=` name when `pname_reg`. Crash #2. (T_name 0x09 is still SET-only but does NOT crash —
+>     the guest tolerates it returning 0; no fix needed.)
+> (3) **`SEM_INIT=0` + `SEM_FORCE_OK=4000`** — winmgr's bring-up does `FmProcessState→AppStartMaster(0x308)`
+>     then `Sm_request(winmgrC 0x204)`/`Sm_request(winmgrI 0x205)` = the AppStartMaster start-transition acks
+>     gating the FStartable state machine BEFORE `WmModule::Initialize`. These sems MUST **block then be
+>     forced** (SEM_FORCE_OK simulates the absent AppStartMaster releasing after ~4s). ★ **`sem_autocount`
+>     DEFAULTS to 1** (heros_rtos.c:757), so `SEM_INIT=1` (immediate success, count 1) → the Sm_requests pass
+>     INSTANTLY and winmgr does **NOT** reach Initialize (verified: 0 X connect) — the BLOCKING/DELAY is the
+>     enabler (lets the sibling WmUsbThread bring up first). `SEM_INIT=0` is REQUIRED so the sems start count 0
+>     → block → force. **This is precisely why every prior SEM_INIT-based diag reached the handshake but never
+>     Initialize.**
+> ★ Also found + noted a real bug in the diag harness `scratchpad/run_wmdiag.sh`: it cleans the WRONG
+> `/dev/shm` names (`hrctlU*` = the unprivileged form) instead of the root-run `heros_rtos_ctl`/`heros_reg_*`,
+> so it REUSED stale segments → warm-namespace artifacts (blocked sems, warm task ids) that had masked the
+> clean behavior across sessions.
+> ★★ **INTEGRATED 4-proc (`run_3proc_skmgr_guppy.sh`, WINMGR=1 INJECT_WMGR_ACK=0 + the render config now the
+> winmgr default): winmgr CREATES ITS SCREEN WINDOWS THERE TOO** — g_windows.txt shows `0x400001 "Machine"` +
+> `0x400017 "Edit"` + `0x400018`/`0x400014 "_JH_FOCUSPROXY"` (SEM_FORCE_OK fired 2×, X connect + 102 writev,
+> crash=0). So the crossing holds in the real constellation, not just standalone. **The bar still did NOT draw
+> this run — but the gate has MOVED cleanly downstream to the SEPARATE softkey CONTENT flow**: skmgr spun on
+> empty `Q_read` (832K, the documented variance-prone empty-poll) with only 3 serve reads, and Guppy logged
+> just 1 bind marker → the Guppy-login→skmgr-serve→BuildSoftkeyBar chain (the documented softkey/GData saga)
+> didn't complete this run. That is the run-variance softkey gate, NOT winmgr's windows (which now EXIST for
+> skmgr's PFrame/the MMI to draw into). ⇒ the winmgr-window blocker that gated the bar for ~10 sessions is
+> GONE; the bar is now gated SOLELY on the softkey content flow completing (SK_REPLY_FORCE/Guppy-login),
+> which is the separate documented frontier.
+> ★ Config now DEFAULT in the integrated runs (winmgr-specific env, overridable knobs `WM_SEM_INIT`/
+> `WM_SEM_FORCE_OK`/`WM_PNAME`): `emulator/run_3proc_skmgr_guppy.sh` (softkey bar) + `emulator/run_fred.sh`
+> (operator MMI/simulo — same winmgr gate for Fred/simulo). The screenshot is BLANK (2 colours) — EXPECTED:
+> winmgr creates the screen WINDOWS but draws no content; the MMI renders INTO them = the next layer. NEXT:
+> (a) get the softkey content flow to complete against the now-mapped VSoftKeyArea → skmgr's PFrame →
+> BuildSoftkeyBar → PutImage the 19 .bmx (the FAITHFUL visible bar, no BARCOPY); (b) drive simulo/Fred to
+> composite into the now-existing ClientArea. Run: `bash scratchpad/wmwin.sh` (winmgr-only; SEMINIT/SEMFORCE/
+> WMTMO knobs); integrated: the winning knobs are the winmgr defaults in run_3proc/run_fred.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
