@@ -1870,6 +1870,64 @@
 > composite into the now-existing ClientArea. Run: `bash scratchpad/wmwin.sh` (winmgr-only; SEMINIT/SEMFORCE/
 > WMTMO knobs); integrated: the winning knobs are the winmgr defaults in run_3proc/run_fred.
 
+> ## ★★★★★ SOFTKEY BAR (2026-07-06) — Guppy's OEM Python runtime now RUNS FULLY (the "login never fires" gate was Python-staging + WM-pump, both FIXED); the TRUE bar blocker is the winmgr render-thread SIGSEGV that DESTROYS its own screens
+> The goal's hypothesized gate — "Guppy's softkey login never fires = the GData connection-wedge / bind gate" — is
+> **REFUTED**. The real reason Guppy's OEM script (HwViewer.py) never reached `jh.softkey.Register` was a TWO-part
+> harness/emulator problem, BOTH FIXED this session; with them fixed the binding blocker moved cleanly UPSTREAM to
+> winmgr. Commit a2e569d.
+> **(1) ★ Python OEM-runtime STAGING CORRUPTION (the dominant blocker, subtle).** The lima **virtiofs Mac-mount
+> returns the correct file SIZE but CORRUPT/blank CONTENT** for some files under load. Staging Guppy's Python tree
+> via `cp -aL`/`tar` over virtiofs SILENTLY corrupted **`pyjh.py`** (came across as 3006 bytes of whitespace, no
+> `require` → `AttributeError: 'module' object has no attribute 'require'` → HwViewer prints "JH library not
+> available") and **`text/en/LC_MESSAGES/hwviewer.mo`** (→ `IOError: Bad magic number`), so HwViewer.py died at the
+> `pyjh.require('3.0')` / `import jh` / `gettext.translation` lines and the OEM softkey script NEVER RAN. The earlier
+> "verify" only checked files were *readable*, not that md5 matched the Mac source — so the corruption was invisible.
+> **FIX = stage via lima's SSH channel, NOT virtiofs**: `rsync -e "ssh -F ~/.lima/tnc/ssh.config" $CFG/Python/ →
+> tnc:` (reads the Mac-native files, which read fine individually; SSH transport is checksummed) into VM-LOCAL
+> mirrors `/var/tmp/pytree` + `/var/tmp/pytree-sp`; new helper **`emulator/stage_guppy_pytree.sh`** (RUN ON THE MAC).
+> `run_3proc_skmgr_guppy.sh` then backs `/mnt/sys/Python` + `.../site-packages` with **tmpfs (RAM, EIO-immune)**
+> populated from those mirrors. VERIFIED: HwViewer.py (md5 3a9834d0), pyjh.py (md5 6232c1db, require=1), hwviewer.mo
+> (md5 51c202ec) all match the Mac source; **Guppy now runs HwViewer.py FULLY past every import + gettext (line
+> 204+) and builds its GTK window** (was: died at pyjh/jh/gettext). (Gotchas: Mac-side `tar` of the whole Python
+> tree is erratically slow/blocking under the VM's I/O load — use rsync per-file, not tar; `cp -aL` from virtiofs
+> throws EDEADLK "Resource deadlock avoided" on the lseek sparse-probe — use sequential tar or rsync. The FEX
+> "`/lib/*.so cannot be preloaded`" errors are NORMAL noise from native aarch64 helper forks, NOT a preload failure.)
+> **(2) WMQ_BREAK — Guppy's WM-event-pump livelock (RE'd + fixed).** `WmRead@libwinmgrlib 0x3cc0` retries `q_read`
+> while errno∈{EAGAIN(11),EINTR(4)}; the emulator returns EAGAIN on an empty no-wait read → Guppy's WM pump
+> (WMQ00109) spins forever, trapping it BEFORE HwViewer.py. `HEROSCALL_WMQ_BREAK=1` returns ETIMEDOUT for `WMQ*`
+> queues after WMQ_BREAK_N empties → WmRead terminates → Guppy proceeds (py opens 0→441).
+> **(3) EMPTYPOLL_YIELD** (skmgr/Guppy empty-poll spins were hammering the shared-/dev/shm-segment lock 1.65M× and
+> starving winmgr's render thread → `HEROSCALL_EMPTYPOLL_YIELD=300` usleeps each empty no-wait read) + **readfix EIO
+> budget** (readfix.c EIO_MAX 40→1200 + graduated backoff, survives multi-second transient vz-disk EIO; the old ~8ms
+> budget tripped Python's getc-underflow "I/O error while reading" on HwViewer.py).
+> **★ TRUE REMAINING BLOCKER (precisely characterized) = winmgr's render-thread SIGSEGV that DESTROYS its own
+> screens.** With Guppy's OEM script now running FULLY and interacting with winmgr, winmgr creates its screen-layout
+> windows (**~127 X writev**) then a render-thread sub-thread **SIGSEGVs — a DIRECT deref, NOT a catchable C++ throw**
+> (`throwcatch` caught 0 throws; `segvbt` can't backtrace it — `libheros_sigfaterr` owns the SIGSEGV handler and
+> RECOVERS non-fatally, thread continues into a `Tm_wkafter(5s)` retry). winmgr WEDGES (log stuck ~399 lines) and its
+> X connection drops → the **Machine/Edit screen windows are DESTROYED** (full tree = **26 windows** — Guppy 200x200
+> + openbox helpers — vs the **184** a clean winmgr creates, incl. `0x400001 Machine`/`0x400017 Edit`). So Guppy's
+> OEM window `jh.gtk.Window(screen='OemScreen')` stays 200x200 UNREALIZED (waiting for OemScreen) → `jh.softkey.
+> Register` never fires → 0 q_sends to Q_SkMgr 0x314 → skmgr never draws → no bar. **DETERMINISTIC in the integrated
+> 4-proc** (runs 5/6/7/isolate all crash at ~126-130 writev); crash context = winmgr's WM-serve/client-validation
+> path (`Q_read 0x30e 28B → P_signal(0xffffffff,0x02000000) → P_name(-1) → T_name(-1) → SIGSEGV`). winmgr-only
+> (`scratchpad/wmwin.sh`) is sigsegv=0 but only reached 111 writev in 70s (didn't reach the ~127 crash point);
+> a WM_HEADSTART knob delaying skmgr/Guppy did NOT avoid it (winmgr crashes at ~127 writev whether or not they're up
+> yet) → the crash is at winmgr's OWN render handshake, now REACHED because Guppy drives its full OEM interaction
+> (one layer PAST the 2026-07-05 state where Guppy barely proceeded and winmgr's windows persisted). Also noted a
+> real correctness bug (not the crash trigger): `P_name(tid=264/265) -> ""` — the PNAME fix registers pname only on
+> the MAIN task (tid==tgid), so sub-thread queries return empty; real HeROS process names are process-wide.
+> **★ NEXT (the documented winmgr render frontier, now with Guppy fully driving it):** RE why winmgr's render thread
+> derefs null at ~127 writev during window creation (candidates: the no-op `P_signal`(0x2b) stub not waking the
+> render-handshake target; a heroscall returning bad data the render thread derefs; the 0x1000 FModule ping-pong
+> under the fuller Guppy interaction) → guard/fix it in the emulator so winmgr KEEPS its screen windows → Guppy's
+> OEM window realizes → `jh.softkey.Register` → SkMgrLogin → skmgr draws the 19 .bmx into the VSoftKeyArea = the
+> faithful bar. Run (after `bash emulator/stage_guppy_pytree.sh` ON THE MAC once): `WM_SEGVBT=1 XDISPLAY=:0
+> GUPPY_DISPLAY=:0.0 PIDENT_SELF=1 SK_REPLY_FORCE=1 WINMGR=1 INJECT_WMGR_ACK=0 AREA_RECT_FORCE=1 EMPTYPOLL_YIELD=300
+> WMQ_BREAK=1 WMQ_BREAK_N=64 WM_LAYOUT=%SYS%/resource/tnc640layout1280.xml WM_SIZE=1280x1024 HWV_FORCE_FS=1
+> bash emulator/run_3proc_skmgr_guppy.sh`. (Fred/simulo hit the SAME winmgr render frontier, so this fix unblocks
+> them too.)
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
