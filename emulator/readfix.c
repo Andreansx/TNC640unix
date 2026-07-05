@@ -38,15 +38,23 @@ static void logfail(const char*w,int fd,int e,int retried){
  * AND EIO (bounded: the vz virtual disk returns transient EIO under heavy concurrent
  * FEX I/O at constellation startup — the file IS readable, the error is transient).
  * A regular-file read leaves the fd offset unchanged on failure, so re-issuing the
- * same read resumes correctly. Bounded so a genuine permanent EIO still surfaces. */
-#define EIO_MAX 40
+ * same read resumes correctly. Bounded so a genuine permanent EIO still surfaces.
+ *
+ * The transient-EIO window from the vz block backend can last well over the old
+ * 40*200us=8ms budget (observed: Guppy's read of HwViewer.py EIO'd for ~1s+ while the
+ * constellation's other FEX procs hammered the disk at startup, tripping a Python
+ * tokenizer "I/O error while reading" -> the OEM script never ran -> no softkey login).
+ * Use a graduated backoff up to ~6s total so a multi-second transient EIO is survived
+ * while a genuinely-permanent EIO still surfaces (a startup read can afford the wait). */
+#define EIO_MAX 1200
+static void eio_backoff(int i){ usleep(i<64 ? 200 : 5000); }  /* first 64 fast (12.8ms), then 5ms*1136 ~= 5.7s */
 ssize_t read(int fd, void *buf, size_t n){
     if(!r_read) r_read = dlsym(RTLD_NEXT,"read");
     ssize_t rc; int eio=0;
     for(;;){ rc = r_read(fd,buf,n);
         if(rc>=0) break;
         if(errno==EINTR) continue;
-        if(errno==EIO && eio<EIO_MAX){ eio++; usleep(200); continue; }
+        if(errno==EIO && eio<EIO_MAX){ eio_backoff(eio); eio++; continue; }
         break; }
     if(rc<0) logfail("read",fd,errno,eio);
     else if(eio) logfail("read-recovered",fd,0,eio);
@@ -58,7 +66,7 @@ ssize_t pread(int fd, void *buf, size_t n, off_t off){
     for(;;){ rc = r_pread(fd,buf,n,off);
         if(rc>=0) break;
         if(errno==EINTR) continue;
-        if(errno==EIO && eio<EIO_MAX){ eio++; usleep(200); continue; }
+        if(errno==EIO && eio<EIO_MAX){ eio_backoff(eio); eio++; continue; }
         break; }
     if(rc<0) logfail("pread",fd,errno,eio);
     return rc;
@@ -69,19 +77,25 @@ ssize_t readv(int fd, const struct iovec *iov, int c){
     for(;;){ rc = r_readv(fd,iov,c);
         if(rc>=0) break;
         if(errno==EINTR) continue;
-        if(errno==EIO && eio<EIO_MAX){ eio++; usleep(200); continue; }
+        if(errno==EIO && eio<EIO_MAX){ eio_backoff(eio); eio++; continue; }
         break; }
     if(rc<0) logfail("readv",fd,errno,eio);
     return rc;
 }
-/* stdio path (FileStream may use FILE*): retry a short read that stopped on EINTR */
+/* stdio path (FileStream may use FILE*): retry a short read that stopped on EINTR or
+ * transient EIO. NOTE: glibc's own getc/fgets underflow reads via the internal __read
+ * alias, which this public-symbol interposer does NOT catch — so Python's source-file
+ * tokenizer (getc-based) is NOT covered here; the run pre-warms the page cache for the
+ * Python/resource tree so those reads hit RAM (no disk I/O -> no EIO). This wrapper
+ * still covers any consumer that calls fread() directly. */
 size_t fread(void *buf, size_t sz, size_t nm, FILE *f){
     if(!r_fread) r_fread = dlsym(RTLD_NEXT,"fread");
-    size_t got = r_fread(buf,sz,nm,f);
-    while(got<nm && ferror(f) && errno==EINTR){
+    size_t got = r_fread(buf,sz,nm,f); int eio=0;
+    while(got<nm && ferror(f) && (errno==EINTR || (errno==EIO && eio<EIO_MAX))){
+        if(errno==EIO){ eio_backoff(eio); eio++; }
         clearerr(f);
         size_t more = r_fread((char*)buf+got*sz, sz, nm-got, f);
-        if(more==0) break;
+        if(more==0 && !ferror(f)) break;
         got += more;
     }
     return got;

@@ -58,8 +58,40 @@ sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null; sudo cp -aL "$CFG/conf
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
 sudo mkdir -p /mnt/plc/service && sudo chmod -R a+rwX /mnt/plc/service
 sudo mkdir -p /mnt/sys/Python /mnt/sys/usr/lib/python
-sudo cp -aL "$CFG/Python/." /mnt/sys/Python/ 2>/dev/null
-sudo cp -aL "$CFG/usr/lib/python/site-packages" /mnt/sys/usr/lib/python/site-packages 2>/dev/null
+# ★ Back the Python OEM tree with tmpfs (RAM). The vz block backend (vda1) throws
+# transient EIO under concurrent FEX I/O at constellation startup; Guppy's Python
+# tokenizer reads HwViewer.py via glibc stdio getc-underflow (glibc-internal __read),
+# which readfix's public read()/fread() interposer cannot retry -> "I/O error while
+# reading" -> the OEM script never runs -> no softkey login. tmpfs reads hit RAM only,
+# so they can never EIO. Populate at startup (low I/O), verifying the copy read cleanly.
+sudo mountpoint -q /mnt/sys/Python && sudo umount -l /mnt/sys/Python 2>/dev/null
+sudo mount -t tmpfs -o size=1g tmpfs /mnt/sys/Python
+# Populate the tmpfs from a VM-LOCAL pre-staged mirror (PYTREE_LOCAL, default /var/tmp/pytree)
+# when present — the virtiofs Mac-mount throws EDEADLK ("Resource deadlock avoided") / EIO on
+# cp -aL (lseek sparse-probe), so the run must NOT read the Python tree from virtiofs at start.
+# Prep once when idle:  tar -C $CFG/Python -cf - . | tar -C /var/tmp/pytree -xf -   (sequential
+# read sidesteps the lseek deadlock; verify HwViewer.py md5). Fall back to a virtiofs tar-copy.
+PYTREE_LOCAL="${PYTREE_LOCAL:-/var/tmp/pytree}"
+if [ -f "$PYTREE_LOCAL/HwViewer/HwViewer.py" ]; then
+  sudo cp -a "$PYTREE_LOCAL/." /mnt/sys/Python/ 2>/dev/null && echo "  Python tree staged to tmpfs from $PYTREE_LOCAL (local, reliable)"
+else
+  echo "  no local pytree — tar-copying from virtiofs (may EDEADLK)"
+  sudo tar -C "$CFG/Python" -cf - . 2>/dev/null | sudo tar -C /mnt/sys/Python -xf - 2>/dev/null
+fi
+sudo md5sum /mnt/sys/Python/HwViewer/HwViewer.py >/dev/null 2>&1 && echo "  HwViewer.py present+readable" || echo "  *** HwViewer.py MISSING/UNREADABLE ***"
+# ★ site-packages (the jh/pyjh Python binding Guppy imports) also on tmpfs — same vda1
+# EIO problem: import jh reads jh-X.Y/*.py from /mnt/sys/usr/lib/python/site-packages,
+# which EIO'd under load -> "JH library not available" -> NameError: 'jh' is not defined.
+SPLOCAL="${SPLOCAL:-/var/tmp/pytree-sp}"
+sudo mkdir -p /mnt/sys/usr/lib/python/site-packages
+sudo mountpoint -q /mnt/sys/usr/lib/python/site-packages && sudo umount -l /mnt/sys/usr/lib/python/site-packages 2>/dev/null
+sudo mount -t tmpfs -o size=256m tmpfs /mnt/sys/usr/lib/python/site-packages
+if [ -f "$SPLOCAL/pyjh.py" ]; then
+  sudo cp -a "$SPLOCAL/." /mnt/sys/usr/lib/python/site-packages/ 2>/dev/null && echo "  site-packages staged to tmpfs from $SPLOCAL"
+else
+  sudo tar -C "$CFG/usr/lib/python/site-packages" -cf - . 2>/dev/null | sudo tar -C /mnt/sys/usr/lib/python/site-packages -xf - 2>/dev/null
+fi
+sudo md5sum /mnt/sys/usr/lib/python/site-packages/pyjh.py >/dev/null 2>&1 && echo "  pyjh.py present+readable" || echo "  *** pyjh.py MISSING/UNREADABLE ***"
 for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
 sudo chmod -R a+rwX /mnt/sys/config /mnt/plc/config /mnt/sys/cache /mnt/tnc /mnt/sys/Python /mnt/sys/usr 2>/dev/null
 sudo bash -c 'head -c 1048576 /dev/zero > /dev/shm/_heusrv_shm; chmod 0666 /dev/shm/_heusrv_shm'
@@ -135,7 +167,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       # WmModule::Initialize -> creates+maps its screen-layout windows (Machine/Edit); PNAME=1
       # fixes the P_name(-1) garbage sub-thread SIGSEGV. (readfix in $SKPRE fixes the EIO crash.)
       ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_SEM_INIT="${WM_SEM_INIT:-0}" HEROSCALL_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-4000}" HEROSCALL_PNAME="${WM_PNAME:-1}" HEROSCALL_SYSEVENT_AUTOFIRE="${SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${SYSFIRE_MASK:-00ff0000}" HEROSCALL_SYSEVENT_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" HEROSCALL_SYSEVENT_FIRE_YIELD_US="${WM_FIRE_YIELD:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
-          LD_PRELOAD="$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/wm_strace.log \
+          LD_PRELOAD="${WM_SEGVBT:+/lib/throwcatch.so:/lib/segvbt.so:}$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/wm_strace.log \
           FEXInterpreter "$R/heros5/bin/winmgr.elf" -p=~/winmgr winmgr \
           -m=5 -i=$WM_LAYOUT -o=afk -s=$WM_SIZE \
           -k=%SYS%/resource/keymap_us101.xml -c=%SYS%/resource/charmap_us101.xml -f=%SYS%/resource/functionkeymap_us101.xml \
@@ -144,7 +176,25 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       i=0; while [ $i -lt 160 ]; do
         grep -qaE "Q_create .Q_WMGR" /tmp/wm.log 2>/dev/null && { echo "  winmgr created Q_WMGR at ${i}*0.5s"; break; }
         sleep 0.5; i=$((i+1)); done
-      sleep 6
+      # ★ winmgr HEAD-START knob (2026-07-06, default OFF): winmgr creates its screen-layout
+      # windows (~127 X writev) then a render-thread sub-thread SIGSEGVs (a DIRECT deref, NOT a
+      # catchable C++ throw — throwcatch caught 0; libheros_sigfaterr recovers non-fatally but
+      # winmgr WEDGES + its X connection drops -> the Machine/Edit screen windows are DESTROYED
+      # -> Guppy's OEM window never realizes -> no softkey login). Tested: the crash reproduces
+      # at ~127 writev whether or not skmgr/Guppy are up yet, so a head-start does NOT avoid it;
+      # this knob (wait for winmgr writev>=N before launching skmgr/Guppy) is left for further
+      # experiments on the documented winmgr render-thread frontier. WM_HEADSTART_WRITEV=0 -> old 6s.
+      HSW="${WM_HEADSTART_WRITEV:-0}"
+      if [ "$HSW" -gt 0 ] 2>/dev/null; then
+        j=0; while [ $j -lt "${WM_HEADSTART_MAX:-45}" ]; do
+          wv=$(grep -ac writev /tmp/wm_strace.log 2>/dev/null || echo 0)
+          [ "${wv:-0}" -ge "$HSW" ] && { echo "  winmgr screens created (writev=$wv) — head-start done at ${j}s"; break; }
+          grep -qaE "terminating signal 11" /tmp/wm.log 2>/dev/null && { echo "  winmgr SIGSEGV during head-start (writev=$wv)"; break; }
+          sleep 1; j=$((j+1)); done
+        sleep 3
+      else
+        sleep 6
+      fi
     fi
 
     echo "### skmgr (bg, -p=~/skmgr skmgr $SK_ARGS) ###"
