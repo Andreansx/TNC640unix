@@ -14,9 +14,15 @@ R=/var/tmp/lr
 CC=i686-linux-gnu-gcc
 DISP="${XDISPLAY:-:99}"
 USE_XVFB=1; case "$DISP" in :99|:0|:0.0) USE_XVFB=1;; *) USE_XVFB=0;; esac
-CFGPRE="/lib/noopfree.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
-MMIPRE="${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
-SKPRE="${SK_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
+# readfix.so: retry the guest's read() on EINTR (the emulator's SIGUSR1 event-carrier) + on
+# transient EIO (the vz virtual disk returns EIO under heavy concurrent FEX I/O at constellation
+# startup — the file IS readable, the error is transient). Without it, an interrupted/failed
+# config/resource read -> IO::FileStream::Read throws "File read error" -> EvtExceptionShell
+# retries the FThread eval-context -> myChildren[] OOB SIGSEGV = the winmgr/Fred "cold-VM crash"
+# (the documented run-variance). readfix goes FIRST so it wraps every process's file reads.
+CFGPRE="/lib/readfix.so:/lib/noopfree.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
+MMIPRE="/lib/readfix.so:${MMI_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
+SKPRE="/lib/readfix.so:${SK_FREEGUARD:-/lib/guardfree.so:}/lib/nolimit.so:/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so"
 FRED_BIN="${FRED_BIN:-Fred.elf}"
 FRED_PROC="${FRED_PROC:-~/mmi}"
 FRED_SHORT="${FRED_SHORT:-mmi}"
@@ -34,7 +40,7 @@ ccr(){ local i; for i in 1 2 3 4 5; do "$@" 2>/tmp/ccr.err && return 0; sleep 1;
 ccr $CC -shared -fPIC -O2 -o $R/lib/cfgfix.so $EMSRC/cfgfix.c -ldl || exit 1
 ccr $CC -shared -fPIC -O2 -Wl,--version-script=$EMSRC/arena.map -o $R/lib/arena_stub.so $EMSRC/arena_stub.c || exit 1
 ccr $CC -shared -fPIC -O2 -Wl,--version-script=$EMSRC/nolimit.map -o $R/lib/nolimit.so $EMSRC/nolimit.c || exit 1
-for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree skspy skforce wmstub; do
+for s in herosapi_shim heros_rtos renamefix fexunmask noopfree guardfree readfix skspy skforce wmstub; do
   [ -f $EMSRC/$s.c ] && { ccr $CC -shared -fPIC -O2 -o $R/lib/$s.so $EMSRC/$s.c -ldl || exit 1; }
 done
 

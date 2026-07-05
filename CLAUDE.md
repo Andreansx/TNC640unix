@@ -1769,6 +1769,55 @@
 > zipped-XML form the FResMgr requests); (ii) the winmgr render-thread create→map handshake (the shared frontier).
 > Run: `GRAPHICS=1 PNAME=1 GRF_STUB=0 FRED_BIN=simulo.elf FRED_PROC=Sim/mmi FRED_SHORT=mmi FRED_ARGS="-k=SIM -o=Ed -f=25" bash emulator/run_fred.sh`.
 
+> ## ★★★★★★ THE winmgr "COLD-VM CRASH / RUN VARIANCE" — ROOT-CAUSED + FIXED (2026-07-05): a transient read() failure → FThread eval-context OOB; `readfix.so` makes winmgr survive to the render frontier 6/6
+> The single symptom that has gated the ENTIRE operator-MMI + softkey-bar path for ~10 sessions — winmgr
+> "creates its screen windows in only ~half the (warm) runs, crashes/does-nothing in cold runs" (the
+> documented "run variance", always hand-waved as timing) — is now ROOT-CAUSED END-TO-END to a concrete,
+> deterministic mechanism and FIXED faithfully. It was NEVER a render-thread-handshake mystery; winmgr was
+> **SIGSEGV-ing before it ever reached the render layer**.
+> **★ THE CRASH CHAIN (every link RE-confirmed, tools: `emulator/segvbt.c` guest-fault backtrace preload +
+> `emulator/throwcatch.c` __cxa_throw interposer + idalib disasm):**
+> (1) winmgr SIGSEGVs in **`FThread::EvalContextModule@libbackend 0x28bc0`** reading `myChildren[index]` OOB
+>     (fault addrs 0x705c6779/0xaab15769 = garbage child ptr), under `WmUsbThread::MainContext`/`EvalContextOption`.
+> (2) The OOB is a **RETRY artifact**: **`EvtExceptionShell@libbackend 0x17fa0` is a `do{ RunExceptionShell }
+>     while(rc>1)` loop** — it RE-RUNS `FThread::CreateMainContext`→`CreateContextFromCallback` after an
+>     exception, but the FStartable state (a1[1]) is already advanced, so the eval-context replay's index starts
+>     at the full child count → `myChildren[count]` = one-past-the-end → OOB. (The guest replay is not
+>     idempotent under retry; real HeROS never retries because nothing throws.)
+> (3) The triggering exception (throwcatch, byte-exact): **`IO::FileStream::Read@libxmlreader 0x4aaf0` throws
+>     `Xml::Exception "File read error"`** while `Keyboard::LoadCharMap/LoadKeyMap/LoadFunctionKeyMap` parse
+>     winmgr's `-k=/-c=/-f=` keymap XML during `FThread::EvalContextOption`. Disasm: the throw is the **`read()`
+>     path** (`call _read` @+0x62 → v4<0 → throw @+0x7f), NOT "File not open!" (the files OPEN fine, strace
+>     confirms fd 11/13).
+> (4) **`read()` returns errno=5 EIO** (readfix log: `read(fd=13) errno=5`). PROVEN environmental, not FEX:
+>     **plain `dd` OUTSIDE FEX also EIOs the same file** — yet the file reads fine when the VM is idle. It is a
+>     **TRANSIENT EIO from the vz virtual disk (/dev/vda1 ext4) under heavy concurrent FEX I/O at constellation
+>     startup** (many processes hammering the Mac-backed block device). Whether an EIO (or a SIGUSR1-carrier
+>     EINTR) lands during a keymap read is timing/load-dependent = EXACTLY the "warm good run vs cold crash"
+>     variance. (Not the recent reg_attach/PNAME commits — the pre-2026-07-02 build crashes identically;
+>     not heuserver — winmgr crashes with heuserver up too.)
+> **★ THE FIX — `emulator/readfix.c` (LD_PRELOAD, wraps the guest's read/pread/readv):** retry EINTR (unbounded;
+> the emulator's SIGUSR1 event-carrier interrupts syscalls) + transient EIO (bounded 40×200µs; a regular-file
+> read leaves the fd offset unchanged on failure, so re-issuing resumes correctly; bounded so a permanent EIO
+> still surfaces). The emulator's OWN I/O uses raw `SYS_read` so it is unaffected; this only hardens guest
+> file reads — faithful, since real HeROS reads don't spuriously fail. Added FIRST in the preload chains of
+> `run_fred.sh` + `run_3proc_skmgr_guppy.sh` (every process reads config/resource files). **CANNOT** just add
+> `SA_RESTART` to SIGUSR1: the emulator's own ev_receive/sem_request futex loops RELY on SIGUSR1 → EINTR to
+> re-check the event word (heros_rtos.c:342), so the wrap must be at the guest read() layer.
+> **★ VERIFIED (`scratchpad/wmcrash.sh` = ConfigServer + winmgr only, clean):** BEFORE readfix every run crashed
+> (crash=93, with a logged EIO); WITH the EIO-retry readfix **6/6 runs crash=0** and winmgr ADVANCES to the
+> **FModule render-thread handshake** (`Ev_send(0x1000)` ping-pong + `Ev_receive(0x00011004)`/`Ev_receive(
+> 0x05011001)`, 292 lines) = the documented winmgr render frontier, now REACHED RELIABLY instead of crashing
+> before it. (The EINTR-only readfix still crashed WITH a logged EIO → the EIO retry is the decisive piece.)
+> **★ SAME CRASH GATES Fred.elf** (documented libEditlib FrameThread `EvalContextModule` SEGV) — same machinery,
+> so readfix should unblock Fred/machoper's editor thread too (validate next).
+> **★ NEXT GATE (unchanged, now the TRUE frontier): the winmgr render-thread GUI handshake** — winmgr reaches
+> `WmUsbThread`/`WmProcess` `0x1000` ping-pong + `Ev_receive(0x00011004)` but does not yet run
+> `WmModule::Initialize` → create+map its screen-layout windows. This is the long-documented render-thread
+> frontier (the /dev/events render-tick bridge for winmgr's render thread, bf0b579 pattern) — but winmgr now
+> gets THERE deterministically, so it can finally be worked on without fighting the crash. Tools:
+> `emulator/{readfix,segvbt,throwcatch}.c`, `scratchpad/wmcrash.sh` (HEU/KABS/STRACE knobs). Commit: this session.
+
 > ## ★ STRATEGIC FOCUS (2026-06-22, user-set) — TRACK B ONLY, ARM64-NATIVE
 > The **sole** focus is **Track B: run the i386 control natively on Apple Silicon (ARM64) under
 > FEX-Emu + the LD_PRELOAD heroscall emulator, and reach the real Qt MMI (`HrMmi.elf`) shown as a
