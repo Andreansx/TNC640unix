@@ -1421,6 +1421,15 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
      * the is-last @off204. Reproduce winmgr's bytes exactly. Same INJECT_ACK class as Cfg/Evt/Peer. */
     { static int inject_wmgr_ack=-1;
       if(inject_wmgr_ack<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_ACK"); inject_wmgr_ack=e&&e[0]=='1'; }
+      /* WMGR-MSG diagnostic (HEROSCALL_WMGR_MSGDUMP=1): log the TYPE/seq/serial of EVERY message any client
+       * sends to Q_WMGR, so we can read skmgr's exact WM-handshake sequence (connect type, GetScreens 0x3037,
+       * and whether it advances to GetAreaRect 0x3003 or stalls). */
+      { static int wmdump=-1; if(wmdump<0){ const char*e=getenv("HEROSCALL_WMGR_MSGDUMP"); wmdump=e&&e[0]=='1'; }
+        if(wmdump && msg && size>=4 && !strcmp(C->queues[s].name,"Q_WMGR"))
+          LOG("WMGR-MSG: type 0x%x size %u seq %u a10 %u replyq 0x%x\n", *(const uint32_t*)msg, size,
+              size>=8?*(const uint32_t*)((const char*)msg+4):0u,
+              size>=12?*(const uint32_t*)((const char*)msg+8):0u,
+              size>=28?*(const uint32_t*)((const char*)msg+24):0u); }
       /* 0x3001 = WM CONNECT/RegisterClient (GuppyRuntimeGtk's WM-init, taken on the FAITHFUL gdk-internal
        * path that DISPLAY=:0.0 enables; the gate-forced gdk-external path skips it). winmgr HandleMessage@
        * 0x29f00 case 0x3001 builds a 16-byte reply: *(dest+0)=12289(0x3001); v273=a1[1](req seq)@dest+8;
