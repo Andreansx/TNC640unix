@@ -1928,6 +1928,28 @@
 > `OemScreen` to winmgr's screen id? is the X reparent/map happening?) and why the OEM thread T_deletes instead
 > of calling `GUPPYSKMGR::Register`. Run recipe unchanged (below); the script now parses; `WM_SEGVBT=2` captures
 > the winmgr fault if the render crash recurs.
+> **(3) ★★★ DETERMINISTIC reproduction of the winmgr crash found — it is the OEM SCREEN creation.** The layout
+> `tnc640layout1280.xml` defines 3 screens but SCREEN_OEM is a `<desktop>` (created ON-DEMAND when an OEM app
+> registers), while SCREEN_MACHINING/SCREEN_EDITOR are `<screen>` (created at startup) — so winmgr eagerly makes
+> only Machine+Edit and the OEM screen is made later, on Guppy's request. **Changing SCREEN_OEM from `<desktop>`
+> to `<screen>` (diagnostic layout `resource/tnc640layout1280_oemscr.xml`, `WM_LAYOUT=%SYS%/resource/
+> tnc640layout1280_oemscr.xml`) makes winmgr crash EVERY run at startup** — and the crash context is IDENTICAL
+> to the documented one: a winmgr SUB-THREAD (e.g. t80929, not the main t80922) does `P_signal(0xffffffff,
+> 0x02000000) → P_name(buf,-1)->"~/winmgr" → T_name(buf+0x11,-1) → SIGSEGV`, right after SEM_FORCE_OK forces the
+> AppStartMaster start-ack. So the ~10-session INTERMITTENT crash is now DETERMINISTIC: **it is winmgr creating
+> the OEM screen** (on-demand in the faithful layout — which is why it needs Guppy to drive; eager with the diag
+> layout). The `+0x11` buf offset = the WmClient ctor (p_name→+16 / t_name→+33). The ctor itself does NOT deref
+> (proven), so the null-deref is in the sub-thread's CALLER of the ctor (creates a WmClient with pid=tid=-1 — a
+> WmNckClient/WmXLibClient, NOT WmInternalClient which uses valid ids). `segvbt.so` does NOT capture under FEX:
+> libheros_sigfaterr owns SIGSEGV (recovers non-fatally, threads retry into `Tm_wkafter`); segvbt's `sigaction`
+> interposer changes the outcome (recover vs core-dump) but its wrapper never emits. **NEXT (now tractable with
+> the deterministic repro): (a) capture the fault EIP by a mechanism FEX respects — intercept the guest's
+> rt_sigaction for SIGSEGV in heros_rtos (or let FEX's own crash-dump run by NOT installing libheros_sigfaterr);
+> (b) RE the sub-thread that creates the pid=-1 WmClient during OEM-screen creation and the deref just after the
+> ctor; (c) candidate emulator causes: the no-op `P_signal`(0x2b) stub, or a bad value the sub-thread derefs.**
+> Diag layout committed for turnkey repro. NB: with the diag layout Guppy's HwViewer window realized 1280x936
+> (0x400003 "HwViewer") — but that was AFTER winmgr died (openbox took over), so it does NOT prove the OEM-screen
+> path yields the bar; the faithful goal is winmgr SURVIVING OEM-screen creation.
 
 > ## ★★★★★ SOFTKEY BAR (2026-07-06) — Guppy's OEM Python runtime now RUNS FULLY (the "login never fires" gate was Python-staging + WM-pump, both FIXED); the TRUE bar blocker is the winmgr render-thread SIGSEGV that DESTROYS its own screens
 > The goal's hypothesized gate — "Guppy's softkey login never fires = the GData connection-wedge / bind gate" — is
