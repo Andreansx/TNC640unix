@@ -1919,6 +1919,17 @@
 > to request it (the same self-bind/OEM-realize gate as the prior entry's finding 3). NEXT: RE what posts
 > Ev `0x07011000` (skmgr's draw/handshake trigger) AND why Guppy's OEM window doesn't realize onto winmgr's
 > now-existing OemScreen (X reparent/map? does Guppy resolve `OemScreen`→winmgr's screen id?).
+> **Traced further (same session) — the TRUE live blocker is a Guppy Python-runtime SIGBUS storm.** With
+> the OEM screen present, Guppy (`GUPPY_C=HwSetup`) opens `/mnt/sys/Python/HwViewer/HwViewer.py` +
+> `jh-3.0/jh/gtk/glade.py` (fd OK) then hits **repeated `SIGBUS {BUS_ADRALN}` at odd addresses (148× in
+> ~110s) + a `/etc/localtime` ENOENT retry loop**; its heroscall trace freezes (g_mmi = 582 lines), it
+> never reaches `jh.softkey.Register`, so **0 msgs reach Q_SkMgr(0x314); skmgr loads 0 .bmx and stays
+> blocked on Ev_receive(0x07011000)** → empty strip. A fresh SSH-rsync re-stage of the Python tree
+> (`emulator/stage_guppy_pytree.sh`; checksums verified clean) did NOT clear it → genuine FEX-level
+> unaligned-access issue in the i386 Python runtime (BUS_ADRALN = unaligned atomic ARM64 can't do
+> natively), NOT staging corruption. This SUPERSEDES "why doesn't the OEM window realize" — Guppy wedges
+> before window realize. Fresh sub-frontier: find the FEX unaligned-atomics fix (config/build/backpatch)
+> and/or stage `/etc/localtime`+tzdata to break the retry loop → Guppy runs HwViewer.py to Register.
 >
 > ### (superseded) ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
 > Follow-up session. Three findings, all verified; commit fd90acf.
