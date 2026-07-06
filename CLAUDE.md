@@ -87,14 +87,28 @@ populate).** `sudo cp` it there and re-run → **winmgr creates all three screen
 `0x40001b "OEM"` (1280x1023) + `_JH_FOCUSPROXY` + the softkey-area strip, crash=0, no
 throw** (`scratchpad/shots/oem_staged.png`). So the OEM-screen path is FINE. **DURABLE
 LESSON: custom `%SYS%/resource/*` layouts must be `sudo cp`'d to `/mnt/sys/resource`,
-else winmgr throws uncaught "File not found".** **REAL bar-blocker re-pinned = skmgr's
-DRAW GATE:** skmgr connects to X99, serves config (INJECT_ACK on 0x315), attaches the
-TR_en region, but BLOCKS on `Ev_receive(0x07011000)` and never loads its `.bmx` /
-draws; the softkey strip renders EMPTY. The softkey-area window (0x80001f) isn't
-created because Guppy hasn't realized its OEM window
-(`jh.gtk.Window(screen='OemScreen')`) to request it — the same self-bind/OEM-realize
-gate. Do NOT synthesize `mmi.qHF`. Next: RE what posts Ev 0x07011000 AND why Guppy's
-OEM window doesn't realize onto winmgr's now-existing OemScreen. Full chain, every
+else winmgr throws uncaught "File not found".**
+
+**★ bar-blocker RE'd to the finest level (2026-07-06 cont.): the draw gate is now a
+SINGLE missing event.** `Ev_receive(0x07011000)` is NOT the block (skmgr passes it).
+New tools `WMGR_MSGDUMP` + winmgr `HandleMessage@0x29f00` decompile captured skmgr's
+exact WM protocol (timer-driven, NOT GetAreaRect): `0x302c StartTimer`×3 / `0x3037
+GetScreens` / `0x302d StopTimer`×3 / `0x301b OnRequest+WmSendEvent(a1[6]=0,dest,24)`.
+With `INJECT_WMGR_ACK=0` (REAL winmgr) + `INJECT_SK_FLOW=1` (injected content) skmgr
+COMPLETES the handshake (winmgr reads Q_WMGR 10×, sends 3× 208B GetScreens to skmgr's
+0x313) — then BLOCKS polling 0x313 (`hc 0x0c`, an unhandled Q-peek stubbed to "empty")
++ `Sm_request(0x209)` + `Ev_receive(0x1000)`, **waiting for winmgr's 24B WmSendEvent
+confirmation from `0x301b` that NEVER arrives** (winmgr q_sends only 0x313-GetScreens +
+0x308-AppStartMaster; a1[6]=0 ⇒ no send). So skmgr's GUI thread never reads the 3rd
+softkey msg (SkMgrActivate) on 0x314 (`Q_read 0x314` stuck at 2=Login+SetMenu) → 0 .bmx,
+empty strip. INJECT_SK_ACTIVATE can't rescue it (its count gate needs skmgr's 0x028a0740
+InfoResponses, which the bypass path produces 0 of). Configs EXHAUSTED (all blank):
+inject-bypass, faithful-Guppy `barrun.sh`, SK_FLOW+SK_ACTIVATE, real-winmgr+injected.
+**NEXT (single concrete point): make winmgr's `0x301b` confirmation reach skmgr's 0x313**
+— decompile winmgr's `WmSendEvent` (IDA-inferred, no dynsym) for its queue resolution
+from a1[6]=0 (likely the registered WmClient's queue) + whether skmgr registers (its
+connect isn't 0x3001); then fix the emulator's queue resolution OR synthesize the 24B WM
+event to 0x313 → skmgr reads the Activate → `BuildSoftkeyBar` → draws. Full chain, every
 `INJECT_*`/env knob, and the exact run recipe are in `docs/PROGRESS-LOG.md`.
 
 ## Key run scripts (`emulator/`)
