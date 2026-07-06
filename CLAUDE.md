@@ -154,10 +154,33 @@ polls 0x31e FOREVER and **never sends `0x302d StopTimer`**. Since the client's
 NO immediate reply (it arms a timer that fires an event LATER), the live hypothesis is:
 **Guppy waits on 0x31e for the StartTimer(0x302c) timer/completion event (correlated to seq 1)
 that the emulator never delivers** — a timer→client-event gap, NOT the 24B confirmation.
-NEXT: RE winmgr's `HandleMessage@0x29f00` case 0x302c (StartTimer) — does the real winmgr arm
-a Tm that fires an event to the client's replyq, and does the emulator's Tm path (heros_rtos
-`timers_fire`, Tm_evafter/Tm_evevery) deliver it cross-process to Guppy's 0x31e? Then serve/
-inject that event so Guppy proceeds to StopTimer → login → skmgr draws.
+**★★★ WM-TIMER FRONTIER CROSSED (2026-07-07, commit 1fe083e): the timer→client-event gap is
+CONFIRMED + SERVED — Guppy now consumes the tick and PROCEEDS off the WM handshake.** RE'd
+winmgr's `HandleMessage` case 0x302c (StartTimer) + the full mechanism: winmgr's 55ms
+`WmWaitableTimer` (`FTimer::SignalEvery(55000)`→tm_evevery)→`TimerTick` posts a **WIRE-0x3061**
+event to each armed client's WM queue; the client's `WmParseEvent` maps 0x3061→**parsed type
+24**, `WmCheckTimerCallback` matches (`*parsed==24 && a3==a2[3]`)→the jh.gtk timeout callback
+fires. Confirmed the emulator's one-shot `timers_fire` never re-arms winmgr's tm_evevery
+cross-process, so nothing delivered it. **FIX = `HEROSCALL_INJECT_WMGR_TIMER` (heros_rtos.c):**
+synthesize the wire-0x3061 tick (off0=0x3061, off4=serial kept contiguous with the client's
+last-read `a1[10]`, off12=timerid), auto-discover the client's WM queue from its 0x3001/0x3037
+reads, register the timer on its 0x302c send. **HANDSHAKE-GATED** (only after a GetScreens read
++ settle + drained queue — a mid-handshake tick routes a 0x3037 into WmParseEvent→
+"WMGRErrUnexpected WINMGRQ_GETSCREENS"→SIGTRAP, the early crash before the gate). **DUAL-HOOK**
+(fires from q_read poll AND ev_receive block + wait-cap; Guppy alternates, so a single hook
+delivered only one tick then stalled), clamped to winmgr's faithful 55ms. VERIFIED (run_3proc,
+WINMGR=1 INJECT_WMGR_TIMER=1 XDISPLAY=:0): crash=0, Guppy reads the ticks (serial 4,5), sends
+its `0x3038` GetScreens follow-up, then proceeds — `Ev_send`, `Sm_ident "GuppyC"`,
+`Q_send AppStartMaster(0x308)`, `Sm_request`, into the OEM/Python worker-thread setup. Guppy
+does NOT send `0x302d StopTimer` (the hypothesised path); it proceeds directly. **NEXT GATE
+(separate, downstream): the OEM/Python worker thread (task 0x109) busy-polls
+`Ev_receive(0x00000008)` — a plain USEREVMASK event no peer posts (no queue owns notify 0x08)
+— self-signals `As_send(0x00800000)` and `T_delete`s before jh.softkey Register (the documented
+"OEM thread T_deletes before GUPPYSKMGR::Register" bar blocker). Plus child-process LD_PRELOAD
+staging errors (`/lib/readfix.so` in a fork outside the mount-ns). NEXT: RE what posts event
+0x08 to Guppy's OEM thread (likely winmgr window-realization on OemScreen, or the 0x10a main
+thread) + fix the child-preload staging — then the softkey bar can draw. Run:
+`emulator/run_3proc_skmgr_guppy.sh` with `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0`.**
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
