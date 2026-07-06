@@ -1882,6 +1882,53 @@
 > composite into the now-existing ClientArea. Run: `bash scratchpad/wmwin.sh` (winmgr-only; SEMINIT/SEMFORCE/
 > WMTMO knobs); integrated: the winning knobs are the winmgr defaults in run_3proc/run_fred.
 
+> ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
+> Follow-up session. Three findings, all verified; commit fd90acf.
+> **(0) ★ The committed `run_3proc_skmgr_guppy.sh` could not run at all.** Commit a2e569d added a comment
+> (line 183) `# -> Guppy's OEM window never realizes ...` INSIDE the `unshare -m bash -c '...'` single-quoted
+> block (opened line 142). The apostrophe in "Guppy's" closed the `bash -c` string early → `bash -n` aborts at
+> the trailing `)` ("syntax error near unexpected token )"). So the last session's documented run recipe pointed
+> at a harness bash refused to parse — its crash observations came from runs BEFORE that comment landed. FIX:
+> dropped the stray apostrophe/paren; `bash -n` passes; the constellation launches (ConfigServer + winmgr + skmgr
+> + Guppy). LESSON: any apostrophe (or unbalanced `'`) in the run-script body is a landmine because the whole
+> constellation runs inside one `bash -c '...'`. When editing these scripts, `bash -n` them before running, and
+> feed the host file to the VM via `bash -s < script` (stdin, from the Mac) so the virtiofs read can't corrupt it.
+> **(1) ★★ winmgr does NOT crash on the current warm VM — it KEEPS its screen windows.** Across 4 runs (2×
+> WM_SEGVBT=1, 1 baseline, 1 WM_SEGVBT=2) winmgr reached its idle Q_read(Q_WMGR=0x30e) at 307 log lines with its
+> screens INTACT: `0x400001 "Machine"` + `0x400017 "Edit"` + both `_JH_FOCUSPROXY`, **265 windows total** (vs 26
+> when it crashes). So the documented "winmgr render-thread SIGSEGV destroys its own screens" is RUN-VARIANT and
+> did not reproduce; the render frontier is effectively crossed in this state. The crash needs Guppy to drive its
+> full OEM interaction, and in every run this session Guppy exited BEFORE that (see (2)) so winmgr never saw the
+> crash-triggering Q_WMGR message. Enhanced `segvbt.c` (EIP + i386 regs + EBP-chain walk + maps) is staged and
+> ready to pin the fault the next time it does crash; `WM_SEGVBT=2` runs segvbt WITHOUT throwcatch (min. perturb).
+> **★ CORRECTION to the earlier "P_name(-1)→T_name(-1)→SIGSEGV in the WmClient ctor" framing:** the crash is NOT
+> in the WmClient ctor. Decompiled + disassembled proof: `WmClient::ProcessExists` (0x1dd90) short-circuits on
+> `pid==-1` (`v2 != -1 && ...`) → NO p_name/t_name call and NO deref; the ctor's failure path only reads valid
+> `this` offsets and calls `WmLog::Error(...,%d,%d,%d)` (ints, no string deref). Also the guest wrappers
+> `p_name`/`t_name` (libheros.so.1 @0xb0b0/0xdc60) `return (syscall(222,…) >= 0)`, so the emulator returning 0
+> makes BOTH return SUCCESS — the old "they return 0 → winmgr rejects every client" reasoning was wrong. The
+> crash (when it happens) is in `HandleMessage` (0x29f00, the Q_WMGR dispatcher) / the caller AFTER the ctor
+> returns, once Guppy fully drives — so the fix target is HandleMessage's use of the freshly-created pid=-1
+> client, not p_name/t_name. Q_WMGR=0x30e; the dispatch chain is `WmWaitableQueue::Notify`(0x4c130) →
+> `WmRecvRequest`(0x39fd0, q_read) → `HandleMessage`(0x29f00).
+> **(2) ★ The LIVE bar-blocker is the Guppy SELF-BIND path, reached (with winmgr's screens intact) but not
+> completing — NOT mmi.qHF (which is already handled correctly).** With winmgr's screens intact, Guppy
+> (HwViewer.py) builds a WM client (P_name/T_name(-1)), posts a 600B msg to its own reply queue `Rts109`(0x323),
+> then `Q_ident "Nc/mmi.qHF" -> 0`. That 0 is INTENDED and already implemented (heros_rtos.c q_ident, ~line 1118):
+> `mmi.qHF` is the operator-MMI HOST-FRAME embed queue; GuppyRegisterWindow's NO_NCK_WINMGR path PROBES it, and
+> ABSENT (0) is the FAITHFUL no-host-frame signal that tells the window to SELF-BIND its softkeys (WndFocusPane
+> sets +0x14 → `GUPPYSKMGR::Register`). Auto-creating it would make Guppy think it was embedded and NEVER
+> self-bind — so returning 0 is correct; do NOT synthesize `mmi.qHF`. The real blocker: after the `mmi.qHF -> 0`
+> self-bind decision, Guppy's OEM thread does `As_send(0x109,0x00800000)` + `T_delete` and exits BEFORE
+> `GUPPYSKMGR::Register` fires — it sends 0 msgs to Q_SkMgr(0x314), so skmgr idles on 0x313/0x315, loads 0 .bmx,
+> draws nothing. So the frontier is the SAME long-standing softkey self-bind/Register gate ([[softkey-bar-one-
+> decisive-path]]), now cleanly reached PAST the winmgr render crash: the OEM `jh.gtk.Window(screen='OemScreen')`
+> apparently never realizes/parents onto winmgr's now-existing OemScreen, so WndFocusPane bails before Register.
+> **NEXT: RE why the OEM window does not realize on OemScreen** (winmgr now HAS the screen — does Guppy resolve
+> `OemScreen` to winmgr's screen id? is the X reparent/map happening?) and why the OEM thread T_deletes instead
+> of calling `GUPPYSKMGR::Register`. Run recipe unchanged (below); the script now parses; `WM_SEGVBT=2` captures
+> the winmgr fault if the render crash recurs.
+
 > ## ★★★★★ SOFTKEY BAR (2026-07-06) — Guppy's OEM Python runtime now RUNS FULLY (the "login never fires" gate was Python-staging + WM-pump, both FIXED); the TRUE bar blocker is the winmgr render-thread SIGSEGV that DESTROYS its own screens
 > The goal's hypothesized gate — "Guppy's softkey login never fires = the GData connection-wedge / bind gate" — is
 > **REFUTED**. The real reason Guppy's OEM script (HwViewer.py) never reached `jh.softkey.Register` was a TWO-part

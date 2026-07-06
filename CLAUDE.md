@@ -69,17 +69,22 @@ softkey bar** (via the BARCOPY helper); the winmgr **render frontier CROSSED**
 (winmgr creates its screen-layout windows, crash=0, via `readfix` + `PNAME=1` +
 `SEM_INIT=0`/`SEM_FORCE_OK`).
 
-**Latest state:** Guppy's OEM Python runtime (HwViewer.py) now runs FULLY under
-FEX (virtiofs staging-corruption + WM-pump livelock fixed via SSH/rsync + tmpfs
-staging + `WMQ_BREAK`). **The true softkey-bar blocker is now the winmgr
-render-thread SIGSEGV that destroys its own screen windows** once Guppy drives its
-full OEM interaction — a direct null-deref in winmgr's WM-serve/client-validation
-path at ~127 X writev, recovered non-fatally by `libheros_sigfaterr` but leaving
-winmgr wedged so its Machine/Edit screens are torn down. Next: RE why winmgr's
-render thread derefs null during window creation and guard/fix it so winmgr keeps
-its screens → Guppy's OEM window realizes → `jh.softkey.Register` → the faithful
-bar. Full chain, every `INJECT_*`/env knob, and the exact run recipe are in
-`docs/PROGRESS-LOG.md`.
+**Latest state (2026-07-06, cont.):** First, the committed `run_3proc_skmgr_guppy.sh`
+had a **fatal syntax error** (an apostrophe in a comment INSIDE its `bash -c '...'`
+block) so it could not run at all — FIXED (commit fd90acf). With it running: across
+4 runs on the current warm VM, **winmgr does NOT crash — it KEEPS its screens**
+(`Machine`+`Edit`+`_JH_FOCUSPROXY`, 265 windows; a crash leaves 26). So the
+winmgr render-thread SIGSEGV is **run-variant** and the render frontier is
+effectively crossed here; `segvbt.so` (now dumps EIP+regs+EBP-chain) + `WM_SEGVBT=2`
+are staged to pin the fault if it recurs. The **live** bar-blocker is now the Guppy
+**self-bind** path: `Q_ident "Nc/mmi.qHF" -> 0` is correct+intended (absent host
+frame ⇒ self-bind), but Guppy's OEM thread then `T_delete`s BEFORE
+`GUPPYSKMGR::Register` fires — 0 msgs to Q_SkMgr, skmgr loads 0 .bmx. Likely cause:
+the OEM `jh.gtk.Window(screen='OemScreen')` never realizes/parents onto winmgr's
+now-existing OemScreen. Next: RE why the OEM window doesn't realize on OemScreen
+(does Guppy resolve `OemScreen` to winmgr's screen id? X reparent/map?). Do NOT
+synthesize `mmi.qHF`. Full chain, every `INJECT_*`/env knob, the exact run recipe,
+and the corrected crash analysis are in `docs/PROGRESS-LOG.md`.
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
