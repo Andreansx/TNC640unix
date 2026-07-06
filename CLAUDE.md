@@ -143,13 +143,21 @@ confirmation to the client's `WMQ<tid>` queue (0x31e for Guppy / 0x313 for skmgr
 24B wire format is now DECODED** (from `scratchpad/winmgr_handlemsg.c`, `HandleMessage@0x29f00`
 **case 0x301C/0x301D** — CORRECTION: NOT 0x301B, which does `FreeClientResources`+no send;
 the ONLY 24B `WmSendEvent(a1[6],dest,24)` in HandleMessage is at case 0x301C/0x301D, line 860).
-`dest` is a contiguous 24B stack struct: **off0=`0x3045`(12357, event type), off4=`a1[2]`,
-off8=`a1[1]`(seq), off12=`a1[7]`, off16=`0xffffffff`, off20=`0x00000001`**; destination =
-`a1[6]` (the client's event queue — 0 in the failing case, so nothing is delivered).
-REMAINING to synthesize: capture (WMGR_MSGDUMP=1) whether Guppy/skmgr actually SEND a
-0x301C/0x301D whose reply they await (and its a1[1]/a1[2]/a1[7] values), then emulator-inject
-the 24B 0x3045 event to the client's WMQ<tid> (0x31e/0x313). Also open: WHY a1[6]=0 (client
-should pass its event queue there, or WmSendEvent resolves it from the registered WmClient).
+`dest` is a contiguous 24B stack struct: off0=`0x3045`(12357), off4=`a1[2]`, off8=`a1[1]`,
+off12=`a1[7]`, off16=`0xffffffff`, off20=`1`; dest=`a1[6]`. **BUT a WMGR_MSGDUMP=1 capture
+REFUTES this as Guppy's blocker:** Guppy's ACTUAL WM sequence to Q_WMGR is
+`0x302c StartTimer(seq1, replyq=0x31e)` → `0x3001 Connect(seq2, replyq=0x109)` →
+`0x3037 GetScreens(seq3, replyq=0x31e, a10=0)` — **NO 0x301C/0x301D**, so that 24B/0x3045
+event is NOT what Guppy awaits. Winmgr replies 16 + 3×208B to 0x31e; Guppy reads all 4, then
+polls 0x31e FOREVER and **never sends `0x302d StopTimer`**. Since the client's
+`WaitForExpectedMessage` correlates replies by the msg+4 seq, and a `StartTimer(0x302c)` gets
+NO immediate reply (it arms a timer that fires an event LATER), the live hypothesis is:
+**Guppy waits on 0x31e for the StartTimer(0x302c) timer/completion event (correlated to seq 1)
+that the emulator never delivers** — a timer→client-event gap, NOT the 24B confirmation.
+NEXT: RE winmgr's `HandleMessage@0x29f00` case 0x302c (StartTimer) — does the real winmgr arm
+a Tm that fires an event to the client's replyq, and does the emulator's Tm path (heros_rtos
+`timers_fire`, Tm_evafter/Tm_evevery) deliver it cross-process to Guppy's 0x31e? Then serve/
+inject that event so Guppy proceeds to StopTimer → login → skmgr draws.
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
