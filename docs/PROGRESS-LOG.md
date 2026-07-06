@@ -1967,6 +1967,22 @@
 > TARGETED Ev_send (INJECT-style, NOT the blind EV_UNBLOCK that tripped fwaitable.cpp:248 for the logo).
 > The poster may be an NCK/PLC peer absent from the 3-proc constellation (Guppy is bringing up the full
 > operator MMI, not just a HW screen).
+> **★★★★ BIGGEST UNLOCK — the INJECTION STACK bypasses the stuck Guppy and drives skmgr's softkey render
+> directly; the bar is the CLOSEST it's been in ~10 sessions.** Config:
+> `INJECT_SK_FLOW=1 INJECT_AREA_ACK=1 INJECT_WMGR_ACK=1 WMGR_SCREEN=1` (+ GUPPY_C=HwSetup SK_REPLY_FORCE=1
+> WINMGR=1 AREA_RECT_FORCE=1, oemscr layout staged to /mnt/sys/resource). `INJECT_SK_FLOW` posts
+> SkMgrLogin(53B)/SetMenu(100B)/Activate(52B) to Q_SkMgr(0x314) — bypassing Guppy's stuck 0x011000
+> handshake — and **skmgr CONSUMES them** (Q_read 0x314), sends a 1254B menu blob to 0x307, and drives WM
+> requests to Q_WMGR(0x30e→winmgr). `INJECT_WMGR_ACK`+`WMGR_SCREEN=1` answer skmgr's 0x3037 GetScreens
+> with a 208B reply carrying **1 OEM screen**. **BUT skmgr never sends 0x3003 GetAreaRect** (so
+> INJECT_AREA_ACK never fires; 0 .bmx; empty strip) — it loops the WmClient handshake. Root cause: the
+> INJECT_WMGR_ACK handlers were RE'd for GUPPY's WM path (the 0x3001 connect is "GuppyRuntimeGtk's WM-init");
+> skmgr's WmClient uses a DIFFERENT connect/serial baseline that heros_rtos doesn't synthesize, so its
+> WM-event-serial never advances and its state machine won't leave GetScreens for GetAreaRect. NEXT
+> (bounded but deep): RE skmgr's WM connect/register msg + the messages between GetScreens and GetAreaRect,
+> answer with a consistent per-client serial (extend INJECT_WMGR_ACK for skmgr's path, or run WINMGR=0 so
+> ONLY injects serve skmgr — no real-winmgr/inject serial race). Then GetAreaRect → INJECT_AREA_ACK(rect
+> 0,680,1024,88) → skmgr builds its OWN softkey X window → .bmx → the faithful bar draws.
 >
 > ### (superseded) ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
 > Follow-up session. Three findings, all verified; commit fd90acf.
