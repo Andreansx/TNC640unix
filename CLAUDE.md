@@ -138,9 +138,18 @@ lead is TESTED-NEGATIVE:** new `GUPPY_PNAME=1` knob (default off; needed the sud
 passthrough fix to propagate) makes winmgr's `P_name(tid=265) -> "~/Guppy"` resolve
 correctly (was `""`), but Guppy STILL spins 0x31e ~200k× — so winmgr's P_name(client)
 call is diagnostic/naming, NOT the confirmation routing; the gate is genuinely the
-`a1[6]=0` message field. NEXT (single concrete point, unchanged): synthesize the 24B WM
-confirmation to the client's `WMQ<tid>` queue (0x31e for Guppy / 0x313 for skmgr) — needs
-the winmgr `WmSendEvent` 24B wire format (decompile, IDA-inferred, no dynsym).
+`a1[6]=0` message field. NEXT (single concrete point): synthesize the 24B WM
+confirmation to the client's `WMQ<tid>` queue (0x31e for Guppy / 0x313 for skmgr). **The
+24B wire format is now DECODED** (from `scratchpad/winmgr_handlemsg.c`, `HandleMessage@0x29f00`
+**case 0x301C/0x301D** — CORRECTION: NOT 0x301B, which does `FreeClientResources`+no send;
+the ONLY 24B `WmSendEvent(a1[6],dest,24)` in HandleMessage is at case 0x301C/0x301D, line 860).
+`dest` is a contiguous 24B stack struct: **off0=`0x3045`(12357, event type), off4=`a1[2]`,
+off8=`a1[1]`(seq), off12=`a1[7]`, off16=`0xffffffff`, off20=`0x00000001`**; destination =
+`a1[6]` (the client's event queue — 0 in the failing case, so nothing is delivered).
+REMAINING to synthesize: capture (WMGR_MSGDUMP=1) whether Guppy/skmgr actually SEND a
+0x301C/0x301D whose reply they await (and its a1[1]/a1[2]/a1[7] values), then emulator-inject
+the 24B 0x3045 event to the client's WMQ<tid> (0x31e/0x313). Also open: WHY a1[6]=0 (client
+should pass its event queue there, or WmSendEvent resolves it from the registered WmClient).
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
