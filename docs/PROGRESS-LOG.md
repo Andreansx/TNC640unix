@@ -1939,6 +1939,19 @@
 > (tractable): HEROSCALL_HSTRACE the events posted to Guppy task 0x108/0x109 vs the mask its GTK loop
 > selects on, find the missing render event, and post it (INJECT-style, as for the logo). The SIGBUS/
 > unaligned-atomics framing above is RETRACTED.
+> **★★ CONFIRMED (window-tree + strace-frequency evidence): the single consistent blocker is that winmgr
+> does NOT adopt/reparent Guppy's HwViewer window onto its OemScreen.** `xwininfo -root -tree`:
+> `0x800003 "HwViewer"` (Guppy, 1280x936) and `0x40001b "OEM"` (winmgr's screen, 1280x1023) are SIBLING
+> root-level top-levels — HwViewer is NOT a child of OemScreen. After ~50 X requests Guppy busy-spins
+> (ALL threads wchan=0, not blocked; strace freq = 168 openat / 16 writev per 200 lines): repeated X
+> `QueryTree`(0x0f)/`GetGeometry`(0x0e) on 0x800003 + re-reading HwViewer.py/glade.py + /etc/localtime =
+> polling for its window to be parented/mapped onto OemScreen, which winmgr never does → `jh.softkey.
+> Register` never fires → 0 to Q_SkMgr(0x314) → skmgr stays on Ev_receive(0x07011000) → empty strip. (The
+> `anon_pipe_read` and the SIGBUS were both transients/red-herrings.) HSTRACE emitted 0 lines in all 3
+> procs (env passthrough gap like WM_SEGVBT — verify before trusting). This is the OEM-window-realize gate
+> (prior-entry finding 3), now the confirmed single blocker. NEXT: RE how Guppy requests OemScreen
+> placement (a `_JH_SCREEN`/WM_CLASS property? X reparent? HeROS msg to winmgr?) and why winmgr doesn't
+> adopt 0x800003 onto 0x40001b; probe the run's MAPFORCE/WMPOKE/WMSHOW/WMFLOAT knobs.
 >
 > ### (superseded) ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
 > Follow-up session. Three findings, all verified; commit fd90acf.
