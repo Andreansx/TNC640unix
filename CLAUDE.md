@@ -111,6 +111,37 @@ connect isn't 0x3001); then fix the emulator's queue resolution OR synthesize th
 event to 0x313 → skmgr reads the Activate → `BuildSoftkeyBar` → draws. Full chain, every
 `INJECT_*`/env knob, and the exact run recipe are in `docs/PROGRESS-LOG.md`.
 
+**★★ GLADE CASE BUG FOUND + FIXED + a CONFOUND REMOVED (2026-07-06 cont.): the
+recent tmpfs runs were stuck BELOW the "19 .bmx" closest state — at a case-sensitivity
+bug, not a downstream gate.** Running the default Guppy-drives constellation and reading
+Guppy's Python traceback exposed it: `HwViewer.py:3325 jh.gtk.glade.XML('form/HWViewer.glade')`
+→ `RuntimeError: could not create GladeXML object`. HEIDENHAIN's code requests
+`form/HWViewer.glade` (upper "HW") but the file staged on the case-SENSITIVE VM tmpfs is
+`HwViewer.glade` (lower "w") → exact-case lookup fails → HwViewer aborts BEFORE creating
+any window → no softkey login. This **regressed when Python-tree staging moved off the
+Mac's case-INSENSITIVE virtiofs (where it silently resolved) onto the VM-local
+case-SENSITIVE tmpfs** — so the "19 .bmx" milestone PREDATES tmpfs, and recent ~10
+sessions on tmpfs could not actually be reaching the downstream gates they pinned. FIX =
+a glade case-alias step in `run_3proc_skmgr_guppy.sh` + `run_guppy_window.sh`
+(symlink the code-cased name to the on-disk file). VERIFIED end-to-end via
+run_guppy_window.sh (:99): glade-error=0, HwViewer now loads glade → builds window →
+reaches `jh.softkey.Register` (was aborting at the glade). See [[project-guppy-glade-case-bug]].
+**BUT the glade fix is NECESSARY-not-SUFFICIENT for the bar:** with it applied +
+`WINMGR=1` at `:0.0`, Guppy's WM handshake now blocks UPSTREAM of the glade — winmgr
+sends 16+3×208B GetScreens to Guppy's `WMQ00109` (0x31e) then Guppy polls 0x31e ~335k×
+forever for the per-client 24B confirmation that never comes (SAME `0x301b`/a1[6]=0 gate
+as skmgr's 0x313, now confirmed for Guppy). **This block is LAYOUT-INDEPENDENT** — both
+`tnc640layout1280.xml` AND `...1024.xml` deadlock identically (the memory's "1024 →
+Guppy login completes" does NOT reproduce on tmpfs). So the softkey-bar gate is UNCHANGED
+(winmgr's 24B WM-confirmation), just now free of the glade confound. **The `P_name`
+lead is TESTED-NEGATIVE:** new `GUPPY_PNAME=1` knob (default off; needed the sudo-env
+passthrough fix to propagate) makes winmgr's `P_name(tid=265) -> "~/Guppy"` resolve
+correctly (was `""`), but Guppy STILL spins 0x31e ~200k× — so winmgr's P_name(client)
+call is diagnostic/naming, NOT the confirmation routing; the gate is genuinely the
+`a1[6]=0` message field. NEXT (single concrete point, unchanged): synthesize the 24B WM
+confirmation to the client's `WMQ<tid>` queue (0x31e for Guppy / 0x313 for skmgr) — needs
+the winmgr `WmSendEvent` 24B wire format (decompile, IDA-inferred, no dynsym).
+
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
   (ConfigServer + skmgr + Guppy/HwViewer + winmgr).
