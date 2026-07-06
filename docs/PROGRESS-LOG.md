@@ -1952,6 +1952,21 @@
 > (prior-entry finding 3), now the confirmed single blocker. NEXT: RE how Guppy requests OemScreen
 > placement (a `_JH_SCREEN`/WM_CLASS property? X reparent? HeROS msg to winmgr?) and why winmgr doesn't
 > adopt 0x800003 onto 0x40001b; probe the run's MAPFORCE/WMPOKE/WMSHOW/WMFLOAT knobs.
+> **★★★ TESTED the forced-reparent fix — NEGATIVE — blocker re-pinned at the EVENT level (window parent is
+> ALSO a red herring).** Built `emulator/reparentwin.c` (X client; `sudo apt install libx11-dev`;
+> `/tmp/reparentwin <child> <parent> <secs>`; MUST pass DISPLAY in-env). Force-reparented HwViewer
+> (0x800003) INTO OemScreen(0x40001b) — xwininfo confirms OEM 2→3 children, HwViewer at +0+0 — and **Guppy
+> did NOT react** (no progress to Register). So the OEM-realize gate is not a raw X-parent check. Guppy
+> does real MMI bring-up (task 0x109 creates operator-MMI service queues Nc/CM 0x326, Q_DLGSERVER 0x325,
+> QHelpSrv 0x327, Q_CAST_SERVER 0x328, QProMViewer 0x32b, CfgM 0x32e/0x32f), then its worker t103854
+> blocks on `Ev_receive(0x03011000)` (after Q_reading 0x321/0x32f) while skmgr blocks on
+> `Ev_receive(0x07011000)` — a MUTUAL two-party handshake wait on the `0x011000` event class (USEREVMASK
+> bits 12/16, same class as the AppStartMP logo's 0x1000) that no peer posts → Guppy never reaches
+> jh.softkey.Register, skmgr never draws. Both the window-adoption and SIGBUS framings are RETRACTED; the
+> blocker is the 0x011000 event handshake. NEXT: RE who should post 0x011000 to Guppy-0x109/skmgr; try a
+> TARGETED Ev_send (INJECT-style, NOT the blind EV_UNBLOCK that tripped fwaitable.cpp:248 for the logo).
+> The poster may be an NCK/PLC peer absent from the 3-proc constellation (Guppy is bringing up the full
+> operator MMI, not just a HW screen).
 >
 > ### (superseded) ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
 > Follow-up session. Three findings, all verified; commit fd90acf.
