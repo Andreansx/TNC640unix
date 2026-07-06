@@ -22,6 +22,14 @@ static void (*real_throw)(void*,void*,void(*)(void*)) = NULL;
 static int plausible(unsigned p){ return p>=0x08000000u && p<0xf8000000u; }
 static int printable_str(const char *s){ if(!s) return 0; for(int i=0;i<4;i++){ unsigned char c=s[i]; if(c<0x20||c>0x7e) return 0;} return 1; }
 
+__attribute__((constructor)) static void tc_hello(void){
+    (void)!write(2,"[throwcatch] loaded (versioned __cxa_throw interposer active)\n",61);
+}
+
+/* __cxa_throw is a VERSIONED symbol (__cxa_throw@@CXXABI_1.3); an UNVERSIONED
+ * LD_PRELOAD definition does NOT satisfy the versioned reference from
+ * winmgr/libbackend, so this interposer never fired (caught 0) until built with
+ * -Wl,--version-script=throwcatch.map (exports __cxa_throw@@CXXABI_1.3). */
 void __cxa_throw(void *thrown, void *type, void (*dtor)(void*)){
     const char *tn = ti_name(type);
     char msg[256]; const char *payload="";

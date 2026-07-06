@@ -1,0 +1,6 @@
+CXXABI_1.3 {
+  global:
+    __cxa_throw;
+  local:
+    *;
+};
