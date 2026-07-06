@@ -68,6 +68,20 @@ sudo mkdir -p /mnt/plc/service && sudo chmod -R a+rwX /mnt/plc/service   # Guppy
 sudo mkdir -p /mnt/sys/Python /mnt/sys/usr/lib/python
 sudo cp -aL "$CFG/Python/." /mnt/sys/Python/ 2>/dev/null
 sudo cp -aL "$CFG/usr/lib/python/site-packages" /mnt/sys/usr/lib/python/site-packages 2>/dev/null
+# ★ GLADE CASE-ALIAS FIX (2026-07-06): HwViewer.py requests 'form/HWViewer.glade'
+# (upper "HW") but the file staged onto the case-SENSITIVE /mnt/sys tmpfs is
+# 'HwViewer.glade' (lower "w") -> exact-case lookup fails -> gtk.glade.XML raises
+# "could not create GladeXML object" -> HwViewer.__init__ aborts before the window
+# is created. Symlink the code-cased name to the on-disk file (content identical).
+HWFORM=/mnt/sys/Python/HwViewer/form
+if [ -d "$HWFORM" ]; then
+  for want in $(sudo grep -rhoE "form/[A-Za-z0-9_]+\.glade" /mnt/sys/Python/HwViewer/*.py 2>/dev/null | sed 's#form/##' | sort -u); do
+    if ! sudo test -e "$HWFORM/$want"; then
+      have=$(sudo ls "$HWFORM" 2>/dev/null | grep -ixF "$want" | head -1)
+      [ -n "$have" ] && sudo ln -sf "$have" "$HWFORM/$want" && echo "  glade case-alias: form/$want -> form/$have"
+    fi
+  done
+fi
 for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
 sudo chmod -R a+rwX /mnt/sys/config /mnt/plc/config /mnt/sys/cache /mnt/tnc /mnt/sys/Python /mnt/sys/usr 2>/dev/null
 sudo bash -c 'head -c 1048576 /dev/zero > /dev/shm/_heusrv_shm; chmod 0666 /dev/shm/_heusrv_shm'
