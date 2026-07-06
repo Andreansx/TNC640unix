@@ -500,6 +500,25 @@ static void ev_trace(uint32_t self,uint32_t want,uint32_t cond,uint32_t timeout)
     fflush(stderr);
 }
 
+/* INJECT_WMGR_TIMER state — declared here (before ev_receive) because ev_receive delivers the timer tick
+ * event-driven. Full RE writeup at the second reference near `timers_fire`. */
+static void put32(unsigned char*b,uint32_t v);   /* fwd (defined later) */
+static int q_slot(uint32_t id);                  /* fwd (defined later) */
+static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode);  /* fwd (defined later) */
+static void wm_timer_maybe_tick(void);           /* fwd (defined later) — called from ev_receive + q_read */
+static long wm_timer_period_ms(void);            /* fwd (defined later) */
+static int inject_wm_timer=-1;
+struct wmtmr { uint32_t replyq, timerid, period; };
+static struct wmtmr wm_timers[8];
+static volatile int n_wm_timers=0;
+static volatile uint32_t wm_tmr_replyq=0;        /* the client's WM event queue (auto-discovered in q_read) */
+static volatile uint32_t wm_tmr_last_serial=0;   /* max off4 the client has read off replyq (== its WM a1[10]) */
+static volatile int wm_hs_done=0;                /* client has read a GetScreens (0x3037) reply -> handshake reached */
+static struct timespec wm_last_hs={0,0};         /* mono time of the client's last 0x3001/0x3037 handshake read */
+static long wm_tmr_warmup_ms=2500;               /* (thread-poster fallback only) */
+static long wm_tmr_tick_ms=55;                   /* (thread-poster fallback only) */
+static void wm_timer_spawn(void);
+
 static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
     uint32_t self=task_self(); int s=task_slot(self);
     if(s<0) return 0;
@@ -649,7 +668,7 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
         }
         if(hstrace && !hst_waited){ hst_waited=1; HST(self,0,"EV< t%x WAIT want=%08x c=%u to=%s (have=%08x)\n",
             self,want,cond,timeout==0xffffffff?"inf":"fin",cur); }
-        struct timespec rel,*tp=0;
+        struct timespec rel,cap,*tp=0;
         if(have_dl){                                          /* compute the remaining slice */
             struct timespec now; mono_now(&now);
             long rem=(deadline.tv_sec-now.tv_sec)*1000L+(deadline.tv_nsec-now.tv_nsec)/1000000L;
@@ -683,6 +702,26 @@ static uint32_t ev_receive(uint32_t want,uint32_t cond,uint32_t timeout){
                 if(hstrace) HST(self,0,"QNOTIFY_LEVEL t%x re-assert %08x (pending owned queue, want %08x)\n",self,set,want);
                 continue;                                    /* re-check: catch the re-asserted bit, drain the queue */
             }
+        }
+        /* INJECT_WMGR_TIMER — deliver the periodic WM tick to a client BLOCKING on its WM event queue's
+         * notify bit. Guppy's softkey/GTK phases alternate between polling q_read (handled in q_read) and
+         * blocking HERE in ev_receive; a single hook only ever delivered one tick then stalled. Post a due
+         * tick (sets our own notify bit -> the futex sees *ev change -> we re-check and read it), and cap
+         * the wait to the tick period so the NEXT tick is re-checked rather than blocking forever. Scoped
+         * to the task that owns the WM event queue and whose wait mask includes that queue's notify bit. */
+        if(inject_wm_timer<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_TIMER"); inject_wm_timer=(e&&e[0]=='1')?1:0; }
+        { uint32_t rq=wm_tmr_replyq;
+          if(inject_wm_timer==1 && rq && wm_hs_done && __atomic_load_n(&n_wm_timers,__ATOMIC_ACQUIRE)>0){
+              int qs=q_slot(rq);
+              if(qs>=0 && C->queues[qs].owner==self && (C->queues[qs].notify_bits & want)){
+                  wm_timer_maybe_tick();                      /* posts if due -> asserts our notify bit */
+                  uint32_t nc=__atomic_load_n(ev,__ATOMIC_ACQUIRE);
+                  if((nc & want) || nc!=cur) continue;        /* the tick (or anything) landed -> re-check */
+                  long p=wm_timer_period_ms();
+                  cap.tv_sec=p/1000; cap.tv_nsec=(p%1000)*1000000L;
+                  if(!tp || tp->tv_sec>cap.tv_sec || (tp->tv_sec==cap.tv_sec && tp->tv_nsec>cap.tv_nsec)) tp=&cap;
+              }
+          }
         }
         futex(ev,FUTEX_WAIT,cur,tp);                          /* forever (tp=0) or remaining slice */
     }
@@ -786,6 +825,31 @@ static int hws_stub=0;               /* HEROSCALL_HWS_STUB=1: auto-reply to QHWS
 static int timers_fire=0;            /* HEROSCALL_TIMERS=1: make Tm_evafter/Tm_evevery actually fire
                                       * their event (else the pending-client-msg flush timer never
                                       * fires → ConfigServer never sends connect-ACKs) */
+/* INJECT_WMGR_TIMER (HEROSCALL_INJECT_WMGR_TIMER=1): SERVE the WM periodic-timer expiry event that the
+ * real winmgr would send but doesn't under the emulator. RE'd end-to-end (2026-07-07):
+ *   • A WM client (Guppy/jh.gtk, skmgr) arms a GTK-style timeout via gtk_wm_timer -> WmCreateTimer
+ *     (libwinmgrlib 0x7240) -> WmSendRequest (FIRE-AND-FORGET, NOT WmSendRequestReply) of a 40-byte
+ *     0x302c StartTimer to Q_WMGR: {off24=replyQ(the client's WM event queue), off28=timerId, off32=periodMs}.
+ *   • winmgr HandleMessage@0x29f00 case 0x302c -> WmTimer::StartTimer(client,timerId,periodMs,repeat)
+ *     appends a timer_entry to s_Timers. winmgr's OWN 55ms tick (WmWaitableTimer::Create ->
+ *     FTimer::SignalEvery(55000) -> tm_evevery(55000,bits) -> WmWaitableTimer::Notify -> WmTimer::TimerTick)
+ *     walks s_Timers and, for each expired client timer, builds WmEvent{SetType(11),SetTarget(client),
+ *     SetValue(timerId)} and posts it via WmClient vtable+80. The serialized WIRE event is a WMGREvent_
+ *     with off0=0x3061 (12385, the WIRE timer type), off4=event serial, off12=timerId.
+ *   • The client consumes it: GtkWmWaitable::Notify -> WmGetEvent -> WmRecvEvent (libwinmgrlib 0x46d0)
+ *     gap-checks off4 (== a1[10]+1), then WmParseEvent (0x2350) maps WIRE 0x3061 -> PARSED type 24 (copying
+ *     wire off12 -> parsed off12); WmCheckTimerCallback (libgtkbind 0xeaf0) checks the PARSED event
+ *     (`parsed off0==24 && a3==parsed off12`) -> fires the matching gtk_wm_timer callback (the login tick).
+ *     NB: 24 is the PARSED type, NOT the wire type — sending raw wire-24 hits WmParseEvent's default
+ *     ("WMGRErrUnexpected", err 6) -> GtkWmWaitable::Notify g_error -> SIGTRAP.
+ * The emulator never re-fires winmgr's 55ms tm_evevery (HEROS_TM_PERIODIC blindly re-firing it STARVES
+ * winmgr's serve threads + risks TimerTick's crashy render path — a documented 2026-06-27 regression), so
+ * TimerTick never re-runs and the client's GTK timeout callback never fires -> Guppy spins on its WM event
+ * queue forever, the softkey login is never sent, skmgr never draws. Surgically synthesize the type-24 tick
+ * directly to the client's WM event queue with a serial kept contiguous with winmgr's real handshake-reply
+ * serials (tracked from what the client reads off that queue). Gated; default OFF. Delivery is EVENT-DRIVEN
+ * in ev_receive (fires the tick on the client's own WM-event wait — robust under FEX where a detached poster
+ * thread starves). The INJECT_WMGR_TIMER state is declared before ev_receive (which uses it). */
 /* HEROSCALL_REPLAY_TRIGGER=1: capture+replay CfgServerQueue startup self-messages, hoping to
  * re-fire CfgServer::SendConnected (the connect-ACK flush) for a post-startup client (IPO).
  * RESULT: DOES NOT WORK — verified the captured CfgServerQueue msgs (the only 3: post-to-anon-q
@@ -1456,6 +1520,33 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
               q_send(rq,rep,sizeof rep,0);
           }
       }
+      /* INJECT_WMGR_TIMER: a client armed a WM periodic timer (0x302c StartTimer, fire-and-forget). Record
+       * {replyQ=off24, timerId=off28, periodMs=off32} and lazily start the poster that serves the type-24
+       * timer expiry event winmgr's (never-firing) 55ms tick would send. Independent of INJECT_WMGR_ACK —
+       * this coexists with the REAL winmgr (which serves the 0x3001/0x3037 handshake with its own serials;
+       * the poster continues from the serial the client last accepted). See the RE header near timers_fire. */
+      { if(inject_wm_timer<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_TIMER"); inject_wm_timer=e&&e[0]=='1';
+            const char*w=getenv("HEROSCALL_WMGR_TIMER_WARMUP_MS"); if(w) wm_tmr_warmup_ms=atol(w);
+            const char*t=getenv("HEROSCALL_WMGR_TIMER_TICK_MS");   if(t) wm_tmr_tick_ms=atol(t); }
+        if(inject_wm_timer && msg && size>=36 && !strcmp(C->queues[s].name,"Q_WMGR")
+           && *(const uint32_t*)msg==0x302cu){
+            uint32_t rq =*(const uint32_t*)((const char*)msg+24);   /* off24 = client's WM event queue    */
+            uint32_t tid=*(const uint32_t*)((const char*)msg+28);   /* off28 = timer id (wire off12 match) */
+            uint32_t per=*(const uint32_t*)((const char*)msg+32);   /* off32 = period ms                   */
+            int found=0, n=__atomic_load_n(&n_wm_timers,__ATOMIC_ACQUIRE);
+            for(int i=0;i<n && i<8;i++) if(wm_timers[i].timerid==tid && wm_timers[i].replyq==rq){ found=1; break; }
+            if(!found && n<8){
+                wm_timers[n].replyq=rq; wm_timers[n].timerid=tid; wm_timers[n].period=per;
+                __atomic_store_n(&n_wm_timers,n+1,__ATOMIC_RELEASE);
+                /* NB: do NOT target off24 (a1[6]) — it is the StartTimer reply-to, which for skmgr is its
+                 * SERVE queue Q_SkMgr (0x313), not its WM event queue (WMQ<tid>=0x311). winmgr's TimerTick
+                 * sends to the client's connect-registered WM transport queue. We auto-discover that queue
+                 * in q_read (the queue on which the client reads winmgr's 0x3001/0x3037 handshake replies). */
+                LOG("INJECT_WMGR_TIMER: armed WM timer id=0x%x period=%ums (0x302c reply-to 0x%x) (n=%d)\n",tid,per,rq,n+1);
+            }
+            wm_timer_spawn();
+        }
+      }
       if(inject_wmgr_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
          && *(const uint32_t*)msg==0x3037u){
           uint32_t seq=*(const uint32_t*)((const char*)msg+4);
@@ -1778,9 +1869,111 @@ static void wm_activate_spawn(void){
     fprintf(stderr,"[wmact] spawn timer thread pid=%d delay=%lds rc=%d\n",(int)getpid(),delay,rc);
     pthread_attr_destroy(&at);
 }
+/* INJECT_WMGR_TIMER poster: after a warmup (WM handshake settles), post one wire type-24 event per armed
+ * client timer every ~55ms to the client's WM event queue, with a serial kept contiguous with what the
+ * client last accepted. Runs in the client's own process (the process that sent the 0x302c), posting to
+ * the client's own queue — q_send notifies the client's WM-reading task cross-thread. */
+static void* wm_timer_thread_fn(void* arg){
+    (void)arg;
+    { struct timespec w={ wm_tmr_warmup_ms/1000, (wm_tmr_warmup_ms%1000)*1000000L }; nanosleep(&w,0); }
+    for(;;){
+        if(!C) return NULL;
+        uint32_t rq=wm_tmr_replyq;
+        if(rq && q_slot(rq)>=0){
+            int n=__atomic_load_n(&n_wm_timers,__ATOMIC_ACQUIRE); if(n>8) n=8;
+            /* base the sequence on the serial the client has actually accepted (its WM a1[10]); a 55ms
+             * tick is far slower than the client's poll-read latency, so it reads each event before the
+             * next tick and the +i run stays contiguous (no gap, no dup). */
+            uint32_t ser=wm_tmr_last_serial+1;
+            for(int i=0;i<n;i++){
+                unsigned char ev[0x41C]; memset(ev,0,sizeof ev);   /* full WmGetEvent buffer (0x41C) — all fields 0 */
+                /* WIRE type = 0x3061 (12385), NOT 24. The GTK WM waitable dispatch is GtkWmWaitable::Notify
+                 * -> WmGetEvent -> WmParseEvent (libwinmgrlib 0x2350), which switches on the WIRE type: case
+                 * 0x3061 -> parsed-type 24, copying wire off12 -> parsed off12. WmCheckTimerCallback then
+                 * checks the PARSED event (parsed off0==24 && a3==parsed off12). Raw wire-24 hits WmParseEvent's
+                 * default -> "WMGRErrUnexpected" (err 6) -> GtkWmWaitable::Notify g_error -> SIGTRAP. */
+                put32(ev+0,0x3061u);                  /* off0: WIRE type 0x3061 (WmParseEvent -> parsed timer type 24) */
+                put32(ev+4,ser+(uint32_t)i);          /* off4: event serial (WmRecvEvent: off4-1==a1[10]) */
+                put32(ev+12,wm_timers[i].timerid);    /* off12: timer id (parsed off12; WmCheckTimerCallback a3==a2[3]) */
+                q_send(rq,ev,sizeof ev,0);
+                LOG("INJECT_WMGR_TIMER: tick wire-0x3061(timer) serial %u timerid 0x%x -> WM q 0x%x\n",
+                    ser+(uint32_t)i,wm_timers[i].timerid,rq);
+            }
+        }
+        struct timespec r={ wm_tmr_tick_ms/1000, (wm_tmr_tick_ms%1000)*1000000L }; nanosleep(&r,0);
+    }
+    return NULL;
+}
+static void wm_timer_spawn(void){
+    /* Delivery is now EVENT-DRIVEN inside ev_receive (fires the tick on the client's own WM-event wait),
+     * which is robust under FEX where a detached poster thread gets starved. The thread poster
+     * (wm_timer_thread_fn) is kept for reference but NOT started (a second producer would race the serial
+     * sequence). Set HEROSCALL_WMGR_TIMER_THREAD=1 to use the old thread-based poster instead. */
+    static int spawned=0; if(spawned) return; spawned=1;
+    static int use_thread=-1; if(use_thread<0){ const char*e=getenv("HEROSCALL_WMGR_TIMER_THREAD"); use_thread=(e&&e[0]=='1')?1:0; }
+    if(!use_thread){ fprintf(stderr,"[wmtimer] event-driven delivery armed pid=%d (period from 0x302c)\n",(int)getpid()); return; }
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at,PTHREAD_CREATE_DETACHED);
+    int rc=pthread_create(&th,&at,wm_timer_thread_fn,0);
+    fprintf(stderr,"[wmtimer] spawn poster pid=%d warmup=%ldms tick=%ldms rc=%d\n",
+        (int)getpid(),wm_tmr_warmup_ms,wm_tmr_tick_ms,rc);
+    pthread_attr_destroy(&at);
+}
+/* INJECT_WMGR_TIMER — deliver the WM periodic-timer tick from the q_read path. RE'd 2026-07-07: Guppy's
+ * jh.gtk WM event loop (GtkWmWaitable) BUSY-POLLS q_read on its WM event queue for the periodic timer event
+ * that the real winmgr's 55ms WmTimer::TimerTick would post (wire 0x3061); the emulator can't re-fire
+ * winmgr's tm_evevery (it starves winmgr's serve threads) and a client-side poster thread is FEX-starved,
+ * so nothing delivers it and Guppy polls forever. Deliver it HERE — the single point Guppy hits constantly:
+ * when it polls its WM queue and a tick is DUE (>= the 0x302c period since the last), post ONE wire-0x3061
+ * event per armed timer, serial contiguous with what the client last read (wm_tmr_last_serial+1, tracked
+ * below). The subsequent read in this same q_read call returns it -> WmParseEvent (0x3061->parsed 24) ->
+ * WmCheckTimerCallback -> the gtk_wm_timer callback fires. Rate-limited to the period; only when the queue
+ * is drained (so serials never gap/dup). Verified: one tick drives Guppy from the WM spin into its softkey/
+ * dialog-client setup burst (Rts10a/Client10a/Intern10a/Q_DLGSERVER, Q_send AppStartMaster). */
+static long wm_timer_period_ms(void){
+    uint32_t period=wm_timers[0].period;
+    if(period<55) period=55;                     /* winmgr coalesces client timers to its 55ms WmWaitableTimer */
+    if(period>200) period=200;
+    return (long)period;
+}
+/* Post a due WM periodic-timer tick to the client's WM event queue. Called from BOTH q_read (client polls
+ * its WM queue) and ev_receive (client blocks on its WM queue's notify bit) — Guppy alternates between the
+ * two across its GTK/softkey phases, so a single hook only ever delivered one tick. Idempotent + gated:
+ * fires at most once per period, only after the handshake has settled and the previous tick was drained. */
+static void wm_timer_maybe_tick(void){
+    if(inject_wm_timer<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_TIMER"); inject_wm_timer=(e&&e[0]=='1')?1:0; }
+    uint32_t rq=wm_tmr_replyq;
+    if(inject_wm_timer!=1 || !rq) return;
+    if(!wm_hs_done) return;                       /* wait until the client has read a GetScreens reply */
+    int nt=__atomic_load_n(&n_wm_timers,__ATOMIC_ACQUIRE); if(nt<=0) return; if(nt>8) nt=8;
+    long period=wm_timer_period_ms();
+    struct timespec now; mono_now(&now);
+    /* settle: don't tick until the handshake replies have stopped arriving (no 0x3001/0x3037 read for
+     * SETTLE ms) — else a tick injected between two GetScreens screen-replies corrupts the sequence. */
+    long hs_ms=(now.tv_sec-wm_last_hs.tv_sec)*1000L+(now.tv_nsec-wm_last_hs.tv_nsec)/1000000L;
+    { static long settle=-1; if(settle<0){ const char*e=getenv("HEROSCALL_WMGR_TIMER_SETTLE_MS"); settle=e?atol(e):750; }
+      if(hs_ms<settle) return; }
+    static struct timespec last={0,0};
+    long dms=(now.tv_sec-last.tv_sec)*1000L+(now.tv_nsec-last.tv_nsec)/1000000L;
+    if(dms<period) return;                        /* rate-limit to winmgr's tick period */
+    int qs=q_slot(rq); if(qs<0) return;
+    int empty; lock(); empty=(C->queues[qs].tail==C->queues[qs].head); unlock();
+    if(!empty) return;                            /* client hasn't drained the previous tick yet */
+    last=now;
+    uint32_t base=wm_tmr_last_serial+1;
+    for(int i=0;i<nt;i++){
+        unsigned char ev2[0x41C]; memset(ev2,0,sizeof ev2);
+        put32(ev2+0,0x3061u);                    /* WIRE type 0x3061 -> WmParseEvent parsed timer type 24 */
+        put32(ev2+4,base+(uint32_t)i);           /* off4: serial (WmRecvEvent gap-check off4-1==a1[10]) */
+        put32(ev2+12,wm_timers[i].timerid);      /* off12: timer id (WmCheckTimerCallback a3==a2[3]) */
+        q_send(rq,ev2,sizeof ev2,0);
+    }
+    LOG("INJECT_WMGR_TIMER: tick x%d (base serial %u) -> WM q 0x%x\n",nt,base,rq);
+}
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){
     sk_flow_spawn();   /* lazily start the INJECT_SK_FLOW timer thread (no-op unless HEROSCALL_INJECT_SK_FLOW=1) */
     wm_activate_spawn(); /* lazily start INJECT_WMGR_ACTIVATE timer (no-op unless HEROSCALL_INJECT_WMGR_ACTIVATE=1) */
+    wm_timer_maybe_tick(); /* INJECT_WMGR_TIMER: deliver a due WM timer tick (client may be polling its WM queue) */
     int q_saved_errno=errno;   /* libc syscall() preserves errno on SUCCESS, sets it only on error; the
                                 * real heros.ko q_read does likewise. Our success path below calls
                                 * LOG()/ev_send()/q_send() which clobber errno via fprintf/futex, so we
@@ -1862,6 +2055,31 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
             uint32_t copied=full;
             if(s>=0&&s<1024) wmq_empty_streak[s]=0;   /* WMQ_BREAK: a real read resets the empty streak */
             if(buf&&copied) memcpy(buf,q->msg[slot].data,copied);
+            /* INJECT_WMGR_TIMER: AUTO-DISCOVER the client's WM event queue + track the serial it accepts,
+             * so the injected type-24 tick targets the right queue with a contiguous serial. The WM event
+             * queue is wherever the client reads winmgr's handshake replies (0x3001 connect / 0x3037
+             * screens) — NOT the 0x302c reply-to (off24). Once discovered, track the max off4 (== the
+             * client's WM a1[10]) off that queue so the poster continues winmgr's serial sequence. */
+            { static int iwt_r=-1; if(iwt_r<0){ const char*e=getenv("HEROSCALL_INJECT_WMGR_TIMER"); iwt_r=e&&e[0]=='1'; }
+              if(iwt_r && copied>=8){
+                uint32_t ty =*(const uint32_t*)((const char*)q->msg[slot].data+0);
+                uint32_t ser=*(const uint32_t*)((const char*)q->msg[slot].data+4);
+                if((ty==0x3001u||ty==0x3037u) && wm_tmr_replyq!=id){
+                    wm_tmr_replyq=id;
+                    LOG("INJECT_WMGR_TIMER: discovered WM event queue 0x%x (client read reply type 0x%x)\n",id,ty);
+                }
+                if(wm_tmr_replyq==id){
+                    uint32_t cur=wm_tmr_last_serial;
+                    while((int32_t)(ser-cur)>0 &&
+                          !__atomic_compare_exchange_n(&wm_tmr_last_serial,&cur,ser,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){}
+                    /* Gate the injected tick until the WM handshake is done. A tick posted DURING the
+                     * connect(0x3001)/GetScreens(0x3037) handshake corrupts the reply sequence (a 0x3037
+                     * gets routed to WmGetEvent->WmParseEvent -> "WMGRErrUnexpected WINMGRQ_GETSCREENS"
+                     * -> SIGTRAP). Mark the handshake reached on the first GetScreens read + stamp the time
+                     * of every handshake read; wm_timer_maybe_tick waits for a settle gap after the last. */
+                    if(ty==0x3001u||ty==0x3037u){ mono_now(&wm_last_hs); if(ty==0x3037u) wm_hs_done=1; }
+                }
+              } }
             if(hdrbuf){ hdrbuf[0]=q->msg[slot].hdr[0]; hdrbuf[1]=q->msg[slot].hdr[1]; hdrbuf[2]=q->msg[slot].hdr[2]; }
             uint32_t len=copied;
             qhex("Q_read",id,buf,len);
