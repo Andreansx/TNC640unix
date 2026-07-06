@@ -69,22 +69,33 @@ softkey bar** (via the BARCOPY helper); the winmgr **render frontier CROSSED**
 (winmgr creates its screen-layout windows, crash=0, via `readfix` + `PNAME=1` +
 `SEM_INIT=0`/`SEM_FORCE_OK`).
 
-**Latest state (2026-07-06, cont.):** First, the committed `run_3proc_skmgr_guppy.sh`
-had a **fatal syntax error** (an apostrophe in a comment INSIDE its `bash -c '...'`
-block) so it could not run at all — FIXED (commit fd90acf). With it running: across
-4 runs on the current warm VM, **winmgr does NOT crash — it KEEPS its screens**
-(`Machine`+`Edit`+`_JH_FOCUSPROXY`, 265 windows; a crash leaves 26). So the
-winmgr render-thread SIGSEGV is **run-variant** and the render frontier is
-effectively crossed here; `segvbt.so` (now dumps EIP+regs+EBP-chain) + `WM_SEGVBT=2`
-are staged to pin the fault if it recurs. The **live** bar-blocker is now the Guppy
-**self-bind** path: `Q_ident "Nc/mmi.qHF" -> 0` is correct+intended (absent host
-frame ⇒ self-bind), but Guppy's OEM thread then `T_delete`s BEFORE
-`GUPPYSKMGR::Register` fires — 0 msgs to Q_SkMgr, skmgr loads 0 .bmx. Likely cause:
-the OEM `jh.gtk.Window(screen='OemScreen')` never realizes/parents onto winmgr's
-now-existing OemScreen. Next: RE why the OEM window doesn't realize on OemScreen
-(does Guppy resolve `OemScreen` to winmgr's screen id? X reparent/map?). Do NOT
-synthesize `mmi.qHF`. Full chain, every `INJECT_*`/env knob, the exact run recipe,
-and the corrected crash analysis are in `docs/PROGRESS-LOG.md`.
+**Latest state (2026-07-06, cont. — commit 7e764b6): the winmgr render-thread
+SIGSEGV frontier turned out to be a NON-ISSUE (false positive); winmgr creates the
+OEM screen cleanly.** Two tooling fixes exposed it: (a) `__cxa_throw` is a
+**versioned** symbol (`__cxa_throw@@CXXABI_1.3`) — an unversioned LD_PRELOAD def
+doesn't satisfy the versioned ref, so `throwcatch` caught 0 throws for ~10 sessions;
+rebuilt with `-Wl,--version-script=emulator/throwcatch.map` it interposes. (b)
+`WM_SEGVBT` was never in the run script's `sudo env` passthrough, so the diagnostic
+preload was silently never applied — now fixed (+ a `WM_STRACE_TRACE` knob). With
+versioned throwcatch loaded, the crash resolved to an uncaught
+`Xml::Exception`/`SAXParseException` **"File not found"** from `libxmlreader.so` in
+`WindowManager::ReadLayout`; an `openat` strace named the file:
+`/mnt/sys/resource/tnc640layout1280_oemscr.xml = ENOENT`. **The `<screen>`-OEM
+diagnostic layout was only staged to `$CFG`/SYSW, never to `/mnt/sys/resource`
+(where `%SYS%` actually resolves — a persistent mount the run script does NOT
+populate).** `sudo cp` it there and re-run → **winmgr creates all three screens incl.
+`0x40001b "OEM"` (1280x1023) + `_JH_FOCUSPROXY` + the softkey-area strip, crash=0, no
+throw** (`scratchpad/shots/oem_staged.png`). So the OEM-screen path is FINE. **DURABLE
+LESSON: custom `%SYS%/resource/*` layouts must be `sudo cp`'d to `/mnt/sys/resource`,
+else winmgr throws uncaught "File not found".** **REAL bar-blocker re-pinned = skmgr's
+DRAW GATE:** skmgr connects to X99, serves config (INJECT_ACK on 0x315), attaches the
+TR_en region, but BLOCKS on `Ev_receive(0x07011000)` and never loads its `.bmx` /
+draws; the softkey strip renders EMPTY. The softkey-area window (0x80001f) isn't
+created because Guppy hasn't realized its OEM window
+(`jh.gtk.Window(screen='OemScreen')`) to request it — the same self-bind/OEM-realize
+gate. Do NOT synthesize `mmi.qHF`. Next: RE what posts Ev 0x07011000 AND why Guppy's
+OEM window doesn't realize onto winmgr's now-existing OemScreen. Full chain, every
+`INJECT_*`/env knob, and the exact run recipe are in `docs/PROGRESS-LOG.md`.
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness

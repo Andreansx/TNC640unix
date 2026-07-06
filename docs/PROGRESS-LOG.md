@@ -1882,7 +1882,45 @@
 > composite into the now-existing ClientArea. Run: `bash scratchpad/wmwin.sh` (winmgr-only; SEMINIT/SEMFORCE/
 > WMTMO knobs); integrated: the winning knobs are the winmgr defaults in run_3proc/run_fred.
 
-> ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
+> ## ★★★★★ SOFTKEY BAR (2026-07-06, cont. #2, commit 7e764b6) — the winmgr OEM-screen "SIGSEGV" was a FALSE POSITIVE (unstaged layout file); winmgr creates Machine/Edit/OEM + the softkey strip crash=0. Real bar blocker = skmgr's draw gate (Ev 0x07011000) + Guppy OEM-window realize.
+> Follow-up session. The "deterministic winmgr-crash repro" from the prior entry (flip SCREEN_OEM to a
+> `<screen>`) turned out to be self-inflicted, and finding it required fixing two silent tooling bugs.
+> **(A) `__cxa_throw` is a VERSIONED symbol** (`__cxa_throw@@CXXABI_1.3`). An UNVERSIONED LD_PRELOAD
+> definition does NOT satisfy the versioned reference from winmgr/libbackend, so `throwcatch.so` caught
+> ZERO throws for ~10 sessions (the "throwcatch doesn't capture under FEX" claim was wrong — it never
+> interposed). Rebuild with `-Wl,--version-script=emulator/throwcatch.map` (new file: exports
+> `__cxa_throw@@CXXABI_1.3`) and it fires. NB `syscall` interposes fine UNVERSIONED (heros_rtos), which is
+> exactly what had hidden the versioning gotcha. Added a constructor announcement to prove it loads.
+> **(B) `WM_SEGVBT` was never passed through.** It's read at line 172 INSIDE the `unshare -m bash -c`
+> block, but was never in the `sudo env` passthrough allowlist (lines 138-141) → always defaulted to 0 →
+> the throwcatch/segvbt diagnostic preload was SILENTLY never applied. Every prior "segvbt didn't capture"
+> run was a no-op. FIXED: added `WM_SEGVBT` (+ `WM_SEM_INIT`/`WM_SEM_FORCE_OK`/`WM_PNAME`) and a new
+> `WM_STRACE_TRACE` knob (default `connect,writev`; set `open,openat,...` to catch ENOENT) to the passthrough.
+> **THE CORRECTION.** With versioned throwcatch loaded, the winmgr OEM-screen crash resolved to an uncaught
+> `Xml::Exception` / `sax::SAXParseException` with payload **"File not found"**, thrown from
+> `libxmlreader.so` `IO::FileStream::Open` inside `WindowManager::ReadLayout` → `XMLReader::parse`. An
+> `openat` strace named the file: `openat("/mnt/sys/resource/tnc640layout1280_oemscr.xml") = -1 ENOENT`.
+> The diagnostic layout was created in `$CFG/resource` and staged only to SYSW (`/tmp/s`→`/var/tmp/sysw`),
+> but `%SYS%` actually resolves to `/mnt/sys` (SYS=/mnt/sys in the run env), and **`/mnt/sys/resource` is a
+> PERSISTENT mount the run script does NOT populate** (it already held the original `tnc640layout1280.xml`,
+> dated Jan 20, hence the original layout worked). So winmgr couldn't open the diagnostic layout and threw
+> UNCAUGHT → EvtExceptionShell retry → SIGSEGV. **`sudo cp` the layout to `/mnt/sys/resource` and re-run:
+> winmgr creates ALL THREE screens including `0x40001b "OEM"` (1280x1023) + `_JH_FOCUSPROXY` + the
+> softkey-area strip, signal11=0, no throw** (screenshot `scratchpad/shots/oem_staged.png` = blank main
+> area + an empty ~1280x108 strip along the bottom). **The winmgr render-thread SIGSEGV frontier is a
+> NON-ISSUE; the OEM-screen path is fine.** DURABLE LESSON: any custom `%SYS%/resource/*` file (layout,
+> etc.) must be `sudo cp`'d into `/mnt/sys/resource`, not just `$CFG`/SYSW, or winmgr throws uncaught
+> "File not found". **REAL bar-blocker (re-pinned): skmgr's DRAW GATE.** skmgr (t88343) connects to
+> `/tmp/.X11-unix/X99`, serves config (INJECT_ACK on Q_SkMgrCtrl 0x315), attaches the `TR_en` region,
+> loops reading 0x313/0x317 — but BLOCKS on `Ev_receive(0x07011000)` and never loads its `.bmx` bitmaps or
+> enters the draw phase (the strip stays empty). Queue 0x303 is `CfgServerQueue` (ConfigServer, task
+> 0x100) — skmgr's sends there are config requests, not a draw thread. The softkey-area window (0x80001f)
+> is NOT created in this run because Guppy hasn't realized its OEM window (`jh.gtk.Window(screen='OemScreen')`)
+> to request it (the same self-bind/OEM-realize gate as the prior entry's finding 3). NEXT: RE what posts
+> Ev `0x07011000` (skmgr's draw/handshake trigger) AND why Guppy's OEM window doesn't realize onto winmgr's
+> now-existing OemScreen (X reparent/map? does Guppy resolve `OemScreen`→winmgr's screen id?).
+>
+> ### (superseded) ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
 > Follow-up session. Three findings, all verified; commit fd90acf.
 > **(0) ★ The committed `run_3proc_skmgr_guppy.sh` could not run at all.** Commit a2e569d added a comment
 > (line 183) `# -> Guppy's OEM window never realizes ...` INSIDE the `unshare -m bash -c '...'` single-quoted
