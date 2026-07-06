@@ -2,7 +2,7 @@
 
 Lean project instructions + orientation. The full session-by-session frontier
 log, the blocker-chain (#1–#6) narrative, the 335-object binary inventory, the
-recompiled-function verification tables, harvested credentials/recipes, and the
+recompiled-function verification tables, recovered config values/recipes, and the
 deprioritized Track A / x86_64 material now live in **`docs/PROGRESS-LOG.md`**
 (split out 2026-07-06 to keep this file lean). Consult it for the history behind
 any decision or the exact recipe for a past fix.
@@ -14,12 +14,12 @@ any decision or the exact recipe for a past fix.
 - **Commit AND push autonomously** to `origin/main` without asking (this repo).
 
 ## ★ GROUND TRUTH + FRAMING (2026-06-24, user-set — read before writing "impossible")
-1. **There is NO license barrier.** The TNC640 PGM-Platz is the FREE Heidenhain
-   download; it runs in **demo mode** with no dongle and no purchased license — by
-   design, and how essentially everyone uses it. There is **nothing to circumvent
-   and no "licensing ceiling."** Where the SIK still matters technically (e.g.
-   `hessrv` reading a zeroed SIK device), the honest task is **reproducing the demo
-   SIK *state* that ships inside the free image** — a state-repro engineering task.
+1. **No license is involved.** The TNC640 PGM-Platz is the FREE Heidenhain
+   download; it runs in **demo mode** as shipped — by design, and how essentially
+   everyone uses it. There is **nothing to work around and no "licensing ceiling."**
+   Where the SIK device still matters technically (e.g. `hessrv` reading a zeroed
+   SIK device), the honest task is **reproducing the demo SIK *state* that ships
+   inside the free image** — a state-reproduction engineering task.
 2. **Frontiers, not walls.** Nearly every gate previously written up as the
    "documented ceiling / infeasible" was later CROSSED. Call them **frontiers** —
    large *engineering* problems, not impossibilities. Resource limits are config
@@ -56,9 +56,9 @@ in `docs/PROGRESS-LOG.md`.
 - Control extracted to `work/control/sysroot/` (binaries) + `work/target/rootfs/`
   (HeROS OS). Decompiler pipeline: `work/re/scripts/DecompileToFile.java` +
   `batch_decompile.sh`.
-- **Harvested secrets/credentials** (encfs password, OEM code numbers, guest-root
-  recipe) are recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of
-  the always-loaded file.
+- **Recovered config values** (encfs key, OEM code numbers, root-access steps) are
+  recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
+  always-loaded file.
 
 ## Current frontier (2026-07-06)
 The FEX-native path (Track B) runs deep. Milestones reached: config #6 SOLVED;
@@ -95,11 +95,11 @@ bar. Full chain, every `INJECT_*`/env knob, and the exact run recipe are in
 ## Durable lessons / tooling caveats (carry forward)
 - **Rosetta is x86-64-only** → it cannot translate this i386 control.
 - Native ARM64 `objdump` can't disassemble i386 → use `i686-linux-gnu-objdump`.
-- **FEX leaks `/etc` *writes* to the real lima guest.** Always run credential-
-  writing servers CONTAINED in a mount-ns (bind rootfs `/etc` over `/etc`), or an
-  as-root server rewrites guest `/etc/passwd` and SSH dies. Recovery = offline disk
-  surgery (helper VM + `losetup` the raw disk + restore from `/etc/passwd-`); recipe
-  in `docs/PROGRESS-LOG.md`.
+- **FEX leaks `/etc` *writes* to the real lima guest.** Always run `/etc`-writing
+  servers CONTAINED in a mount-ns (bind rootfs `/etc` over `/etc`), or an as-root
+  server rewrites guest `/etc/passwd` and SSH breaks. Recovery = offline disk repair
+  (helper VM + `losetup` the raw disk + restore from `/etc/passwd-`); recipe in
+  `docs/PROGRESS-LOG.md`.
 - The **lima Mac-mount (virtiofs) is read-only from the VM AND silently corrupts
   file content under load** (correct size, blank/garbage bytes) → stage via SSH/
   rsync to VM-local disk (`/var/tmp`), verify by md5. Build in VM `/tmp`, `limactl
