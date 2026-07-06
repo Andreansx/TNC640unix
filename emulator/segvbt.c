@@ -15,6 +15,9 @@
 #include <string.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <ucontext.h>
+#include <stdint.h>
+#include <fcntl.h>
 
 #define NSIG_TRACK 6
 static const int tracked[NSIG_TRACK] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP };
@@ -23,20 +26,57 @@ static int have_guest[NSIG_TRACK];
 
 static int idx_of(int sig){ for(int i=0;i<NSIG_TRACK;i++) if(tracked[i]==sig) return i; return -1; }
 
-static void dump(int sig, void *addr){
-    char hdr[160];
+/* dump /proc/self/maps ONCE (so EIP/fault_addr can be resolved to a module+offset) */
+static void dump_maps_once(void){
+    static int done=0; if(done) return; done=1;
+    int fd=open("/proc/self/maps",O_RDONLY); if(fd<0) return;
+    (void)!write(2,"[segvbt] ---- /proc/self/maps (winmgr.elf + libheros lines) ----\n",64);
+    char b[4096]; ssize_t n;
+    /* stream the whole file to stderr; caller greps for winmgr/heros */
+    while((n=read(fd,b,sizeof b))>0) (void)!write(2,b,n);
+    close(fd);
+    (void)!write(2,"[segvbt] ---- end maps ----\n",28);
+}
+
+static void dump(int sig, void *addr, void *ucv){
+    char hdr[512];
+    ucontext_t *uc=(ucontext_t*)ucv;
+    unsigned int eip=0,ebp=0,esp=0,eax=0,ebx=0,ecx=0,edx=0,esi=0,edi=0;
+#if defined(__i386__)
+    if(uc){ greg_t *g=uc->uc_mcontext.gregs;
+        eip=g[REG_EIP]; ebp=g[REG_EBP]; esp=g[REG_ESP];
+        eax=g[REG_EAX]; ebx=g[REG_EBX]; ecx=g[REG_ECX]; edx=g[REG_EDX];
+        esi=g[REG_ESI]; edi=g[REG_EDI]; }
+#endif
     int n = snprintf(hdr,sizeof hdr,
-        "\n[segvbt] ===== fatal signal %d fault_addr=%p tid=%d — guest backtrace =====\n",
-        sig, addr, (int)gettid());
+        "\n[segvbt] ===== fatal signal %d fault_addr=%p tid=%d =====\n"
+        "[segvbt] EIP=%08x ESP=%08x EBP=%08x\n"
+        "[segvbt] EAX=%08x EBX=%08x ECX=%08x EDX=%08x ESI=%08x EDI=%08x\n",
+        sig, addr, (int)gettid(), eip, esp, ebp, eax, ebx, ecx, edx, esi, edi);
     (void)!write(2,hdr,n);
+    dump_maps_once();
+    /* manual EBP-chain walk (i386): [ebp]=saved ebp, [ebp+4]=return addr.
+     * More robust than backtrace() for FEX-translated sub-threads. */
+    (void)!write(2,"[segvbt] EBP-chain return addrs:\n",32);
+    unsigned int fp=ebp; unsigned int prev=0;
+    for(int i=0;i<32 && fp && fp>0x1000 && fp!=prev;i++){
+        unsigned int *frame=(unsigned int*)(uintptr_t)fp;
+        unsigned int ret, next;
+        /* guard the reads: if they fault we'd recurse — but we're already in the
+         * handler, so keep it simple and rely on the frame pointers being sane */
+        ret = frame[1]; next = frame[0];
+        char lb[48]; int ln=snprintf(lb,sizeof lb,"[segvbt]   #%d ret=%08x fp=%08x\n",i,ret,fp);
+        (void)!write(2,lb,ln);
+        prev=fp; fp=next;
+    }
     void *bt[128];
     int f = backtrace(bt,128);
     backtrace_symbols_fd(bt,f,2);
-    (void)!write(2,"[segvbt] ===== end backtrace =====\n",34);
+    (void)!write(2,"[segvbt] ===== end =====\n",25);
 }
 
 static void wrapper(int sig, siginfo_t *si, void *uc){
-    dump(sig, si?si->si_addr:0);
+    dump(sig, si?si->si_addr:0, uc);
     int i = idx_of(sig);
     if(i>=0 && have_guest[i]){
         struct sigaction *g = &guest_sa[i];

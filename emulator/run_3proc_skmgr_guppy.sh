@@ -166,8 +166,12 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       # AppStartMaster start-ack sems (winmgrC/winmgrI) BLOCK then force -> winmgr runs
       # WmModule::Initialize -> creates+maps its screen-layout windows (Machine/Edit); PNAME=1
       # fixes the P_name(-1) garbage sub-thread SIGSEGV. (readfix in $SKPRE fixes the EIO crash.)
+      # WM_SEGVBT diagnostic preload: 1 = throwcatch + segvbt (full), 2 = segvbt ONLY
+      # (minimal perturbation — the throwcatch __cxa_throw interposer can shift winmgr timing
+      # enough to hide the run-variant crash; segvbt alone captures the fault EIP/regs).
+      case "${WM_SEGVBT:-0}" in 1) WMSEG=/lib/throwcatch.so:/lib/segvbt.so: ;; 2) WMSEG=/lib/segvbt.so: ;; *) WMSEG= ;; esac
       ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_SEM_INIT="${WM_SEM_INIT:-0}" HEROSCALL_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-4000}" HEROSCALL_PNAME="${WM_PNAME:-1}" HEROSCALL_SYSEVENT_AUTOFIRE="${SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${SYSFIRE_MASK:-00ff0000}" HEROSCALL_SYSEVENT_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" HEROSCALL_SYSEVENT_FIRE_YIELD_US="${WM_FIRE_YIELD:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
-          LD_PRELOAD="${WM_SEGVBT:+/lib/throwcatch.so:/lib/segvbt.so:}$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/wm_strace.log \
+          LD_PRELOAD="${WMSEG}$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=connect,writev -o /tmp/wm_strace.log \
           FEXInterpreter "$R/heros5/bin/winmgr.elf" -p=~/winmgr winmgr \
           -m=5 -i=$WM_LAYOUT -o=afk -s=$WM_SIZE \
           -k=%SYS%/resource/keymap_us101.xml -c=%SYS%/resource/charmap_us101.xml -f=%SYS%/resource/functionkeymap_us101.xml \
@@ -180,7 +184,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       # windows (~127 X writev) then a render-thread sub-thread SIGSEGVs (a DIRECT deref, NOT a
       # catchable C++ throw — throwcatch caught 0; libheros_sigfaterr recovers non-fatally but
       # winmgr WEDGES + its X connection drops -> the Machine/Edit screen windows are DESTROYED
-      # -> Guppy's OEM window never realizes -> no softkey login). Tested: the crash reproduces
+      # -> the Guppy OEM window never realizes -> no softkey login. Tested: the crash reproduces
       # at ~127 writev whether or not skmgr/Guppy are up yet, so a head-start does NOT avoid it;
       # this knob (wait for winmgr writev>=N before launching skmgr/Guppy) is left for further
       # experiments on the documented winmgr render-thread frontier. WM_HEADSTART_WRITEV=0 -> old 6s.
