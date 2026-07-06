@@ -79,6 +79,24 @@ else
   sudo tar -C "$CFG/Python" -cf - . 2>/dev/null | sudo tar -C /mnt/sys/Python -xf - 2>/dev/null
 fi
 sudo md5sum /mnt/sys/Python/HwViewer/HwViewer.py >/dev/null 2>&1 && echo "  HwViewer.py present+readable" || echo "  *** HwViewer.py MISSING/UNREADABLE ***"
+# ★ GLADE CASE-ALIAS FIX (2026-07-06): HwViewer.py requests 'form/HWViewer.glade'
+# (upper "HW") but the case-INSENSITIVE Mac extraction staged the file as
+# 'HwViewer.glade' (lower "w"). On the case-SENSITIVE VM tmpfs the exact-case
+# lookup fails -> gtk.glade.XML raises "could not create GladeXML object" -> the
+# HwViewer GTK window is never created -> no softkey bind, nothing renders. (This
+# regressed when staging moved off the Mac's case-insensitive virtiofs mount to
+# the VM-local case-sensitive tmpfs.) For every form/*.glade the code references,
+# if the exact-case file is missing but a case-insensitive match exists on disk,
+# symlink the code-cased name to it (content identical — a pure name alias).
+HWFORM=/mnt/sys/Python/HwViewer/form
+if [ -d "$HWFORM" ]; then
+  for want in $(sudo grep -rhoE "form/[A-Za-z0-9_]+\.glade" /mnt/sys/Python/HwViewer/*.py 2>/dev/null | sed 's#form/##' | sort -u); do
+    if ! sudo test -e "$HWFORM/$want"; then
+      have=$(sudo ls "$HWFORM" 2>/dev/null | grep -ixF "$want" | head -1)
+      [ -n "$have" ] && sudo ln -sf "$have" "$HWFORM/$want" && echo "  glade case-alias: form/$want -> form/$have"
+    fi
+  done
+fi
 # ★ site-packages (the jh/pyjh Python binding Guppy imports) also on tmpfs — same vda1
 # EIO problem: import jh reads jh-X.Y/*.py from /mnt/sys/usr/lib/python/site-packages,
 # which EIO'd under load -> "JH library not available" -> NameError: 'jh' is not defined.
