@@ -1919,17 +1919,26 @@
 > to request it (the same self-bind/OEM-realize gate as the prior entry's finding 3). NEXT: RE what posts
 > Ev `0x07011000` (skmgr's draw/handshake trigger) AND why Guppy's OEM window doesn't realize onto winmgr's
 > now-existing OemScreen (X reparent/map? does Guppy resolve `OemScreen`→winmgr's screen id?).
-> **Traced further (same session) — the TRUE live blocker is a Guppy Python-runtime SIGBUS storm.** With
-> the OEM screen present, Guppy (`GUPPY_C=HwSetup`) opens `/mnt/sys/Python/HwViewer/HwViewer.py` +
-> `jh-3.0/jh/gtk/glade.py` (fd OK) then hits **repeated `SIGBUS {BUS_ADRALN}` at odd addresses (148× in
-> ~110s) + a `/etc/localtime` ENOENT retry loop**; its heroscall trace freezes (g_mmi = 582 lines), it
-> never reaches `jh.softkey.Register`, so **0 msgs reach Q_SkMgr(0x314); skmgr loads 0 .bmx and stays
-> blocked on Ev_receive(0x07011000)** → empty strip. A fresh SSH-rsync re-stage of the Python tree
-> (`emulator/stage_guppy_pytree.sh`; checksums verified clean) did NOT clear it → genuine FEX-level
-> unaligned-access issue in the i386 Python runtime (BUS_ADRALN = unaligned atomic ARM64 can't do
-> natively), NOT staging corruption. This SUPERSEDES "why doesn't the OEM window realize" — Guppy wedges
-> before window realize. Fresh sub-frontier: find the FEX unaligned-atomics fix (config/build/backpatch)
-> and/or stage `/etc/localtime`+tzdata to break the retry loop → Guppy runs HwViewer.py to Register.
+> **Traced further (same session) — TWO iterations, and the second CORRECTS the first:**
+> **(first read, WRONG) "Guppy SIGBUS storm":** Guppy (`GUPPY_C=HwSetup`) opens HwViewer.py + glade.py
+> then shows 148× `SIGBUS {BUS_ADRALN}`; I first blamed an unaligned-atomic wall. **A fresh SSH-rsync
+> re-stage (checksums clean) did NOT change it — because the SIGBUS was never the blocker.**
+> **(CORRECTED, via an uninterrupted full-duration run SHOT_AT=250, no early pkill):** the 148 SIGBUS are
+> **FEX backpatching unaligned atomics** during startup/dynamic-linking (the strace window is all
+> `.../regs/identification/midr_el1` CPU probes + `ThunksDB.json` + loading libstdc++/libaracrypt;
+> **131 UNIQUE si_addr / 148**, one-shot per JIT site) — normal, RECOVERED, not a crash. Guppy then runs
+> Python and **WRITES X11 to fd 10 — renders ~50 X requests building the HwViewer window (0x00800003) by
+> T+45s — then its main GTK thread BLOCKS on `anon_pipe_read` and stays frozen 210s** (g_mmi frozen at
+> 582 = pure userspace; `/etc/localtime` opens only 5× = NOT a loop; my earlier "stall" was a premature
+> cleanup `pkill` mid-render). The blocked pipe is the HeROS **`/dev/events`** bridge (last heroscall =
+> `evdev register task 0x109 rd=5 wr=8`; wchan `anon_pipe_read`, not the X UNIX socket). So the TRUE bar
+> blocker = **Guppy's GTK main loop waits for a HeROS render-handshake event on `/dev/events` that no peer
+> (winmgr/skmgr) posts** → `jh.softkey.Register` never fires → 0 msgs to Q_SkMgr(0x314) → skmgr stays on
+> Ev_receive(0x07011000) → empty strip. This is the SAME multi-thread render-ceiling class as the
+> AppStartMP logo deadlock, cracked via the event→fd bridge (commit bf0b579). Fresh sub-frontier
+> (tractable): HEROSCALL_HSTRACE the events posted to Guppy task 0x108/0x109 vs the mask its GTK loop
+> selects on, find the missing render event, and post it (INJECT-style, as for the logo). The SIGBUS/
+> unaligned-atomics framing above is RETRACTED.
 >
 > ### (superseded) ## ★★★★★ SOFTKEY BAR (2026-07-06, cont.) — the run harness was BROKEN (syntax error); winmgr KEEPS its screens now (crash is run-variant); the live bar-blocker is Guppy's OEM thread exiting at `Q_ident "Nc/mmi.qHF"` (no operator-MMI host frame)
 > Follow-up session. Three findings, all verified; commit fd90acf.
