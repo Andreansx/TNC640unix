@@ -1947,9 +1947,26 @@
 > rt_sigaction for SIGSEGV in heros_rtos (or let FEX's own crash-dump run by NOT installing libheros_sigfaterr);
 > (b) RE the sub-thread that creates the pid=-1 WmClient during OEM-screen creation and the deref just after the
 > ctor; (c) candidate emulator causes: the no-op `P_signal`(0x2b) stub, or a bad value the sub-thread derefs.**
-> Diag layout committed for turnkey repro. NB: with the diag layout Guppy's HwViewer window realized 1280x936
-> (0x400003 "HwViewer") — but that was AFTER winmgr died (openbox took over), so it does NOT prove the OEM-screen
-> path yields the bar; the faithful goal is winmgr SURVIVING OEM-screen creation.
+> Diag layout committed for turnkey repro (generator `emulator/make_oemscr_layout.sh`; the layout lives under
+> gitignored `work/`). NB: with the diag layout Guppy's HwViewer window realized 1280x936 (0x400003 "HwViewer") —
+> but that was AFTER winmgr died (openbox took over), so it does NOT prove the OEM-screen path yields the bar;
+> the faithful goal is winmgr SURVIVING OEM-screen creation.
+> **(4) ★ ROOT of the crash is an uncaught `throw const char*` (typeid PKc) from a LINKED LIBRARY during
+> OEM-screen creation — NOT the garbage thread name, NOT a raw deref.** Running the deterministic repro with
+> full logging, winmgr's `EvtExceptionShell` reports `EvtSendEvent(...varstr:=["Unhandled exception: PKc",""]...,
+> threadname:="~/winmgr.<junk>")` right before `signal 11`. So a sub-thread throws a `const char*`, it reaches
+> the top-level shell UNCAUGHT, the shell's RETRY-on-exception desyncs the FModule eval-context → the SIGSEGV
+> (matches the WmUsbThread/EvtExceptionShell pattern `emulator/throwcatch.c` was built for). `winmgr.elf` has
+> only ONE `__cxa_throw` caller (none in the screen/client funcs) → the throw originates in a LINKED lib
+> (libbackend/libGMessage*/libX11/…) during OEM-screen bring-up. Neither `throwcatch` (`__cxa_throw`) nor
+> `segvbt` (`sigaction`) capture it under FEX — symbol interposition of the libstdc++/libc paths does not catch
+> these; `throwcatch` logged 0. **The `t_name` GET fix (commit 6084d13) IS landed** (0x09 was a broken SET that
+> left the task-name buffer garbage → "~/winmgr.<junk>"; now a proper GET → "~/winmgr.~/winmgr"; verified it does
+> NOT regress the faithful layout — winmgr keeps its screens) but it was a SYMPTOM, not the cure — the crash
+> persists. **NEXT: capture the throw/EIP via a FEX-respecting mechanism** (intercept the guest's rt_sigaction /
+> __cxa_throw inside heros_rtos's own `syscall()` interposer path, or suppress libheros_sigfaterr so FEX's own
+> crash dump prints the guest RIP + the thrown string), then find WHICH lib call throws during OEM-screen
+> creation and provide the emulator-side data it needs (candidate: the no-op `P_signal`(0x2b) preceding the throw).
 
 > ## ★★★★★ SOFTKEY BAR (2026-07-06) — Guppy's OEM Python runtime now RUNS FULLY (the "login never fires" gate was Python-staging + WM-pump, both FIXED); the TRUE bar blocker is the winmgr render-thread SIGSEGV that DESTROYS its own screens
 > The goal's hypothesized gate — "Guppy's softkey login never fires = the GData connection-wedge / bind gate" — is
