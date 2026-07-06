@@ -2762,9 +2762,26 @@ long syscall(long n,...){
         }
         return (long)task_self();
     }
-    case 0x09:{ /* T_name: set current task name (p[0]=name ptr) */
-        if(p&&p[0]){ uint32_t self=task_self(); int s=task_slot(self);
-            if(s>=0){ lock(); strncpy(C->tasks[s].name,(const char*)(uintptr_t)p[0],NAMELEN-1); unlock(); } }
+    case 0x09:{ /* T_name(buf@p[0], taskid@p[2]) — GET the task's name into buf.
+                  * The guest wrapper (libheros t_name@0xdc60) marshals {buf,0,taskid} and returns
+                  * (syscall>=0), and winmgr builds its thread IDENTITY "<proc>.<task>" from
+                  * p_name(→proc) + t_name(→task). The OLD handler was a SET: it READ p[0] (the OUTPUT
+                  * buffer) as a source string and never FILLED it — so winmgr's task-name part stayed
+                  * UNINITIALISED garbage ("~/winmgr.<junk>"), which propagates into EvtSendEvent and the
+                  * exception path -> "Unhandled exception: PKc" -> the winmgr render/OEM-screen SIGSEGV
+                  * (deterministic via tnc640layout1280_oemscr.xml). It ALSO corrupted the name registry
+                  * with that garbage. FIX = a proper GET that ALWAYS writes a valid string: the task's
+                  * registered name if any, else the process's -p= name (self_pname), else empty — never
+                  * garbage. taskid==-1 means the calling task (self). buf capped to the HeROS field. */
+        if(p&&p[0]){
+            int32_t tid=(int32_t)p[2]; char*buf=(char*)(uintptr_t)p[0]; char out[NAMELEN]; out[0]=0;
+            uint32_t q=(tid==-1)?task_self():(uint32_t)tid;
+            lock(); int s=task_slot(q);
+            if(s>=0 && C->tasks[s].name[0]){ strncpy(out,C->tasks[s].name,NAMELEN-1); out[NAMELEN-1]=0; }
+            unlock();
+            if(!out[0] && self_pname[0]){ strncpy(out,self_pname,NAMELEN-1); out[NAMELEN-1]=0; } /* fallback: never garbage */
+            size_t L=strlen(out); if(L>NAMELEN-1)L=NAMELEN-1; memcpy(buf,out,L); buf[L]=0;
+        }
         return 0;
     }
     case 0x10: /* Ev_send(target@p[0], bits@p[1]) */
