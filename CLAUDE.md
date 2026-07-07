@@ -233,12 +233,26 @@ the fix. Also this session (revises the old docs): the crash was NEVER an uncaug
 throwcatch (`__cxa_throw@@CXXABI_1.3`) caught **0** throws; and `P_signal(0x02000000)→P_name(-1)→T_name(-1)`
 is the `libheros_sigfaterr` RECOVERY handler, not the fault site.
 
-**NEXT GATE (downstream, fresh): drive Guppy from `Q_ident Q_SkMgr` → `jh.softkey.Register` → the bar.**
-winmgr no longer crashes and Guppy now reaches the SkMgr queue (0x314) + OEM env, but does not yet bind the
-softkey (`softkey Register`/`GUPPYSKMGR`=0, skmgr 0x314 serve=0) within the 175s window. NEXT: trace Guppy's
-post-`Q_ident Q_SkMgr` path (OEM window realize on OemScreen → `GuppyRegisterWindow@0xc7920` bind →
-`PyJHCallback::SKRegister@0xb45e0` → `GUPPYSKMGR::Register`) to find its remaining block. Run
-(defaults now carry the fix): `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0 bash emulator/run_3proc_skmgr_guppy.sh`.**
+**NEXT GATE (downstream, PINNED to skmgr's WM subscribe): skmgr stalls polling 0x313 for a WM event that
+never comes.** With winmgr alive, the bar path was traced end-to-end this session and the blocker is NOT on
+Guppy's side: (a) **Guppy is fine** — the `Ev_receive(0x00000008)` "busy-poll" (59k×) is NOT a block, it's
+`PyJHExecute_::Tracer@0xc1050` polling a per-bytecode ABORT event (returns 0=no-abort → Python keeps
+running); Guppy runs HwViewer.py AND already `Q_send`s its softkey message to **Q_SkMgr (0x314)**. (b) **skmgr
+is the blocker** — its WM handshake (captured via `WMGR_MSGDUMP=1`, lines land in the SENDER's log = sk.log)
+is `0x302c StartTimer → 0x3037 GetScreens → 0x3043 → 0x3038×3 → 0x302d StopTimer → 0x3043`, receiving WM
+event serials up to **11**, then it BLOCKS polling 0x313 for the next event (serial 12) that never arrives,
+so it never reaches the phase that reads Q_SkMgr (0x314) → `BuildSoftkeyBar`/`.bmx` (both 0). The distinctive
+msg `0x3043` = winmgr HandleMessage case 12355 @0x2a715 = a client LOOKUP (`WmEventHandler::GetInstance()->
+vtable+24`) + `WmClient::OnRequest` only — posts NO event. **TESTED-NEGATIVE this session:** forcing
+`OnScreenChange@0x21b10` (it iterates the WmEventHandler client tree calling each client's vtable+112) via a
+real switch-away-then-back (wm_select2 → screen 1=EDITOR instead of non-existent screen 2) did NOT advance
+skmgr — because skmgr **never sends `0x3001 Connect`** (Guppy does; skmgr's connect is different), so skmgr
+is NOT in that broadcast tree and OnScreenChange skips it. NEXT: RE how skmgr REGISTERS to receive WM events
+(its softkey-manager init in libwinmgrlib — NOT 0x3001) and exactly which event (serial 12) its
+`WmRecvEvent` on 0x313 blocks for after the `0x3043` subscribe + `0x302d StopTimer`; then produce that event
+(likely a screen/area-ready or GetAreaRect-precursor) so skmgr advances to GetAreaRect(0x3003) →
+BuildSoftkeyBar → draws Guppy's already-queued 0x314 softkey. Run (defaults carry the winmgr fix):
+`INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0 WMGR_MSGDUMP=1 bash emulator/run_3proc_skmgr_guppy.sh`.**
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness

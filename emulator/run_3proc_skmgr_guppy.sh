@@ -126,6 +126,11 @@ if [ "$USE_XVFB" = "1" ]; then
   # wm_select2=desktop 2 (switch-away alt), wm_activate=WmActivateWinMgrMsg(0x03b800e0).
   WWD="${WM_WIRE_DIR:-/tmp}"
   printf '\xc0\x01\xb8\x03\x44\x00\xb8\x03\x00\x00\x00\x00'                 > "$WWD/wm_select.bin"
+  # wm_select2 = the switch-AWAY alt (screen 2). NB: screen 2 does not exist in tnc640layout1280.xml (only
+  # 0=MACHINING, 1=EDITOR), so this switch-away is a no-op and only wm_select (screen 0) takes effect — which
+  # is all the winmgr-crash fix needs (it just needs WindowManager+0x2c set non-null). Pointing this at
+  # screen 1 (EDITOR) to force a real switch-away→OnScreenChange was TESTED and did NOT unblock skmgr (skmgr
+  # never sent 0x3001 Connect so it isn't in winmgr's OnScreenChange broadcast tree) — see PROGRESS-LOG.
   printf '\xc0\x01\xb8\x03\x44\x00\xb8\x03\x02\x00\x00\x00'                 > "$WWD/wm_select2.bin"
   printf '\xe0\x00\xb8\x03\xc6\x00\x00\x00\x01\x00\x00\x00\xe7\x00\x00\x80' > "$WWD/wm_activate.bin"
   # The real TNC WM (winmgr) places the WndFullScreen at the OEM-screen rect (0,0 fullscreen) WITHOUT a
