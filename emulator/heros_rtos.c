@@ -1415,9 +1415,15 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     if(size>=8 && q->name[0]=='W'&&q->name[1]=='M'&&q->name[2]=='Q'){
         static int wmqdump=-1; if(wmqdump<0){ const char*e=getenv("HEROSCALL_WMGR_MSGDUMP"); wmqdump=e&&e[0]=='1'; }
         if(wmqdump){ const unsigned char*dd=q->msg[slot].data;
+            uint32_t ety=*(const uint32_t*)dd;
             LOG("WMQ-RECV: winmgr%s -> \"%s\"(0x%x) type 0x%x off4(serial) %u %s\n", in_wm_tick?"(TICK)":"",
-                q->name,id,*(const uint32_t*)dd, dd[4]|(dd[5]<<8)|(dd[6]<<16)|((uint32_t)dd[7]<<24),
-                in_wm_tick?"":"[real]"); }
+                q->name,id,ety, dd[4]|(dd[5]<<8)|(dd[6]<<16)|((uint32_t)dd[7]<<24),
+                in_wm_tick?"":"[real]");
+            /* Hexdump the full bytes of a PARSEABLE async WMGREvent (wire 0x3045..0x3069 -> WmParseEvent),
+             * so we can capture the exact byte layout of e.g. the screen-change (0x3058) event to synthesize. */
+            if(ety>=0x3045 && ety<=0x3069){ char hb[3*72+1]; int hn=(int)(size<72?size:72),hp=0;
+                for(int i=0;i<hn;i++) hp+=snprintf(hb+hp,sizeof hb-hp,"%02x ",dd[i]);
+                LOG("WMQ-RECV-HEX \"%s\" type 0x%x size %u: %s\n",q->name,ety,size,hb); } }
     }
     if(wm_serial_fix && size>=8 && q->name[0]=='W'&&q->name[1]=='M'&&q->name[2]=='Q'){
         unsigned char*d=q->msg[slot].data;
@@ -1869,21 +1875,38 @@ static int post_wm_wire_file(uint32_t qid, const char* path){
     fprintf(stderr,"[wmact] post wire-file %s type 0x%08x (%zu B) -> Q_WMGRMSG 0x%x\n",path,t,n,qid);
     q_send(qid,wbuf,(uint32_t)n,0); return 1;
 }
+/* Build + post a WmSelectForegroundMsg INLINE (no wire file -> virtiofs-immune). The wire is
+ * [0x03B801C0][0x03B80044][screen#] (12 bytes) — verified byte-identical to the genuine libGMessageGui
+ * serializer output (wm_select.bin). Posting to Q_WMGRMSG -> WmModule::OnSelectForeground@0x43a00 ->
+ * WindowManager::SelectForeground@0x15070. */
+static void post_wm_select_inline(uint32_t qid, uint32_t screen){
+    unsigned char w[12]; put32(w+0,0x03B801C0u); put32(w+4,0x03B80044u); put32(w+8,screen);
+    fprintf(stderr,"[wmact] post WmSelectForegroundMsg(inline) screen=%u -> Q_WMGRMSG 0x%x\n",screen,qid);
+    q_send(qid,w,sizeof w,0);
+}
 static void inject_wmgr_activate(uint32_t qid){
     const char* dir=getenv("HEROSCALL_WM_WIRE_DIR"); if(!dir) dir="/tmp";
-    char p[256];
-    /* (1) WmSelectForegroundMsg (gated HEROSCALL_WMACT_SELECT=1): OnSelectForeground@0x43a00 ->
-     * WindowManager::SelectForeground@0x15070 selects the SCREEN_ID screen, SETS it current, Maps + Activates
-     * it -> maps the screen + embedded softkey windows + notifies skmgr. Byte-exact wire from the serializer
-     * (wm_select.bin, header 0x03B801C0). Without this OnActivate's Activate is a no-op (no current screen). */
+    char p[256]; (void)p; (void)dir;
+    /* (1) WmSelectForegroundMsg (gated HEROSCALL_WMACT_SELECT=1): SelectForeground selects the screen, SETS it
+     * current, Maps + Activates it. CRUCIAL: WindowManager::SelectForeground@0x15070 broadcasts
+     * WmEventHandler::OnScreenChange to every registered WM client (incl. skmgr, added to the client tree by
+     * its first 0x302c StartTimer via WmEventHandler vtable+16) ONLY inside `if (prev_screen != nullptr)` — i.e.
+     * only on a SWITCH from an existing screen, NOT the initial null->N activation. So post the ALT screen
+     * FIRST (null->ALT: sets current, no broadcast), then the TARGET (ALT->TARGET: a real switch -> BROADCAST
+     * the screen-change event to skmgr's WM queue -> skmgr consumes it and proceeds off its empty-WMQ drain).
+     * The ALT must be a screen that EXISTS in the layout (0=MACHINING, 1=EDITOR) and differ from the target;
+     * the old file-based path used the NON-EXISTENT screen 2 (SelectForeground(2) = no-op) so the target select
+     * was always the initial activation and OnScreenChange NEVER fired. Built inline (no wire file) to be immune
+     * to the virtiofs staleness that made the earlier screen-1 switch-away tests inconclusive. */
     const char* wsel=getenv("HEROSCALL_WMACT_SELECT");
     if(wsel&&wsel[0]=='1'){
-        /* Post the ALT-screen select FIRST (switch away), then the target -- forces WmScreen::Map(target) to
-         * re-run (SelectForeground no-ops if the target is already the current foreground; the strip windows
-         * are created AFTER the initial Map, so a switch-away-then-back re-Maps them now that they exist). */
-        snprintf(p,sizeof p,"%s/wm_select2.bin",dir); post_wm_wire_file(qid,p);
-        snprintf(p,sizeof p,"%s/wm_select.bin",dir);
-        if(!post_wm_wire_file(qid,p)) fprintf(stderr,"[wmact] %s missing (run gen_wm_wires.sh)\n",p);
+        uint32_t tgt=0;   /* final foreground = MACHINING(0); overridable via WMACT_SCREEN */
+        const char* t=getenv("HEROSCALL_WMACT_SCREEN"); if(t&&*t) tgt=(uint32_t)strtoul(t,0,0);
+        uint32_t alt=(tgt==1)?0u:1u;   /* the OTHER existing screen (0/1) so alt!=tgt -> a real switch */
+        const char* a=getenv("HEROSCALL_WMACT_ALT_SCREEN"); if(a&&*a) alt=(uint32_t)strtoul(a,0,0);
+        if(alt==tgt){ fprintf(stderr,"[wmact] WARN alt==tgt(%u): no switch -> no OnScreenChange\n",tgt); }
+        post_wm_select_inline(qid,alt);                       /* null->alt: sets current, no broadcast */
+        post_wm_select_inline(qid,tgt);                       /* alt->tgt: real switch -> OnScreenChange broadcast */
     }
     /* (2) WmActivateWinMgrMsg -> OnActivate@0x48500 -> WmRootWindow::Activate. Prefer the byte-exact
      * wm_activate.bin; fall back to the inline wire (VERIFIED byte-identical: winmgr reads it, 0 GMsgException). */

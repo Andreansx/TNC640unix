@@ -122,16 +122,19 @@ if [ "$USE_XVFB" = "1" ]; then
   # WmSelectForegroundMsg (0x03b801c0, body=screen#) drives WindowManager::SelectForeground which SETS
   # winmgr's current-screen (WmScreen* at WindowManager+0x2c). WITHOUT it that field stays NULL and winmgr
   # SIGSEGVs in WindowManager::UnregisterWindow->WmScreen::GetFocusClient(NULL) at +0x50 when Guppy sends
-  # its 0x3005 UnregisterWindow during OEM-window bring-up. wm_select=SCREEN_MACHINING(desktop 0),
-  # wm_select2=desktop 2 (switch-away alt), wm_activate=WmActivateWinMgrMsg(0x03b800e0).
+  # its 0x3005 UnregisterWindow during OEM-window bring-up. NB (2026-07-07): the SELECT wires are now built
+  # INLINE by the emulator (heros_rtos.c post_wm_select_inline) — virtiofs-immune, and the switch-away uses
+  # the OTHER EXISTING screen (see below) — so these files are only a legacy fallback. wm_activate is still
+  # file-based. wm_select=SCREEN_MACHINING(desktop 0), wm_activate=WmActivateWinMgrMsg(0x03b800e0).
+  # CORRECTION: skmgr IS in winmgr's OnScreenChange broadcast tree (its first 0x302c StartTimer creates its
+  # WmClient via WmEventHandler vtable+16 — winmgr HandleMessage case 0x302c else-branch). The old wm_select2
+  # switch-away targeted NON-EXISTENT screen 2, so SelectForeground(2) was a no-op and OnScreenChange never
+  # fired; the "screen-1 tested-negative" note was inconclusive (virtiofs staged screen 2 both times). BUT the
+  # softkey bar is Q_SkMgr(0x314)-driven (SkMgrFrame::OnActivation <- SkMgrActivate), NOT screen-change-driven,
+  # so the broadcast is off the bar path — see memory project-skmgr-wmq-spin-and-bar-path.
   WWD="${WM_WIRE_DIR:-/tmp}"
   printf '\xc0\x01\xb8\x03\x44\x00\xb8\x03\x00\x00\x00\x00'                 > "$WWD/wm_select.bin"
-  # wm_select2 = the switch-AWAY alt (screen 2). NB: screen 2 does not exist in tnc640layout1280.xml (only
-  # 0=MACHINING, 1=EDITOR), so this switch-away is a no-op and only wm_select (screen 0) takes effect — which
-  # is all the winmgr-crash fix needs (it just needs WindowManager+0x2c set non-null). Pointing this at
-  # screen 1 (EDITOR) to force a real switch-away→OnScreenChange was TESTED and did NOT unblock skmgr (skmgr
-  # never sent 0x3001 Connect so it isn't in winmgr's OnScreenChange broadcast tree) — see PROGRESS-LOG.
-  printf '\xc0\x01\xb8\x03\x44\x00\xb8\x03\x02\x00\x00\x00'                 > "$WWD/wm_select2.bin"
+  printf '\xc0\x01\xb8\x03\x44\x00\xb8\x03\x01\x00\x00\x00'                 > "$WWD/wm_select2.bin"
   printf '\xe0\x00\xb8\x03\xc6\x00\x00\x00\x01\x00\x00\x00\xe7\x00\x00\x80' > "$WWD/wm_activate.bin"
   # The real TNC WM (winmgr) places the WndFullScreen at the OEM-screen rect (0,0 fullscreen) WITHOUT a
   # frame. A stock openbox instead DECORATES + reparents the OEM window: HwViewer.py:GetDecorationSize then
@@ -169,7 +172,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
   HEROS_CFG_REPLY_ROUTE=1 HEROS_EV_SIGWAKE="${EV_SIGWAKE:-0}" HEROSCALL_PIDENT_SELF="${PIDENT_SELF:-1}" HEROSCALL_SK_REPLY_FORCE="${SK_REPLY_FORCE:-1}" HEROSCALL_DUMPQ="${DUMPQ:-0}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_CAPTURE_TYPE="${CAPTURE_TYPE:-}" HEROSCALL_INJECT_SK_FLOW="${INJECT_SK_FLOW:-0}" HEROSCALL_INJECT_AREA_ACK="${INJECT_AREA_ACK:-0}" HEROSCALL_INJECT_WMGR_ACK="${INJECT_WMGR_ACK:-0}" HEROSCALL_WMGR_SCREEN="${WMGR_SCREEN:-0}" HEROSCALL_WMGR_MSGDUMP="${WMGR_MSGDUMP:-0}" DISP="$DISP" \
   HEROSCALL_INJECT_SK_ACTIVATE="${INJECT_SK_ACTIVATE:-0}" HEROSCALL_SK_ACT_THRESH="${SK_ACT_THRESH:-5}" HEROSCALL_SK_ACT_SCREEN="${SK_ACT_SCREEN:-}" HEROSCALL_SK_ACT_GROUP="${SK_ACT_GROUP:-0}" HEROSCALL_SK_ACT_HANDLE="${SK_ACT_HANDLE:-13}" HEROSCALL_SK_ACT_BOOL="${SK_ACT_BOOL:-0}" \
   HEROSCALL_AREA_RECT_FORCE="${AREA_RECT_FORCE:-0}" \
-  HEROSCALL_INJECT_WMGR_ACTIVATE="${INJECT_WMGR_ACTIVATE:-1}" HEROSCALL_WMACT_DELAY="${WMACT_DELAY:-15}" HEROSCALL_WMACT_SCREEN="${WMACT_SCREEN:-1}" HEROSCALL_WMACT_SELECT="${WMACT_SELECT:-1}" HEROSCALL_WM_WIRE_DIR="${WM_WIRE_DIR:-/tmp}" \
+  HEROSCALL_INJECT_WMGR_ACTIVATE="${INJECT_WMGR_ACTIVATE:-1}" HEROSCALL_WMACT_DELAY="${WMACT_DELAY:-15}" HEROSCALL_WMACT_SCREEN="${WMACT_SCREEN:-0}" HEROSCALL_WMACT_ALT_SCREEN="${WMACT_ALT_SCREEN:-0}" HEROSCALL_WMACT_SELECT="${WMACT_SELECT:-1}" HEROSCALL_WM_WIRE_DIR="${WM_WIRE_DIR:-/tmp}" \
   HEROSCALL_EV_TRACE_BIT="${EV_TRACE_BIT:-0}" HEROSCALL_EV_TRACE_TASK="${EV_TRACE_TASK:-0}" HEROSCALL_EV_TRACE_BUDGET="${EV_TRACE_BUDGET:-24}" HEROSCALL_EV_TRACE_EXACT="${EV_TRACE_EXACT:-0}" \
   HEROSCALL_EV_INJECT_WANT="${EV_INJECT_WANT:-0}" HEROSCALL_EV_INJECT_BIT="${EV_INJECT_BIT:-0}" HEROSCALL_EV_UNBLOCK_MS="${EV_UNBLOCK_MS:-0}" \
   G_EVW="${G_EVW:-0}" G_EVB="${G_EVB:-0}" G_EVMS="${G_EVMS:-0}" SK_EVW="${SK_EVW:-0}" SK_EVB="${SK_EVB:-0}" SK_EVMS="${SK_EVMS:-0}" \
