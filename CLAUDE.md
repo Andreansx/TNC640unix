@@ -198,19 +198,47 @@ VERIFIED (run_3proc, INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0): gap/WMGRErrSync/
 `T_delete` markers = **0** (were the terminate), 2 WM_SERIAL_FIX shifts applied, Guppy crash=0, and Guppy
 now runs `PyJHKernel::Execute` → the FULL OEM interaction, driving winmgr all the way to OEM-screen creation.
 
-**NEXT GATE (now re-exposed, separate + documented): the winmgr render-thread SIGSEGV during OEM-screen
-creation.** With Guppy driving its full OEM window registration (`GuppyRegisterWindow@0xc7920`, WINMGR
-path), winmgr reaches OEM-screen bring-up and a winmgr sub-thread does `P_signal(0xffffffff,0x02000000)
-→ P_name(-1)->"~/winmgr" → T_name(-1) → SIGSEGV` (`libheros_sigfaterr: Thread ~/winmgr.~/winmgr
-received terminating signal 11`) — the EXACT documented crash (root-caused earlier to an uncaught
-`throw const char*`/PKc from a LINKED lib during OEM-screen creation → EvtExceptionShell retry desyncs
-the FModule eval-context). This is NOT a WM_SERIAL_FIX regression (winmgr didn't crash pre-fix because
-Guppy terminated first); the fix simply advanced Guppy past the serial gap into the interaction that
-triggers it. NEXT: capture the winmgr fault EIP/thrown-string via a FEX-respecting mechanism (intercept
-the guest rt_sigaction/`__cxa_throw` inside heros_rtos, or suppress libheros_sigfaterr so FEX's own crash
-dump prints the guest RIP) + find WHICH linked-lib call throws during OEM-screen bring-up + provide the
-emulator data it needs (candidate: the no-op `P_signal(0x2b)` stub preceding the throw). Run:
-`emulator/run_3proc_skmgr_guppy.sh` with `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0` (WM_SERIAL_FIX auto-on).**
+**★ ALSO FIXED (same session): the skmgr StopTimer FLOOD.** INJECT_WMGR_TIMER armed the tick on 0x302c
+StartTimer but never disarmed it (no 0x302d handler) — so each injected tick re-triggered skmgr's cancel
+and skmgr FLOODED Q_WMGR with THOUSANDS of `0x302d StopTimer` (seq past 1000+). Added a 0x302d handler
+(heros_rtos.c q_send, in the 0x302c block) that removes the matching `{timerId=off28, replyQ=off24}` from
+`wm_timers[]` (winmgr's case 0x302d = `WmTimer::StopTimer(client, a1[7]=timerId)`). VERIFIED: skmgr
+StopTimer thousands → **1**, DISARMED fires once, no regression (Guppy still drives its full OEM sequence
+`0x302c/3001/3037/300c×2/3038/3042/3005`, terminate=0). Commit 8730987.
+
+**★★★★ WINMGR-CRASH FRONTIER CROSSED (2026-07-07): the OEM-window-registration SIGSEGV was a NULL
+current-screen, and the fix is a config default (INJECT_WMGR_ACTIVATE+WMACT_SELECT), not new code.** With
+WM_SERIAL_FIX letting Guppy drive its FULL OEM interaction, Guppy sends its OEM window-registration burst
+to Q_WMGR (`0x300c×2` window-attach, `0x3038` GetScreens-follow, `0x3042`, `0x3005 UnregisterWindow`,
+replyq=Guppy's X window 0x800003), and a winmgr thread SIGSEGV'd, destroying its screens (X tree → 26
+windows) so the OEM window never realized. **ROOT-CAUSED to the exact instruction via `WM_BTRACE=1`**
+(heros_rtos's built-in `crash_locate`: interpose sigaction → dump EIP+si_addr+EBP-chain+maps → chain to
+sigfaterr). FAULT `eip=winmgr.elf+0x2e874 addr=0x50`, frames `+0x2a9a3`/`+0x4c174`: symbolized (idalib) to
+**`WmScreen::GetFocusClient(this)` derefencing `this+0x50` with `this`==NULL**, called from
+`WindowManager::UnregisterWindow` (which HandleMessage@0x29f00+0xaa3 invokes for case 0x3005), reached from
+`WmWaitableQueue::Notify`. The null `this` is `*((WmScreen**)WindowManager+11)` = **WindowManager+0x2c, the
+current/foreground screen**, which the ctor inits to 0 and ONLY `SelectForeground`/`OnDesktopChanged`/
+`OnEvent`/`ResetInput` ever set — i.e. it stays NULL until a screen is ACTIVATED, which our headless
+constellation (no AppStartMaster/MMI) never drove. So `UnregisterWindow`→`GetFocusClient(NULL)`→crash on
+Guppy's very first 0x3005. **FIX = enable the pre-existing `INJECT_WMGR_ACTIVATE=1 WMACT_SELECT=1`**: the
+emulator posts the byte-exact `WmSelectForegroundMsg` (wire 0x03b801c0, body=screen# **0=SCREEN_MACHINING**
+per tnc640layout1280.xml `desktopId="0"`) to Q_WMGRMSG → `OnSelectForeground@0x43a00` →
+`WindowManager::SelectForeground@0x15070` SETS WindowManager+0x2c to the machining WmScreen (silently on the
+first/null activation — no "Switching from screen" log, but the field IS set). VERIFIED: with the knobs on,
+Guppy sends its 0x3005 burst (8×) and **winmgr signal11=0, FAULT=0** (was crash every run); Guppy advances
+past the crash to `Q_ident Q_SkMgr → 0x314` + OEM-env setup (6114 log lines, crash=0). Made DEFAULT in
+`run_3proc_skmgr_guppy.sh` (INJECT_WMGR_ACTIVATE/WMACT_SELECT default 1, WMACT_DELAY 15) + the 3 tiny
+wire files are now STAGED byte-exact by the run script (printf-hex) so a fresh /tmp can't silently disable
+the fix. Also this session (revises the old docs): the crash was NEVER an uncaught C++ throw — a VERSIONED
+throwcatch (`__cxa_throw@@CXXABI_1.3`) caught **0** throws; and `P_signal(0x02000000)→P_name(-1)→T_name(-1)`
+is the `libheros_sigfaterr` RECOVERY handler, not the fault site.
+
+**NEXT GATE (downstream, fresh): drive Guppy from `Q_ident Q_SkMgr` → `jh.softkey.Register` → the bar.**
+winmgr no longer crashes and Guppy now reaches the SkMgr queue (0x314) + OEM env, but does not yet bind the
+softkey (`softkey Register`/`GUPPYSKMGR`=0, skmgr 0x314 serve=0) within the 175s window. NEXT: trace Guppy's
+post-`Q_ident Q_SkMgr` path (OEM window realize on OemScreen → `GuppyRegisterWindow@0xc7920` bind →
+`PyJHCallback::SKRegister@0xb45e0` → `GUPPYSKMGR::Register`) to find its remaining block. Run
+(defaults now carry the fix): `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0 bash emulator/run_3proc_skmgr_guppy.sh`.**
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
