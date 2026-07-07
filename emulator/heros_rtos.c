@@ -1409,6 +1409,16 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     if(wm_serial_fix<0){ const char*e=getenv("HEROSCALL_WM_SERIAL_FIX");
         if(e&&e[0]) wm_serial_fix=(e[0]=='1');
         else { const char*t=getenv("HEROSCALL_INJECT_WMGR_TIMER"); wm_serial_fix=(t&&t[0]=='1'); } }
+    /* WMQ-RECV diagnostic (HEROSCALL_WMGR_MSGDUMP=1): log the TYPE + serial of EVERY event winmgr posts to a
+     * client's WM event queue (WMQ<tid> = skmgr 0x313 / Guppy 0x31f), so we can see exactly what a stalled
+     * client receives vs. awaits. Fires regardless of wm_serial_fix (dump before any renumber). */
+    if(size>=8 && q->name[0]=='W'&&q->name[1]=='M'&&q->name[2]=='Q'){
+        static int wmqdump=-1; if(wmqdump<0){ const char*e=getenv("HEROSCALL_WMGR_MSGDUMP"); wmqdump=e&&e[0]=='1'; }
+        if(wmqdump){ const unsigned char*dd=q->msg[slot].data;
+            LOG("WMQ-RECV: winmgr%s -> \"%s\"(0x%x) type 0x%x off4(serial) %u %s\n", in_wm_tick?"(TICK)":"",
+                q->name,id,*(const uint32_t*)dd, dd[4]|(dd[5]<<8)|(dd[6]<<16)|((uint32_t)dd[7]<<24),
+                in_wm_tick?"":"[real]"); }
+    }
     if(wm_serial_fix && size>=8 && q->name[0]=='W'&&q->name[1]=='M'&&q->name[2]=='Q'){
         unsigned char*d=q->msg[slot].data;
         if(in_wm_tick){                                   /* an injected tick: give it the next contiguous serial */
