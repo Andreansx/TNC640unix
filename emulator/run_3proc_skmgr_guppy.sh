@@ -192,7 +192,7 @@ sudo env R="$R" SYS=/mnt/sys OEM=/mnt/plc USR=/mnt/tnc OEME=/mnt/plc EXECDIRH=/t
       # (minimal perturbation — the throwcatch __cxa_throw interposer can shift winmgr timing
       # enough to hide the run-variant crash; segvbt alone captures the fault EIP/regs).
       case "${WM_SEGVBT:-0}" in 1) WMSEG=/lib/throwcatch.so:/lib/segvbt.so: ;; 2) WMSEG=/lib/segvbt.so: ;; *) WMSEG= ;; esac
-      ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_SEM_INIT="${WM_SEM_INIT:-0}" HEROSCALL_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-4000}" HEROSCALL_PNAME="${WM_PNAME:-1}" HEROSCALL_SYSEVENT_AUTOFIRE="${SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${SYSFIRE_MASK:-00ff0000}" HEROSCALL_SYSEVENT_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" HEROSCALL_SYSEVENT_FIRE_YIELD_US="${WM_FIRE_YIELD:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
+      ( env HEROSCALL_VERBOSE="${WM_VERBOSE:-1}" HEROSCALL_HSTRACE="${HSTRACE:-0}" HEROSCALL_BTRACE="${WM_BTRACE:-0}" HEROSCALL_SEM_INIT="${WM_SEM_INIT:-0}" HEROSCALL_SEM_FORCE_OK="${WM_SEM_FORCE_OK:-4000}" HEROSCALL_PNAME="${WM_PNAME:-1}" HEROSCALL_SYSEVENT_AUTOFIRE="${SYSFIRE:-0}" HEROSCALL_SYSEVENT_FIRE_MASK="${SYSFIRE_MASK:-00ff0000}" HEROSCALL_SYSEVENT_FIRE_LIMIT="${WM_FIRE_LIMIT:-0}" HEROSCALL_SYSEVENT_FIRE_YIELD_US="${WM_FIRE_YIELD:-0}" MALLOC_ARENA_MAX=1 GLIBC_TUNABLES=glibc.malloc.arena_max=1 \
           LD_PRELOAD="${WMSEG}$SKPRE" timeout -s KILL 300 /usr/bin/strace -f -qq -e trace=${WM_STRACE_TRACE:-connect,writev} -o /tmp/wm_strace.log \
           FEXInterpreter "$R/heros5/bin/winmgr.elf" -p=~/winmgr winmgr \
           -m=5 -i=$WM_LAYOUT -o=afk -s=$WM_SIZE \

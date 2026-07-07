@@ -1579,6 +1579,26 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
             }
             wm_timer_spawn();
         }
+        /* INJECT_WMGR_TIMER: a client DISARMED its WM timer (0x302d StopTimer -> winmgr
+         * WmTimer::StopTimer(client, a1[7]=timerId, ...)). Remove the matching {timerId=off28,
+         * replyQ=off24} from wm_timers[] so the poster stops injecting ticks. Without this the
+         * emulator ignores the stop and the NEXT injected tick re-triggers the client's cancel —
+         * observed as skmgr FLOODING Q_WMGR with thousands of 0x302d StopTimers (seq climbing past
+         * 1000+), heavy winmgr load. Faithful: winmgr's StopTimer disarms the periodic tick. */
+        if(inject_wm_timer && msg && size>=32 && !strcmp(C->queues[s].name,"Q_WMGR")
+           && *(const uint32_t*)msg==0x302du){
+            uint32_t rq =*(const uint32_t*)((const char*)msg+24);   /* off24 = a1[6] reply-to (matches 0x302c) */
+            uint32_t tid=*(const uint32_t*)((const char*)msg+28);   /* off28 = a1[7] timer id                 */
+            int n=__atomic_load_n(&n_wm_timers,__ATOMIC_ACQUIRE);
+            for(int i=0;i<n && i<8;i++){
+                if(wm_timers[i].timerid==tid && wm_timers[i].replyq==rq){
+                    for(int j=i;j<n-1;j++) wm_timers[j]=wm_timers[j+1];
+                    __atomic_store_n(&n_wm_timers,n-1,__ATOMIC_RELEASE);
+                    LOG("INJECT_WMGR_TIMER: DISARMED WM timer id=0x%x (0x302d reply-to 0x%x) (n=%d)\n",tid,rq,n-1);
+                    break;
+                }
+            }
+        }
       }
       if(inject_wmgr_ack && msg && size>=28 && !strcmp(C->queues[s].name,"Q_WMGR")
          && *(const uint32_t*)msg==0x3037u){
