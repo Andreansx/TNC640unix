@@ -1229,6 +1229,7 @@ static int sk_activate=-1;          /* HEROSCALL_INJECT_SK_ACTIVATE: synthesize 
 static int sk_act_fired=0;
 static uint32_t sk_act_screen=0xffffffffu;   /* lifted from the real SkMgrSetMenu at runtime */
 static int sk_act_count=0, sk_act_thresh=-1; /* fire after this many InfoResponses have flowed */
+static int sk_login_seen=0, sk_login_settle=0, sk_login_thresh=-1; /* fire N sends after a real SkMgrLogin */
 static uint32_t sk_act_handle=0xffffffffu, sk_act_group=0xffffffffu;
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     int s=q_slot(id); if(s<0){ LOG("Q_send unknown queue 0x%x size %u\n",id,size); qhex("Q_FAIL",id,msg,size); return -9; }
@@ -1337,14 +1338,28 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
                 }
             }
             if(mt==0x028a0740u) sk_act_count++;   /* skmgr InfoResponse = softkey content flowing */
-            if(!sk_act_fired && sk_act_screen!=0xffffffffu && sk_act_count>=sk_act_thresh){
+            /* LOGIN-TRIGGERED path: the InfoResponse count only accrues in the STALLED runs (skmgr loading its
+             * OWN resources before any login). In the runs where Guppy's SkMgrLogin(0x028a0120) actually
+             * reaches Q_SkMgr, skmgr assigns a real connection (handle 13) and the Activate must fire AFTER that
+             * (else OnActivation bails on GetConnection(handle)==0). Detect the login on Q_SkMgr and fire a few
+             * sends later (FIFO-after the login + its immediate content), so the Activate lands with a live
+             * connection. This hook runs in the SENDER's (Guppy's) process, so it posts the Activate itself. */
+            if(sk_login_thresh<0){ const char*e=getenv("HEROSCALL_SK_ACT_LOGIN_SETTLE"); sk_login_thresh=e?atoi(e):2; }
+            if(mt==0x028a0120u && !strcmp(C->queues[s].name,"Q_SkMgr") && !sk_login_seen){
+                sk_login_seen=1; sk_login_settle=0;
+                LOG("INJECT_SK_ACTIVATE: SkMgrLogin(0x028a0120) seen on Q_SkMgr -> arming Activate (settle %d)\n",sk_login_thresh); }
+            if(sk_login_seen && !sk_act_fired) sk_login_settle++;
+            int sk_act_gate = (sk_act_count>=sk_act_thresh) || (sk_login_seen && sk_login_settle>=sk_login_thresh);
+            if(!sk_act_fired && sk_act_screen!=0xffffffffu && sk_act_gate){
                 /* Guppy's control msgs (Login/SetMenu/InfoReq) go to Q_SkMgrCtrl (0x314), the queue the
                  * SkMgrGMsgController reads -> post the Activate THERE (HEROSCALL_SK_ACT_QUEUE overrides;
                  * default Q_SkMgrCtrl, fallback Q_SkMgr). NB: with SK_ACT_SCREEN set explicitly this fires
                  * in skmgr's OWN process (it counts the 0x028a0740 InfoResponses it sends); without it the
                  * screen-lift (from the SetMenu) and the count happen in different processes and it never fires. */
-                const char*aq=getenv("HEROSCALL_SK_ACT_QUEUE"); if(!aq||!aq[0]) aq="Q_SkMgrCtrl";
-                int qi=q_find_slot(aq); if(qi<0) qi=q_find_slot("Q_SkMgr");
+                /* Post to Q_SkMgr — the SkMgrFrame softkey-request queue where Guppy's Login/SetMenu/Activate
+                 * flow (empirically Q_SkMgr=0x314; skmgr reads the 34B login there). Override w/ SK_ACT_QUEUE. */
+                const char*aq=getenv("HEROSCALL_SK_ACT_QUEUE"); if(!aq||!aq[0]) aq="Q_SkMgr";
+                int qi=q_find_slot(aq); if(qi<0) qi=q_find_slot("Q_SkMgrCtrl");
                 if(qi>=0){
                     /* BYTE-EXACT wire verified by the deterministic serializer (scratchpad/build_setmenu.c:
                      * real libGMessageGui SkMgrActivate + GMessage::Write). Empty fields are ABSENT
