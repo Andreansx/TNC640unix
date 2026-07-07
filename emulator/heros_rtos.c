@@ -106,6 +106,8 @@ struct queue{ int used; uint32_t id; char name[NAMELEN];
               uint32_t depth, flags;                  /* from Q_create (advisory)         */
               uint32_t owner, notify_bits;            /* Q_send Ev_sends notify_bits->owner (kernel +0xb8/+0xe8) */
               volatile uint32_t head, tail;           /* tail-head = count; futex on tail */
+              volatile uint32_t wm_tick_offset;       /* WM_SERIAL_FIX: # of injected WM ticks (serial shift) */
+              volatile uint32_t wm_last_serial;       /* WM_SERIAL_FIX: last off4 serial delivered to the client */
               struct qmsg msg[QSLOTS]; };
 struct region{int used; uint32_t id; char name[20]; uint32_t size; };
 
@@ -508,6 +510,9 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode);  /* f
 static void wm_timer_maybe_tick(void);           /* fwd (defined later) — called from ev_receive + q_read */
 static long wm_timer_period_ms(void);            /* fwd (defined later) */
 static int inject_wm_timer=-1;
+static int wm_serial_fix=-1;                      /* WM_SERIAL_FIX: renumber WMQ off4 serials so injected
+                                                  * ticks don't gap winmgr's real replies (default = timer) */
+static __thread int in_wm_tick=0;                 /* set around a tick's q_send so q_send numbers it last+1 */
 struct wmtmr { uint32_t replyq, timerid, period; };
 static struct wmtmr wm_timers[8];
 static volatile int n_wm_timers=0;
@@ -1114,6 +1119,7 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     s=-1; for(int i=0;i<MAXQ;i++) if(!C->queues[i].used){ s=i; break; }
     if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
     C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
+    C->queues[s].wm_tick_offset=0; C->queues[s].wm_last_serial=0;   /* WM_SERIAL_FIX: fresh serial state */
     C->queues[s].depth=depth; C->queues[s].flags=flags;
     C->queues[s].owner=owner; C->queues[s].notify_bits=nbits;
     C->queues[s].name[0]=0; strncpy(C->queues[s].name,base,NAMELEN-1);
@@ -1389,6 +1395,33 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     q->msg[slot].hdr[1]=sender;                           /* sender task    (kernel node +0x24) */
     q->msg[slot].hdr[2]=(mode&0xffff)|((size&0xffff)<<16);/* mode | size    (kernel node +0x28) */
     if(msg&&size) memcpy(q->msg[slot].data,msg,size);
+    /* WM_SERIAL_FIX (HEROSCALL_WM_SERIAL_FIX, default = INJECT_WMGR_TIMER): the WM client requires every
+     * event on its WM event queue ("WMQ<task>") to carry a STRICTLY-contiguous serial in off4 (WmRecvEvent/
+     * WmSendRequestReply @libwinmgrlib check `off4-1 == a1[10]`, else "Gap in event serial number sequence!"
+     * -> WMGRErrSync -> Guppy's OEM thread self-terminates (As_send 0x00800000 + T_delete) BEFORE
+     * jh.softkey.Register -> no bar). winmgr assigns serials blindly from a per-client counter
+     * (WmClient::SendReply, WmClient+56, pre-increment) and does NOT read back the client's echoed serial
+     * (WmRecvRequest ignores it), so an INJECT_WMGR_TIMER tick inserted into the stream STEALS a serial that
+     * winmgr then reuses for its next real reply -> the gap. Make the emulator the SOLE serial authority for
+     * WMQ queues: deliver winmgr's events UNCHANGED until the first tick (offset 0 = no-op), then shift every
+     * subsequent winmgr event's off4 up by the running tick count so the client's view stays contiguous. The
+     * tick itself (in_wm_tick) is numbered last_serial+1. Downstream-only + winmgr never sees the shift. */
+    if(wm_serial_fix<0){ const char*e=getenv("HEROSCALL_WM_SERIAL_FIX");
+        if(e&&e[0]) wm_serial_fix=(e[0]=='1');
+        else { const char*t=getenv("HEROSCALL_INJECT_WMGR_TIMER"); wm_serial_fix=(t&&t[0]=='1'); } }
+    if(wm_serial_fix && size>=8 && q->name[0]=='W'&&q->name[1]=='M'&&q->name[2]=='Q'){
+        unsigned char*d=q->msg[slot].data;
+        if(in_wm_tick){                                   /* an injected tick: give it the next contiguous serial */
+            uint32_t ns=q->wm_last_serial+1;
+            put32(d+4,ns); q->wm_last_serial=ns; q->wm_tick_offset++;
+        } else {                                          /* a real winmgr event: shift by the tick count */
+            uint32_t orig=d[4]|(d[5]<<8)|(d[6]<<16)|((uint32_t)d[7]<<24);
+            uint32_t ns=orig+q->wm_tick_offset;
+            if(q->wm_tick_offset){ put32(d+4,ns);
+                LOG("WM_SERIAL_FIX: \"%s\"(0x%x) winmgr off4 %u -> %u (+%u ticks)\n",q->name,id,orig,ns,q->wm_tick_offset); }
+            q->wm_last_serial=ns;
+        }
+    }
     /* AREA_RECT_FORCE (HEROSCALL_AREA_RECT_FORCE=1): the real winmgr NOW serves skmgr's 0x3003
      * WmGetAreaRect, but the layout geometry is ANCHOR-based (anchors.right/.bottom=...) and winmgr
      * doesn't resolve it -> it replies a degenerate rect (0,0,10,10 + off16=0xffffffff) -> skmgr
@@ -1885,6 +1918,7 @@ static void* wm_timer_thread_fn(void* arg){
              * tick is far slower than the client's poll-read latency, so it reads each event before the
              * next tick and the +i run stays contiguous (no gap, no dup). */
             uint32_t ser=wm_tmr_last_serial+1;
+            in_wm_tick=1;                                /* WM_SERIAL_FIX: q_send numbers these last_serial+1 */
             for(int i=0;i<n;i++){
                 unsigned char ev[0x41C]; memset(ev,0,sizeof ev);   /* full WmGetEvent buffer (0x41C) — all fields 0 */
                 /* WIRE type = 0x3061 (12385), NOT 24. The GTK WM waitable dispatch is GtkWmWaitable::Notify
@@ -1899,6 +1933,7 @@ static void* wm_timer_thread_fn(void* arg){
                 LOG("INJECT_WMGR_TIMER: tick wire-0x3061(timer) serial %u timerid 0x%x -> WM q 0x%x\n",
                     ser+(uint32_t)i,wm_timers[i].timerid,rq);
             }
+            in_wm_tick=0;
         }
         struct timespec r={ wm_tmr_tick_ms/1000, (wm_tmr_tick_ms%1000)*1000000L }; nanosleep(&r,0);
     }
@@ -1961,13 +1996,15 @@ static void wm_timer_maybe_tick(void){
     if(!empty) return;                            /* client hasn't drained the previous tick yet */
     last=now;
     uint32_t base=wm_tmr_last_serial+1;
+    in_wm_tick=1;                                /* WM_SERIAL_FIX: q_send numbers these last_serial+1 */
     for(int i=0;i<nt;i++){
         unsigned char ev2[0x41C]; memset(ev2,0,sizeof ev2);
         put32(ev2+0,0x3061u);                    /* WIRE type 0x3061 -> WmParseEvent parsed timer type 24 */
-        put32(ev2+4,base+(uint32_t)i);           /* off4: serial (WmRecvEvent gap-check off4-1==a1[10]) */
+        put32(ev2+4,base+(uint32_t)i);           /* off4: serial (WM_SERIAL_FIX overrides to contiguous) */
         put32(ev2+12,wm_timers[i].timerid);      /* off12: timer id (WmCheckTimerCallback a3==a2[3]) */
         q_send(rq,ev2,sizeof ev2,0);
     }
+    in_wm_tick=0;
     LOG("INJECT_WMGR_TIMER: tick x%d (base serial %u) -> WM q 0x%x\n",nt,base,rq);
 }
 static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_t*hdrbuf){

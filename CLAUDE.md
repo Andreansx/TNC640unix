@@ -172,15 +172,45 @@ delivered only one tick then stalled), clamped to winmgr's faithful 55ms. VERIFI
 WINMGR=1 INJECT_WMGR_TIMER=1 XDISPLAY=:0): crash=0, Guppy reads the ticks (serial 4,5), sends
 its `0x3038` GetScreens follow-up, then proceeds — `Ev_send`, `Sm_ident "GuppyC"`,
 `Q_send AppStartMaster(0x308)`, `Sm_request`, into the OEM/Python worker-thread setup. Guppy
-does NOT send `0x302d StopTimer` (the hypothesised path); it proceeds directly. **NEXT GATE
-(separate, downstream): the OEM/Python worker thread (task 0x109) busy-polls
-`Ev_receive(0x00000008)` — a plain USEREVMASK event no peer posts (no queue owns notify 0x08)
-— self-signals `As_send(0x00800000)` and `T_delete`s before jh.softkey Register (the documented
-"OEM thread T_deletes before GUPPYSKMGR::Register" bar blocker). Plus child-process LD_PRELOAD
-staging errors (`/lib/readfix.so` in a fork outside the mount-ns). NEXT: RE what posts event
-0x08 to Guppy's OEM thread (likely winmgr window-realization on OemScreen, or the 0x10a main
-thread) + fix the child-preload staging — then the softkey bar can draw. Run:
-`emulator/run_3proc_skmgr_guppy.sh` with `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0`.**
+does NOT send `0x302d StopTimer` (the hypothesised path); it proceeds directly.
+
+**★★★★ OEM-THREAD-TERMINATE FRONTIER CROSSED (2026-07-07): the OEM thread self-terminate was NOT
+an event-0x08 starvation — it was a WM-serial GAP that INJECT_WMGR_TIMER itself introduced; fixed by
+`WM_SERIAL_FIX`, and Guppy now drives its full OEM interaction (no more `As_send 0x00800000`+`T_delete`).**
+The "task 0x109 busy-polls `Ev_receive(0x08)` then `As_send(0x00800000)`+`T_delete`" was the SYMPTOM,
+not the cause. Live trace (`g_pystdout`): after the injected tick, HwViewer.py's window setup calls
+`WmGetCurrentScreen` → `WmSendRequestReply: Gap in event serial number sequence!` →
+`WmGetCurrentScreen error: WMGRErrSync: Client - server communication out of sync` → the OEM thread
+takes its alertable-terminate path (`As_send 0x00800000` self-signal, `As_read` caught, `T_delete`)
+BEFORE `jh.softkey.Register`. **Root cause RE'd:** the WM client requires EVERY event on its WM event
+queue (`WMQ<task>`, e.g. 0x31f) to carry a strictly-contiguous serial in off4 — `WmRecvEvent` /
+`WmSendRequestReply` (libwinmgrlib 0x46d0 / 0x42b0) check `off4-1 == a1[10]` and advance a1[10], else
+"Gap". winmgr assigns serials BLINDLY from a per-client counter (`WmClient::SendReply@0x1e650`,
+`WmClient+56`, pre-increment) and does NOT read back the client's echoed serial (`WmRecvRequest@0x39fd0`
+ignores it). So an INJECT_WMGR_TIMER tick inserted into the stream STEALS a serial (e.g. 4) that winmgr
+then REUSES for its next real reply → `4-1=3 != a1[10]=4` → gap. **FIX = `HEROSCALL_WM_SERIAL_FIX`
+(default = INJECT_WMGR_TIMER; heros_rtos.c q_send): the emulator is the SOLE serial authority for `WMQ*`
+queues** — delivers winmgr's events UNCHANGED until the first tick (offset 0), then shifts every
+subsequent winmgr event's off4 up by the running tick count (`q->wm_tick_offset`), and numbers the tick
+itself `wm_last_serial+1` (`in_wm_tick`). Downstream-only + winmgr never sees the shift (shared per-queue
+counter in /dev/shm, assigned under the queue lock so it's contiguous regardless of the winmgr/tick race).
+VERIFIED (run_3proc, INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0): gap/WMGRErrSync/`As_send 0x800000`/
+`T_delete` markers = **0** (were the terminate), 2 WM_SERIAL_FIX shifts applied, Guppy crash=0, and Guppy
+now runs `PyJHKernel::Execute` → the FULL OEM interaction, driving winmgr all the way to OEM-screen creation.
+
+**NEXT GATE (now re-exposed, separate + documented): the winmgr render-thread SIGSEGV during OEM-screen
+creation.** With Guppy driving its full OEM window registration (`GuppyRegisterWindow@0xc7920`, WINMGR
+path), winmgr reaches OEM-screen bring-up and a winmgr sub-thread does `P_signal(0xffffffff,0x02000000)
+→ P_name(-1)->"~/winmgr" → T_name(-1) → SIGSEGV` (`libheros_sigfaterr: Thread ~/winmgr.~/winmgr
+received terminating signal 11`) — the EXACT documented crash (root-caused earlier to an uncaught
+`throw const char*`/PKc from a LINKED lib during OEM-screen creation → EvtExceptionShell retry desyncs
+the FModule eval-context). This is NOT a WM_SERIAL_FIX regression (winmgr didn't crash pre-fix because
+Guppy terminated first); the fix simply advanced Guppy past the serial gap into the interaction that
+triggers it. NEXT: capture the winmgr fault EIP/thrown-string via a FEX-respecting mechanism (intercept
+the guest rt_sigaction/`__cxa_throw` inside heros_rtos, or suppress libheros_sigfaterr so FEX's own crash
+dump prints the guest RIP) + find WHICH linked-lib call throws during OEM-screen bring-up + provide the
+emulator data it needs (candidate: the no-op `P_signal(0x2b)` stub preceding the throw). Run:
+`emulator/run_3proc_skmgr_guppy.sh` with `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0` (WM_SERIAL_FIX auto-on).**
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
