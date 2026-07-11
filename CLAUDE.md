@@ -233,33 +233,37 @@ the fix. Also this session (revises the old docs): the crash was NEVER an uncaug
 throwcatch (`__cxa_throw@@CXXABI_1.3`) caught **0** throws; and `P_signal(0x02000000)→P_name(-1)→T_name(-1)`
 is the `libheros_sigfaterr` RECOVERY handler, not the fault site.
 
-**NEXT GATE (downstream, DIAGNOSED to hard data — skmgr gets no async WM event after its handshake).** With
-winmgr alive the bar path was traced end-to-end and the blocker is NOT Guppy: (a) **Guppy is fine** — the
-`Ev_receive(0x08)` "busy-poll" (59k×) is `PyJHExecute_::Tracer@0xc1050` polling a per-bytecode ABORT event
-(returns 0 → Python keeps running) = Guppy running HwViewer.py; Guppy already `Q_send`s its softkey to
-**Q_SkMgr (0x314)**. (b) **skmgr is the blocker.** New emulator diagnostic `WMGR_MSGDUMP=1` now also dumps
-winmgr→WMQ posts (`WMQ-RECV` lines in wm.log). It PROVES winmgr posts skmgr's WM queue (WMQ00109=0x313)
-exactly these, then STOPS: serials 0-9 = `0x3067, 0x3037×3, 0x3067, 0x3038, 0x3067, 0x3038×2, 0x3044` —
-i.e. the `0x3037/0x3038 GetScreens` replies interleaved with `0x3067` markers, TERMINATED by **`0x3044`
-(serial 9)**. skmgr then blocks in `WmRecvEvent(0x313)` waiting for serial 10 that never comes → never reads
-Q_SkMgr(0x314) → no `BuildSoftkeyBar`/`.bmx` (0). **Event taxonomy RE'd:** `0x3044`=`WmClient::SendEvent`
-(a request REPLY — here the GetScreens-complete reply); `0x3067`/`0x3042`/`0x3061`=`WmClientLibTransport::
-PostEvent` ASYNC events (`0x3061`=the injected timer tick). So skmgr got its GetScreens reply and now awaits
-the next ASYNC PostEvent that winmgr doesn't generate. **CORRECTIONS to earlier this session:** (1) `0x3043`
-IS a registration, not a bare lookup — `WmRecvEvent`→ winmgr case 0x3043 → `WmXLibEventHandler::NewClient@
-0x4f2d0` → `WmEventHandler::AddClient`, so skmgr IS in the `OnScreenChange@0x21b10` broadcast tree (which
-iterates that tree calling each client vtable+112). (2) The OnScreenChange lever is therefore NOT ruled out —
-the "switch-away wm_select2→screen 1" test was INCONCLUSIVE, blocked by **virtiofs staleness**: editing the
-Mac run-script does NOT change what the VM reads (both attempts still staged screen 2; verify with
-`xxd -p /tmp/wm_select2.bin`). Guppy CROSSED the same "ends at 0x3044" point only because it's an ACTIVE
-driver (keeps sending 0x300c/0x3005/0x3042 window-registration → more traffic); skmgr is a PASSIVE waiter.
-**NEXT (robust path, avoids the virtiofs/wire fragility): synthesize the async event emulator-side** — post
-an event to skmgr's 0x313 with off4=`wm_last_serial+1` (WM_SERIAL_FIX already tracks it) once skmgr has
-registered (after its 2nd 0x3043) + drained its handshake; RE skmgr's SkManager loop (libwinmgrlib, its
-post-GetScreens state) to pin the EXACT event type/body it consumes to proceed to `WmGetAreaRect(0x3003
-@0x56b0)` → BuildSoftkeyBar. (Alternatively drive `OnScreenChange` reliably by staging the screen-1
-wm_select2 wire VM-LOCALLY, not via the Mac mount.) Run (defaults carry the winmgr fix):
-`INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0 WMGR_MSGDUMP=1 bash emulator/run_3proc_skmgr_guppy.sh`.**
+**★★★★★ NEXT-GATE RE-DIAGNOSED (2026-07-11) — the skmgr block was NEVER a "missing async WM event"; it is
+the emulator's non-blocking-`Q_read` LIVELOCK, fixed by `WMQ_BREAK` (which was default-OFF).** The block just
+above (serial-9/12 stall, "synthesize an async event to 0x313") was a MISDIAGNOSIS reached by tracing WITHOUT
+`WMQ_BREAK` enabled — it re-observed the spin and mis-attributed it. This SESSION vindicates the earlier
+[[project-skmgr-wmq-spin-and-bar-path]] correction with fresh hard data. Ground truth: skmgr's *blocking*
+WM-drain (`WmGetEvent@libwinmgrlib 0x3860 → WmRecvEvent@0x46d0`, a4=1=block) busy-polls its WM queue (0x313);
+under the emulator's EAGAIN-on-empty non-blocking Q_read this LIVELOCKS the FThread dispatch and STARVES
+Q_SkMgr(0x314). `HEROSCALL_WMQ_BREAK` (heros_rtos.c ~2297: after N empty `WMQ*` reads — or immediately on a
+pending non-WM notify like Q_SkMgr's 0x02000000 — return ETIMEDOUT so `WmRead` returns 0 → drain ends →
+dispatch services Q_SkMgr) IS the fix. **VERIFIED 2×:** `WMQ_BREAK=1` → skmgr **75,924→~16k lines**, serve
+reads on 0x313/0x314 **0→245**, **126 InfoResponse (0x028a0740) sends**, crash=0. **Now `WMQ_BREAK:-1`
+(default-ON) in run_3proc.** **WM event taxonomy fully decoded** (winmgr g_EventTypes@0x8bba0 + WmParseEvent@
+libwinmgrlib 0x2350 + PostEvent serialize@0x202c0): winmgr type **12=SCREENCHANGED→wire 0x3067**=
+`[0x3067][serial][screen#]`, 11=TIMER→0x3061, 5=MOUSE_ENTER→0x3058; client parse 0x3067→30, 0x3061→24. skmgr
+ALREADY received 0x3067 (screens 0,1) during handshake — nothing was "missing". winmgr ALSO won't broadcast a
+fresh screen-change (a valid `WmSelectForegroundMsg [0x03B801C0][0x03B80044][screen]` is Q_read on 0x30f but
+yields 0 broadcasts; `SelectForeground` dispatch id 0x3B803C0; `AddClient@0x21da0` does NOT push the current
+screen to a new client) — but that lever is MOOT now.
+
+**NEXT GATE (the bar DRAW) — the SkMgrActivate connection, i.e. Guppy's softkey LOGIN.** With WMQ_BREAK skmgr
+SERVES Q_SkMgr and the draw-trigger POSTS: `INJECT_SK_ACTIVATE=1 SK_ACT_SCREEN=4` → `posting SkMgrActivate
+(0x028A0200 screen=4 handle=13) → Q_SkMgr(0x314)`. But **0 draw**: `SkMgrFrame::OnActivation` bails on
+`GetConnection(handle 13)==0` because **Guppy binds the softkey (jh.softkey.Register=1) but its
+GUPPYSKMGR/libSkMgrCtrl client never sends `SkMgrLogin(0x028a0120)`** (login count 0 this run) → no connection
+13. The DRAW needs Guppy's softkey LOGIN to reach Q_SkMgr (→ connection) so Activate(13) → OnActivation →
+`WmGetAreaRect(0x3003)` → BuildSoftkeyBar → PutImage the .bmx. Per [[project-skmgr-wmq-spin-and-bar-path]] the
+login IS run-variant (WMQ_BREAK_N=800 reaches it ~½ the time then Guppy WEDGES on its GData connection
+`Ev_receive(0x03011000)` before SetMenu/Activate; N=2000 default stalls pre-login). **Real next step = crack
+Guppy's GData softkey-thread wedge (or synthesize the login+SetMenu content emulator-side, testing
+`INJECT_SK_FLOW=1` now WITH WMQ_BREAK — it was only ever tried WITHOUT).** Run:
+`INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0 WMQ_BREAK=1 INJECT_SK_ACTIVATE=1 SK_ACT_SCREEN=4 AREA_RECT_FORCE=1 bash emulator/run_3proc_skmgr_guppy.sh`.**
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
