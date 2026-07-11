@@ -60,7 +60,23 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-06)
+## Current frontier (2026-07-11) — REAL-DRIVER path, 5 procs spawned, crash=0
+**The real AppStartMaster now drives the constellation FEX-native**: `AppStartMP.elf
+-p=AppStart.AppStart AppStart -f=<batch>` (the `-f=` fix, commit 86f7b7e) PCreate-spawns
+**5 real children — winmgr, skmgr, prom, evtserver, evtviewer — with genuine argv, crash=0,
+reproduced 2x** (commit 012d8d6). The two fixes that got there, both faithful (NO injects):
+(1) a **cross-process p_name/p_ident registry** — `p_create` sets `HEROS_PROC_NAME=<argv name>`,
+heros_rtos `canon_pname()` strips the `subsystem:` prefix (`winmgr:winmgr/winmgr`→`winmgr/winmgr`)
+and registers it on the main task in the SHARED /dev/shm table, so peers resolve each other and
+P_name/T_name return valid names (the garbage identity was winmgr's early SIGSEGV); (2) **export the
+appproduct layout env** (`LAYOUT_FILE`/`KEYMAP_FILE`/… = the PGM-Platz 1280x1024 demo) so
+AppStartMaster fills winmgr's `-i=` (was empty → crash). The `INJECT_*` fakes stay OFF.
+**NEXT GATE = the Monitor's per-subsystem SEQUENCING handshake**: after the Event subsystem registers,
+t106 idles at `Ev_receive(0x01019007)` and won't load the 6th subsystem (Server/observer/…). RE
+`AppStart::Monitor::OnMessage`/the `ReadMessageFromFile` pacing. Detail: memory
+`project-real-driver-appstartmaster-pivot`. Run: `bash emulator/run_appstart_fex.sh` (PNAME+layout DEFAULT-ON).
+
+## Prior frontier (2026-07-06) — pre-pivot softkey-bar detail (deprioritized; see the pivot memory)
 The FEX-native path (Track B) runs deep. Milestones reached: config #6 SOLVED;
 IPO connects + passes `-k=NC`; the AppStartMP logo deadlock + the FEX-native
 **constellation spawn**; a real **TNC640 GTK window (Guppy/HwViewer) rendered
