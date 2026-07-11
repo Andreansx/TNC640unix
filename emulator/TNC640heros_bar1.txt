@@ -1,0 +1,94 @@
+(* TNC640heros_bar1.txt  --  TRIMMED bar-path start script (stage 1)                 *)
+(* Purpose: prove the Monitor's per-subsystem SEQUENCING advances past the Event      *)
+(* subsystem. The full-batch stall was NOT a broken handshake: the sequencer correctly *)
+(* waits for EVERY process of a subsystem to report FmProcessState(state=3 READY)      *)
+(* before emitting FmAppStartAction(0) to load the next. It advanced winmgr->skmgr->    *)
+(* prom->Event(evtserver READY) fine, but blocked because evtviewer (a diagnostic GUI  *)
+(* event VIEWER, NOT on the softkey-bar path) reached STARTED(2) and never reached      *)
+(* READY(3). This script DROPS evtviewer from Event and trims Server to observer, so    *)
+(* Event completes with evtserver alone -> Server loads -> observer REALLY spawns.      *)
+(* Faithful config edit (we own -f=<script>), NOT a runtime inject.                     *)
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\jh.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\product.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\tnc.cfg")
+
+FmCommandLineOption (
+    caption:="e",
+    value:="SYS:\\runtime\\LogFile.log")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_PORTRAIT_MODE_TOUCH_SCREEN")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_TOUCHSCREEN")
+
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_SIDESCREEN_MODE")
+
+FmLoadSubsystem (
+    subsystem:="winmgr",
+    localNamespace:="winmgr",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/winmgr",
+            commandLineOptions:="-m=5 -i=%LAYOUT_FILE% -o=afk -s=%WINMGR_SCREENSIZE% -k=%KEYMAP_FILE% -c=%CHARMAP_FILE% -f=%FCTKEYMAP_FILE%",
+            imagePath:="%EXECDIRH%\\winmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="SkManager",
+    localNamespace:="SkManager",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/skmgr",
+            commandLineOptions:="-w -k",
+            imagePath:="%EXECDIRH%\\skmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="prom",
+    localNamespace:="prom",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/prom",
+            imagePath:="%EXECDIRH%\\promview.elf" )
+    ])
+
+FmProgressNotify(
+    algorithm:=ALGO_ABSOLUTE,
+    info:="PromSubsysAvailable",
+    percent:=8
+)
+
+FmLoadSubsystem (
+    subsystem:="Event",
+    localNamespace:="Event",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/evtserver",
+            commandLineOptions:="-i=Nc -m=7 -n=7",
+            imagePath:="%EXECDIRH%\\evtserver.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Server",
+    localNamespace:="Server",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/observer",
+            commandLineOptions:="-f=%SYS%\\config\\observer.cfg -i=Nc",
+            imagePath:="%EXECDIRH%\\observer.elf" )
+    ])

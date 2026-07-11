@@ -18,6 +18,10 @@ CFG=/Users/andreansx/Documents/TNC640unix/work/control/sysroot
 CC=i686-linux-gnu-gcc
 FEXLIBS=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu
 DISP=:99
+# APPSTART_BATCH_NAME: name of the start script under SYS:\batch to run (-f=). Defaults to the full
+# TNC640heros.txt. A trimmed bar-path script (e.g. TNC640heros_bar1.txt, staged from emulator/ below)
+# lets the real driver advance past subsystems whose non-essential GUI processes stall before READY.
+BATCH_NAME="${APPSTART_BATCH_NAME:-TNC640heros.txt}"
 
 echo "=== [0] sanity ==="
 which FEXInterpreter Xvfb openbox >/dev/null || { echo "FATAL: missing FEXInterpreter/Xvfb/openbox"; exit 1; }
@@ -72,6 +76,9 @@ echo "  FEXInterpreter: rely on FEX rootfs-ENOENT fallback to $FEXBIN (no rootfs
 # SYS:\config\*.cfg + SYS:\batch\TNC640heros.txt and writes SYS:\runtime\AppStartFinishCounter.txt.
 SYSW=/var/tmp/sysw; sudo rm -rf "$SYSW"; sudo mkdir -p "$SYSW/runtime"
 sudo cp -aL "$CFG/config" "$SYSW/config" 2>/dev/null; sudo cp -aL "$CFG/batch" "$SYSW/batch" 2>/dev/null
+# Stage any custom (trimmed) start scripts from emulator/ into SYS:\batch so -f= can select them.
+for b in "$EMU"/TNC640heros_*.txt; do [ -e "$b" ] && sudo cp -f "$b" "$SYSW/batch/"; done
+echo "  batch selected: $BATCH_NAME (present: $([ -e "$SYSW/batch/$BATCH_NAME" ] && echo yes || echo NO))"
 # AppStartMP's PLIB++ GUI init loads %SYS%\resource\{keymap,charmap,functionkeymap}_us101.xml via
 # PReplacePath(%SYS% -> getenv SYS=/tmp/s) + FVolumePathname::Convert (\->/) => /tmp/s/resource/*.
 # Stage the control's resource dir so the default keyboard/char/function-key maps load (the PLIB++ wall).
@@ -234,7 +241,7 @@ timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
+  FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/$BATCH_NAME >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
 rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null

@@ -71,10 +71,23 @@ and registers it on the main task in the SHARED /dev/shm table, so peers resolve
 P_name/T_name return valid names (the garbage identity was winmgr's early SIGSEGV); (2) **export the
 appproduct layout env** (`LAYOUT_FILE`/`KEYMAP_FILE`/… = the PGM-Platz 1280x1024 demo) so
 AppStartMaster fills winmgr's `-i=` (was empty → crash). The `INJECT_*` fakes stay OFF.
-**NEXT GATE = the Monitor's per-subsystem SEQUENCING handshake**: after the Event subsystem registers,
-t106 idles at `Ev_receive(0x01019007)` and won't load the 6th subsystem (Server/observer/…). RE
-`AppStart::Monitor::OnMessage`/the `ReadMessageFromFile` pacing. Detail: memory
-`project-real-driver-appstartmaster-pivot`. Run: `bash emulator/run_appstart_fex.sh` (PNAME+layout DEFAULT-ON).
+**★★★★★★ SEQUENCING GATE CROSSED (2026-07-11 cont.) — the stall was NOT a broken handshake; it was
+`evtviewer` (a diagnostic GUI event-VIEWER, NOT on the bar path) reaching STARTED(2) but never READY(3).**
+RE'd the sequencer (idalib): `Monitor::OnMessage(FmProcessState)@0x3c400` advances per-subsystem — when the
+LAST pending process of a subsystem reports **state=3 READY** it emits `FmSubsystemAction(2)` + **`FmAppStartAction(0)`
+= "load next"**; `Subsystems::OnMessage(FmProcessState)@0x5fed0` does the pending-count bookkeeping
+(`DecrementPendingProcessesIf(action, subsys)`). The handshake was PROVEN CORRECT — it advanced
+winmgr→skmgr→prom→Event(evtserver READY) and correctly WAITED for evtviewer (Event's 2nd proc, which
+sends only 1 FmProcessState = STARTED, never the 2nd = READY, so Event never completes). Fix = FAITHFUL trim
+(we own `-f=<script>`): `emulator/TNC640heros_bar1.txt` (winmgr+skmgr+prom+Event(evtserver ONLY)+Server(observer
+ONLY)) via new `APPSTART_BATCH_NAME` knob. **VERIFIED: Event completes with evtserver alone → Server loads →
+`observer.elf` REALLY PCreate-spawns (pid, argc=5) AND reaches READY (2 FmProcessState), all 6 procs valid pname,
+crash=0, /etc SAFE.** Children crashing (promview PciHardware::Exception, evtserver) AFTER state 3 do NOT block.
+**NEXT GATE = drive toward the BAR: extend the trim to reach `mmi` = `Fred.elf` (subsystem "Ed", opts
+`-i=Nc -k=NC -s=Sim -p=SIM`), the operator MMI that logs into skmgr → draws the softkey bar.** Ed/EdG(graphicsSIM)/
+EdS(CM/ChannelManager)/TblUp/TncKbd carry `procedure:="ConfigReady"` = DEFERRED loads; since we author `-f=`, load
+Ed directly. North star = a visible softkey bar (un-fakeable pixel). Detail: memory
+`project-real-driver-appstartmaster-pivot`. Run: `APPSTART_BATCH_NAME=TNC640heros_bar1.txt bash emulator/run_appstart_fex.sh`.
 
 ## Prior frontier (2026-07-06) — pre-pivot softkey-bar detail (deprioritized; see the pivot memory)
 The FEX-native path (Track B) runs deep. Milestones reached: config #6 SOLVED;
