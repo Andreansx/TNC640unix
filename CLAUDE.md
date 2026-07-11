@@ -60,7 +60,37 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-11) — REAL-DRIVER path, 5 procs spawned, crash=0
+## Current frontier (2026-07-12) — REAL-DRIVER bar: GATE 1 (config write) CROSSED; GATE 2 (activation) live
+**★★★★★★★★ GATE 1 CROSSED (commit 353856c).** On the real-driver bar3 path Fred blocked forever on its
+`CfgWriteNew(0x170461)` — no `CfgWriteDone`. Root-caused un-fakeably via `emulator/cfg461probe.c` (LD_PRELOAD
+tracer over libConfigSystem.so): `CfgServer::OnWriteNew`→`CheckNotification` EARLY-OUTs (defers, no reply)
+while `this+232`!=0 = the SyncMap (`std::map<astring,Access>@this+212`) node-count of subscribers awaiting a
+`CfgNotifyDone`. Stuck at 1 with subscriber **`.EditThreadNotify`** (ConfigServer's OWN internal EditThread,
+queue "EditThreadNotify"=0x302). **Emulator bug:** every message ConfigServer sent to `.EditThreadNotify`
+went to the "" BLACK HOLE (0x30b) — `q_basename` strips the LEADING dot →`""`→`q_find_slot("")` matches the
+empty-named queue (id!=0) so all `!id` guards skipped. FIX = **`HEROS_QIDENT_DOTLEAD` (default ON)**: `q_ident`
+resolves a leading-dot target `.X` → the real queue `X` (disjoint from qident_notify's compound case + the
+`""` CFG_REPLY_ROUTE path). VERIFIED un-fakeable: EditThread READS 0x302 → `OnNotify@0x2719d0` sends
+CfgNotifyDone → **OnNotifyDone before=1→after=0 (SyncMap DRAINED)** → OnWriteNew(notif=0) → CheckNotification→0
+→ **WriteFinish→0**. Fred then drives the FULL real softkey conversation: SkMgrLogin(0x028a0120)→resp(0x028a0140)
+→SetMenu(0x028a0981)→real .bmx loads(0x028a0421)→MID_MAIN+24×per-key. NO injects. See
+[[project-config-gate-0x170461-editthread-syncmap]].
+**GATE 2 (the bar DRAW) — live.** Screen topology mapped (winmgr GetScreens + tnc640layout1280.xml): 3 screens
+**Nc/Machine(desktopId=0, ACTIVE — prom's boot splash, "PLC not ready→startup picture visible"), Ed/Edit(desktopId=1
+= FRED's), OEM(2)**. Bar draws when skmgr gets `SkMgrActivate(0x028a0200)` (`SkMgrGMsgController::OnActivation@0x5a5a0`
+sets state=3→GData::Notify→`SkMgrFrame::OnActivation@0x42170` draws), SENT by Fred's `SkMgrCtrlInterfaceImpl::Activate`
+(libSkMgrCtrl 0xc5d0) on view-activation. Drove a real WM screen-foreground to Edit(1) via `INJECT_WMGR_ACTIVATE`+
+`WMACT_SCREEN=1` (byte-exact `WmSelectForegroundMsg` = the genuine screen-switch, NOT INJECT_SK_ACTIVATE): winmgr
+foregrounded Edit (openbox "desktop 1" popup), **Fred RECEIVED the SCREENCHANGED(0x3067)** (never did before) and
+reacted (19× 0x3038 GetScreens) — but did NOT activate its view / send SkMgrActivate. So a raw SCREENCHANGED is
+necessary-but-NOT-sufficient; Fred's view-activation is gated on something more (RE in progress: what calls
+`TncEditCtrl::AfterActivate`/`SkMgrCtrlInterfaceImpl::Activate` — likely boot-readiness / a focus/map event / an
+AppStartMaster msg; the constellation is stuck at prom's boot splash). Real render CONFIRMED: the TNC640 startup
+splash draws (scratchpad/shots/gate2_230.png). Repro: `HEROSCALL_INJECT_WMGR_ACTIVATE=1 HEROSCALL_WMACT_SELECT=1
+HEROSCALL_WMACT_SCREEN=1 HEROSCALL_WMACT_DELAY=150 APPSTART_BATCH_NAME=TNC640heros_bar3.txt APPSTART_TIMEOUT=360
+bash emulator/run_appstart_fex.sh`.
+
+## Prior frontier (2026-07-11) — REAL-DRIVER path, 5 procs spawned, crash=0
 **The real AppStartMaster now drives the constellation FEX-native**: `AppStartMP.elf
 -p=AppStart.AppStart AppStart -f=<batch>` (the `-f=` fix, commit 86f7b7e) PCreate-spawns
 **5 real children — winmgr, skmgr, prom, evtserver, evtviewer — with genuine argv, crash=0,
