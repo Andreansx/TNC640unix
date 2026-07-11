@@ -83,11 +83,22 @@ sends only 1 FmProcessState = STARTED, never the 2nd = READY, so Event never com
 ONLY)) via new `APPSTART_BATCH_NAME` knob. **VERIFIED: Event completes with evtserver alone → Server loads →
 `observer.elf` REALLY PCreate-spawns (pid, argc=5) AND reaches READY (2 FmProcessState), all 6 procs valid pname,
 crash=0, /etc SAFE.** Children crashing (promview PciHardware::Exception, evtserver) AFTER state 3 do NOT block.
-**NEXT GATE = drive toward the BAR: extend the trim to reach `mmi` = `Fred.elf` (subsystem "Ed", opts
-`-i=Nc -k=NC -s=Sim -p=SIM`), the operator MMI that logs into skmgr → draws the softkey bar.** Ed/EdG(graphicsSIM)/
-EdS(CM/ChannelManager)/TblUp/TncKbd carry `procedure:="ConfigReady"` = DEFERRED loads; since we author `-f=`, load
-Ed directly. North star = a visible softkey bar (un-fakeable pixel). Detail: memory
-`project-real-driver-appstartmaster-pivot`. Run: `APPSTART_BATCH_NAME=TNC640heros_bar1.txt bash emulator/run_appstart_fex.sh`.
+**★★★★★★★ SOFTKEY LOGIN PROTOCOL ALIVE via the REAL DRIVER (2026-07-11 cont.).** Extended the trim to
+reach `mmi` = `Fred.elf` (subsystem "Ed", `-i=Nc -k=NC -s=Sim -p=SIM`): `TNC640heros_bar2.txt`
+(winmgr+skmgr+Event(evtserver)+Ed(Fred), via `APPSTART_BATCH_NAME`). **Fred REALLY spawns and drives the full
+softkey handshake** — config-connects, does the winmgr WM handshake (Connect/GetScreens/StartTimer + registers
+its `Ed.Fred.FrameView` window), and **SENDS `SkMgrLogin(0x028a0120)` to Q_SkMgr** — the exact login every prior
+Guppy/skmgr treadmill session was MISSING (Guppy never sent it → `GetConnection`==0 → no bar). One FAITHFUL
+emulator fix unblocked skmgr: **`HEROSCALL_WMQ_BREAK` (now default-on in run_appstart_fex.sh)** — skmgr's blocking
+WM-drain busy-polls its empty `WMQ*` queue under the emulator's perpetual-EAGAIN non-blocking Q_read, LIVELOCKING
+the FThread dispatch so it never services the Q_SkMgr login notify (0x02000000). WMQ_BREAK returns ETIMEDOUT
+(immediately when a non-WM notify is pending) so the drain ends → dispatch services Q_SkMgr. **VERIFIED: skmgr READS
+the login → full bidirectional softkey conversation (login 0x028a0120 → response 0x028a0140 → menu 0x028a0981 →
+0x028a01e0).** Also added `APPSTART_TIMEOUT` (bar runs need >220s) + `frontend.dat` root-symlinks (Fred's libfrontend
+FResMgr) + later screenshots. **NEXT GATE: Fred blocks on `QProMRequest` (sends to the prom process-monitor queue,
+waits on reply queue `promansw`) — prom was trimmed out. Testing `TNC640heros_bar3.txt` (= bar2 + prom).** Then:
+`SkMgrActivate(0x028a0200)` → `SkMgrFrame::OnActivation` → `WmGetAreaRect` → `BuildSoftkeyBar` → PutImage = the BAR.
+North star = a visible softkey bar (un-fakeable pixel). Run: `APPSTART_BATCH_NAME=TNC640heros_bar3.txt APPSTART_TIMEOUT=360 bash emulator/run_appstart_fex.sh`.
 
 ## Prior frontier (2026-07-06) — pre-pivot softkey-bar detail (deprioritized; see the pivot memory)
 The FEX-native path (Track B) runs deep. Milestones reached: config #6 SOLVED;

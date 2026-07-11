@@ -1,0 +1,76 @@
+(* TNC640heros_bar2.txt  --  TRIMMED bar-path start script (stage 2a)                 *)
+(* Goal: get the REAL driver to PCreate-spawn mmi = Fred.elf (the operator MMI in       *)
+(* subsystem "Ed") and observe Fred's actual startup — which peer queues it Q_idents,    *)
+(* what it blocks on — so stage 2b can add exactly the hard peers it needs (CM/graphics) *)
+(* with the correct namespace. winmgr+skmgr+evtserver are proven to reach READY, so Ed   *)
+(* loads and Fred spawns. Ed drops the ConfigReady procedure gating (we own -f=) + all    *)
+(* 12 Ed co-processes; config comes from the foundation ConfigServer. Faithful trim.      *)
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\jh.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\product.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\tnc.cfg")
+
+FmCommandLineOption (
+    caption:="e",
+    value:="SYS:\\runtime\\LogFile.log")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_PORTRAIT_MODE_TOUCH_SCREEN")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_TOUCHSCREEN")
+
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_SIDESCREEN_MODE")
+
+FmLoadSubsystem (
+    subsystem:="winmgr",
+    localNamespace:="winmgr",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/winmgr",
+            commandLineOptions:="-m=5 -i=%LAYOUT_FILE% -o=afk -s=%WINMGR_SCREENSIZE% -k=%KEYMAP_FILE% -c=%CHARMAP_FILE% -f=%FCTKEYMAP_FILE%",
+            imagePath:="%EXECDIRH%\\winmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="SkManager",
+    localNamespace:="SkManager",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/skmgr",
+            commandLineOptions:="-w -k",
+            imagePath:="%EXECDIRH%\\skmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Event",
+    localNamespace:="Event",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/evtserver",
+            commandLineOptions:="-i=Nc -m=7 -n=7",
+            imagePath:="%EXECDIRH%\\evtserver.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Ed",
+    localNamespace:="Ed",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/mmi",
+            commandLineOptions:="-i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60",
+            imagePath:="%EXECDIRH%\\Fred.elf" )
+    ])

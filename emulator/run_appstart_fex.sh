@@ -22,6 +22,9 @@ DISP=:99
 # TNC640heros.txt. A trimmed bar-path script (e.g. TNC640heros_bar1.txt, staged from emulator/ below)
 # lets the real driver advance past subsystems whose non-essential GUI processes stall before READY.
 BATCH_NAME="${APPSTART_BATCH_NAME:-TNC640heros.txt}"
+# APPSTART_TIMEOUT: seconds AppStartMP (+ the constellation it spawns) runs before SIGKILL. Bar-path runs
+# need more than the 220 scout default — Fred's SkMgrLogin + skmgr's bar draw land late.
+APPSTART_TIMEOUT="${APPSTART_TIMEOUT:-220}"
 
 echo "=== [0] sanity ==="
 which FEXInterpreter Xvfb openbox >/dev/null || { echo "FATAL: missing FEXInterpreter/Xvfb/openbox"; exit 1; }
@@ -163,6 +166,10 @@ cd /
 # "%SYS%/resource/keymap_us101.xml" (strace-confirmed ENOENT, same gate as config #6's %SYS% paths).
 # Relative to cwd=/, satisfy the literal macro dir with a symlink to the staged SYS/OEM mirror.
 ln -sfn /tmp/s "/%SYS%"; ln -sfn /tmp/o "/%OEM%"; ln -sfn /tmp/s "/%USR%"
+# Fred/mmi (libfrontend FResMgr) resolves its screen-resource bundle at root base (/frontend.dat, etc.)
+# with an empty prefix -> ENOENT unless symlinked from the staged SYS/resource. Same list run_fred.sh stages.
+for fd in frontend.dat frontend1280.dat mmiPrg1280.dat mmiOnlG1280.dat mmiMan1280.dat Fred1280.dat Fred.dat Simulo.dat Simulo1280.dat; do
+  [ -e /tmp/s/resource/\$fd ] && ln -sfn /tmp/s/resource/\$fd /\$fd; done
 
 echo '### foundation: dbus + auth-daemon + heuserver (bg) ###'
 LD_PRELOAD=/lib/herosapi_shim.so:/lib/renamefix.so FEXInterpreter $R/usr/bin/dbus-daemon --system --nofork --nopidfile --nosyslog >/tmp/a_dbus.log 2>&1 &
@@ -228,9 +235,10 @@ rm -f /tmp/a_strace.log
 #                              Drives the AppStart::Monitor sequencer BUT returning the full want-mask trips
 #                              FWaitableInput::Unmask "0 < mask" (fwaitable.cpp:248) — needs the precise
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
-timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
+timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
   HEROSCALL_PNAME=1 HEROS_PROC_NAME=AppStart.AppStart HEROSCALL_BTRACE=${HEROSCALL_BTRACE:-1} \
+  HEROSCALL_WMQ_BREAK=${HEROSCALL_WMQ_BREAK:-1} HEROSCALL_WMQ_BREAK_N=${HEROSCALL_WMQ_BREAK_N:-2000} \
   HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-0} \
   HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
   HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-0} \
@@ -251,7 +259,7 @@ EOF
 echo "=== [5] run (contained) ==="
 # Screenshot Xvfb :99 at a few timepoints to SEE the logo render (Xvfb + import are outside the ns).
 rm -f /tmp/logo_*.png
-( sleep 70; for t in 70 90 110; do DISPLAY=$DISP import -window root /tmp/logo_$t.png 2>/dev/null && echo "  [shot] /tmp/logo_$t.png"; sleep 20; done ) &
+( sleep 80; for t in 80 130 180 230 280 330 380; do DISPLAY=$DISP import -window root /tmp/logo_$t.png 2>/dev/null && echo "  [shot] /tmp/logo_$t.png"; sleep 50; done ) &
 SHOTPID=$!
 sudo unshare -m bash -c "$NSCMD" >"$LOG" 2>&1
 kill $SHOTPID 2>/dev/null
