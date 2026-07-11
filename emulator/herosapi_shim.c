@@ -264,6 +264,14 @@ int p_create(unsigned p1, unsigned p2, unsigned p3, int *pidout, unsigned p5,
          * unset the inject env so a spawned proc seeing an AppStartMaster FmProcessState stays passive. */
         unsetenv("HEROSCALL_INJECT_FMLOAD"); unsetenv("HEROSCALL_INJECT_FMLOAD_SET");
         unsetenv("HEROSCALL_INJECT_FMLOAD_IMG"); unsetenv("HEROSCALL_INJECT_FMLOAD_PROC");
+        /* Cross-process p_name/p_ident registry: hand the child its own HeROS process name so heros_rtos
+         * registers it (children carry NO -p= arg — the name is the first non-option token, e.g.
+         * "winmgr:winmgr/winmgr", which heros_rtos canonicalises to "winmgr/winmgr"). Without this a child
+         * has no self-name → p_name() returns an uninitialised buffer (garbage thread identity → the winmgr
+         * "Unhandled exception" SIGSEGV) AND peers' p_ident("winmgr/winmgr") can never resolve it. Overrides
+         * any HEROS_PROC_NAME inherited from the parent; cleared for a nameless spawn. */
+        if (p7 && p7[0] && p7[0] != '-') setenv("HEROS_PROC_NAME", p7, 1);
+        else unsetenv("HEROS_PROC_NAME");
         execve(fex, argv, environ); _exit(127);
     }
     if (pid > 0 && pidout) *pidout = pid;

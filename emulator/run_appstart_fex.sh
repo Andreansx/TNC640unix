@@ -84,6 +84,10 @@ ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bi
 # Stage both volume targets + the productid cache (controlmark=16 = GetOptionTableTnc640).
 sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid
 sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
+# winmgr's ReadLayout re-resolves %SYS%/resource against the PERSISTENT mount /mnt/sys/resource (NOT the
+# SYS symlink) — durable lesson: a custom %SYS%/resource layout must be present there too, else winmgr
+# throws uncaught "File not found". Stage the resource dir to both /tmp/s/resource (below) and here.
+sudo mkdir -p /mnt/sys/resource; sudo cp -aL "$CFG/resource/." /mnt/sys/resource/ 2>/dev/null; sudo chmod -R a+rX /mnt/sys/resource
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
 for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do
   printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
@@ -123,6 +127,18 @@ export LANG=C LC_ALL=C LD_LIBRARY_PATH=$FEXLIBS
 # HeROS identity/partition env (served by heros_rtos Sys_getenv)
 export SYS=/tmp/s OEM=/tmp/o USR=/tmp/s OEME=/tmp/o EXECDIRH=/tmp/b EXECDIR=/tmp/b EXECBAT=/tmp/s/batch
 export SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC:
+# winmgr command-line macros (%LAYOUT_FILE% / %KEYMAP_FILE% / %CHARMAP_FILE% / %FCTKEYMAP_FILE% /
+# %WINMGR_SCREENSIZE%): AppStartMaster expands these from the ENVIRONMENT (Sys_getenv->getenv) when it
+# builds winmgr's argv, EXACTLY as the real product launcher work/control/sysroot/appproduct exports them.
+# Without them winmgr is spawned with EMPTY -i=/-k=/-c=/-f= (no screen layout) -> it throws during resource
+# load and SIGSEGVs before registering (the "Unhandled exception"/signal-11 seen with a garbage threadname).
+# Values = the PGM-Platz demo config (1280x1024, no touch device, X11 keymap); the files are staged under
+# SYS/resource (section [2]).
+export JH_RES=1280 JH_FULL_RES=1280x1024 WINMGR_SCREENSIZE=1280x1024
+export LAYOUT_FILE=/tmp/s/resource/tnc640layout1280.xml
+export KEYMAP_FILE=/tmp/s/resource/keymap_te530_1280_x.xml
+export CHARMAP_FILE=/tmp/s/resource/charmap_us101.xml
+export FCTKEYMAP_FILE=/tmp/s/resource/functionkeymap_tnc.xml
 export HEROSROOT=$R/heros5 DISPLAY=$DISP
 export HEROSCALL_VERBOSE=1 HEROSCALL_SEM_INIT=1 HEROSCALL_SYNC_TIMEOUT=2500 HEROSCALL_HWS_STUB=1 HEROSCALL_TIMERS=1 HEROSCALL_INJECT_ACK=1
 # fontconfig: PLIB++ loads fonts; supply the host's fontconfig into the bound rootfs /etc so the
@@ -186,13 +202,18 @@ rm -f /tmp/a_strace.log
 # the log is small — no head cap needed.)
 # HEROS_EVENTS_PIPE=1: /dev/events = blocking pipe (kills the busy-spin) -> AppStartMP connects to X +
 # spawns the LogoModule thread. NOTE (2026-07-11): the old "cleanly blocks on Ev_receive(0x01019007) before
-# the constellation spawn" was NOT a missing event — it was the MISSING `-f=` START-SCRIPT ARG. AppStartMP takes
-# `-p=<parent> <procname> -f=<script>` (real cmdline recovered from work/control/sysroot/application:375). Passing
+# the constellation spawn" was NOT a missing event — it was the MISSING -f= START-SCRIPT ARG. AppStartMP takes
+# -p=parent procname -f=script (real cmdline recovered from work/control/sysroot/application:375). Passing
 # the batch as a BARE arg made HeROS consume it as the process NAME (FProcess::ProcessName), so Procedures never
 # ran the script (stayed State 0) and nothing spawned. With the genuine cmdline below, Procedures reads the script
 # (State->1) and REALLY PCreate-spawns winmgr/skmgr/... (INJECT_FMLOAD/SUBSYS now default 0 — the fakes are dead).
-# Next real gate: cross-process P_ident("winmgr/winmgr") -> -1 (spawned children must register p_name in a
-# registry the parent sees). See docs/PROGRESS-LOG.md + the real-driver-appstartmaster memory.
+# Cross-process p_name/p_ident registry (HEROSCALL_PNAME=1): the spawned children now register their own
+# HeROS process name (p_create sets HEROS_PROC_NAME=<name arg> before execve; heros_rtos canonicalises
+# "winmgr:winmgr/winmgr" -> "winmgr/winmgr" onto the child's main task in the SHARED /dev/shm task table).
+# So peers' p_ident("winmgr/winmgr") resolve the running child, AND p_name() returns a VALID name instead of
+# an uninitialised buffer (the garbage thread identity was winmgr's "Unhandled exception" SIGSEGV source).
+# HEROSCALL_BTRACE=1: if a child still faults, print EIP+addr+maps so it maps to a lib+offset.
+# See docs/PROGRESS-LOG.md + the real-driver-appstartmaster memory.
 # Experimental knobs (default OFF; see herosapi_shim.c / heros_rtos.c):
 #   HEROSCALL_SELECT_CAP_MS=N  caps the dispatcher select() (no effect on this gate — the block is a heros
 #                              event-wait, not select).
@@ -202,6 +223,7 @@ rm -f /tmp/a_strace.log
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
 timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
+  HEROSCALL_PNAME=1 HEROS_PROC_NAME=AppStart.AppStart HEROSCALL_BTRACE=${HEROSCALL_BTRACE:-1} \
   HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-0} \
   HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
   HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-0} \

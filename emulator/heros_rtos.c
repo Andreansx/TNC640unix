@@ -48,7 +48,7 @@ long syscall(long n, ...);
 static long raw5(long n,long a,long b,long c,long d,long e){ long r;
     __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a),"c"(b),"d"(c),"S"(d),"D"(e):"memory"); return r; }
 
-static int vrb=0, btrace_on=0;
+static int vrb=0, btrace_on=0, pname_dbg=0;
 #define LOG(...) do{ if(vrb) fprintf(stderr,"[rtos] " __VA_ARGS__); }while(0)
 static const char* hcname(int lo);
 /* unbuffered debug via raw write(2) — survives early-constructor / pre-crash */
@@ -208,28 +208,50 @@ static uint32_t task_by_name(const char*nm){
         uint32_t id=C->tasks[i].id; unlock(); return id; }
     unlock(); return 0;
 }
-/* Resolve a HeROS PROCESS name (the -p= name a peer registered on its main task) to that
- * process's main task id — the id p_ident(name) should return. 0 if no such process. */
+/* Canonicalise a HeROS process name: strip an optional leading "<subsystem>:" prefix so the
+ * registry key is the bare "<namespace>/<proc>" that peers actually p_ident(). HeROS spawns
+ * children as e.g. "winmgr:winmgr/winmgr" (AppStart::Platform::PCreate passes the arg verbatim,
+ * and FProcess::ProcessName keeps it — the ':'-containing form skips the p_name/t_name append),
+ * but AppStartMaster's pre-spawn guard and the WM clients all query the bare "winmgr/winmgr".
+ * Canonicalising BOTH the stored name and the query makes the two forms match. A name with no
+ * ':' is copied unchanged. */
+static void canon_pname(char*dst,const char*src){
+    if(!src){ dst[0]=0; return; }
+    const char*colon=strchr(src,':'); const char*s=colon?colon+1:src;
+    strncpy(dst,s,NAMELEN-1); dst[NAMELEN-1]=0;
+}
+/* Resolve a HeROS PROCESS name (the canonical name a peer registered on its main task) to that
+ * process's main task id — the id p_ident(name) should return. 0 if no such process. The query
+ * is canonicalised so a full "winmgr:winmgr/winmgr" and the bare "winmgr/winmgr" both resolve. */
 static uint32_t proc_by_name(const char*nm){
     if(!nm||!nm[0]) return 0;
+    char q[NAMELEN]; canon_pname(q,nm);
     lock();
-    for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&C->tasks[i].pname[0]&&!strncmp(C->tasks[i].pname,nm,NAMELEN-1)){
+    for(int i=0;i<MAXTASK;i++) if(C->tasks[i].used&&C->tasks[i].pname[0]&&!strncmp(C->tasks[i].pname,q,NAMELEN-1)){
         uint32_t id=C->tasks[i].id; unlock(); return id; }
     unlock(); return 0;
 }
-/* Capture this process's own -p=<name> from /proc/self/cmdline (raw syscalls to avoid any
- * open() interposition + recursion). Falls back to $HEROS_PROC_NAME. Called once at init. */
+/* Capture this process's own HeROS name (stored canonical) for the cross-process registry.
+ * PRIMARY source = $HEROS_PROC_NAME, which p_create (herosapi_shim) sets to the child's name arg
+ * before execve — the AUTHORITATIVE path, since spawned children carry NO -p= arg. FALLBACK = the
+ * -p=<name> cmdline arg (the -p= parent form, e.g. graphicsSIM harnesses); raw syscalls to avoid
+ * open() interposition + recursion. Called once at init. */
 static void parse_self_pname(void){
     self_pname[0]=0;
-    int fd=(int)raw5(SYS_open,(long)"/proc/self/cmdline",O_RDONLY,0,0,0);
-    if(fd>=0){
-        char buf[4096]; long n=raw5(SYS_read,fd,(long)buf,sizeof(buf)-1,0,0); raw5(SYS_close,fd,0,0,0,0);
-        if(n>0){ buf[n]=0; long i=0;
-            while(i<n){ const char*arg=buf+i;
-                if(arg[0]=='-'&&arg[1]=='p'&&arg[2]=='='&&arg[3]){ strncpy(self_pname,arg+3,NAMELEN-1); self_pname[NAMELEN-1]=0; break; }
-                while(i<n&&buf[i]) i++; i++; } }
+    char raw[NAMELEN]={0};
+    const char*e=getenv("HEROS_PROC_NAME");
+    if(e&&e[0]){ strncpy(raw,e,NAMELEN-1); raw[NAMELEN-1]=0; }
+    else {
+        int fd=(int)raw5(SYS_open,(long)"/proc/self/cmdline",O_RDONLY,0,0,0);
+        if(fd>=0){
+            char buf[4096]; long n=raw5(SYS_read,fd,(long)buf,sizeof(buf)-1,0,0); raw5(SYS_close,fd,0,0,0,0);
+            if(n>0){ buf[n]=0; long i=0;
+                while(i<n){ const char*arg=buf+i;
+                    if(arg[0]=='-'&&arg[1]=='p'&&arg[2]=='='&&arg[3]){ strncpy(raw,arg+3,NAMELEN-1); raw[NAMELEN-1]=0; break; }
+                    while(i<n&&buf[i]) i++; i++; } }
+        }
     }
-    if(!self_pname[0]){ const char*e=getenv("HEROS_PROC_NAME"); if(e&&e[0]){ strncpy(self_pname,e,NAMELEN-1); self_pname[NAMELEN-1]=0; } }
+    canon_pname(self_pname,raw);
 }
 
 /* ---------------- /dev/events wake bridge ----------------------------------------
@@ -2923,7 +2945,10 @@ static void ensure_init(void){
         const char *ir=getenv("HEROSCALL_INJECT_REREAD"); inject_reread=ir&&ir[0]=='1';
         const char *ep=getenv("HEROS_EVENTS_PIPE"); events_bridge=ep&&ep[0]=='1';
         const char *pnm=getenv("HEROSCALL_PNAME"); pname_reg=pnm&&pnm[0]=='1';
-        if(pname_reg) parse_self_pname();
+        const char *pnd=getenv("HEROSCALL_PNAME_DEBUG"); pname_dbg=pnd&&pnd[0]=='1';
+        if(pname_reg){ parse_self_pname();
+            fprintf(stderr,"[rtos] SELF pid=%d pname_reg=1 self_pname=\"%s\" (HEROS_PROC_NAME=\"%s\")\n",
+                    (int)getpid(), self_pname, getenv("HEROS_PROC_NAME")?getenv("HEROS_PROC_NAME"):"(unset)"); fflush(stderr); }
         ctl_init();
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
@@ -3113,6 +3138,7 @@ long syscall(long n,...){
             unlock();
             if(!out[0] && self_pname[0]){ strncpy(out,self_pname,NAMELEN-1); out[NAMELEN-1]=0; } /* fallback: never garbage */
             size_t L=strlen(out); if(L>NAMELEN-1)L=NAMELEN-1; memcpy(buf,out,L); buf[L]=0;
+            if(pname_dbg){ fprintf(stderr,"[rtos] T_name(tid=%d) -> \"%s\"\n",(int)tid,buf); fflush(stderr); }
         }
         return 0;
     }
@@ -3235,7 +3261,7 @@ long syscall(long n,...){
            * (e.g. graphics.elf as "~/graphicsSIM"). This is the FAITHFUL cross-process p_ident — it
            * lets simulo find the real SIM graphics renderer peer so grfOpenConnection connects to it
            * instead of stubbing/launching. Only matches processes actually running with that name. */
-          if(pname_reg){ uint32_t id=proc_by_name(pn); if(id){ LOG("P_ident(\"%s\") -> 0x%x (pname registry)\n",pn,id); return (long)(int32_t)id; } }
+          if(pname_reg){ uint32_t id=proc_by_name(pn); if(id){ fprintf(stderr,"[rtos] P_ident(\"%s\") -> 0x%x (pname registry)\n",pn,id); fflush(stderr); return (long)(int32_t)id; } }
           /* HEROSCALL_GRF_STUB=1: stub the SIMULATION-GRAPHICS renderer peer. simulo's grfOpenConnection
            * (@0x6b7c0) does p_ident("<proc>/graphicsSIM"); on -1 it bails "no process" -> FControl never
            * reaches CREATED -> no WndFullScreen window. The real graphics renderer (simipo/ContourGraphics
@@ -3262,7 +3288,7 @@ long syscall(long n,...){
                         strncpy(out,C->tasks[i].pname,NAMELEN-1); out[NAMELEN-1]=0; break; } }
                 unlock(); }
             size_t L=strlen(out); if(L>28)L=28; memcpy(buf,out,L); buf[L]=0;
-            LOG("P_name(tid=%d) -> \"%s\"\n",(int)tid,buf);
+            if(pname_dbg){ fprintf(stderr,"[rtos] P_name(tid=%d) -> \"%s\"\n",(int)tid,buf); fflush(stderr); }
             return 0;
         }
         return 0;
