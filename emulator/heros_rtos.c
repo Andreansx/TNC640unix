@@ -816,6 +816,7 @@ static void ptimer_start(uint32_t task,uint32_t bits,uint32_t period_us){
 static int as_deliver=1;             /* HEROSCALL_AS_DELIVER=0 disables real signalling  */
 static int q_autocreate=1;           /* HEROSCALL_AUTO_QUEUE=0 disables black-hole queues */
 static int qident_notify=-1;         /* HEROS_QIDENT_NOTIFY=0 disables compound "<mailslot>.<notifyqueue>" resolution */
+static int qident_dotlead=-1;        /* HEROS_QIDENT_DOTLEAD=0 disables leading-dot ".X" -> real queue "X" resolution */
 static uint32_t qread_maxwait=0;     /* HEROSCALL_QREAD_MAXWAIT=ms caps "forever" Q_read waits (debug) */
 static uint32_t sync_timeout=0;      /* HEROSCALL_SYNC_TIMEOUT=ms caps forever Q_read on "*Sync" handshake
                                       * queues only (e.g. QSikSync) — these deadlock when their server peer
@@ -1199,6 +1200,23 @@ static int q_is_probe_name(const char*base){
 static uint32_t q_ident(const char*nm){
     char base[NAMELEN]; q_basename(base,nm);
     lock(); int s=q_find_slot(base); uint32_t id=(s>=0)?C->queues[s].id:0; unlock();
+    /* LEADING-DOT notify target ".X" (empty mailslot BEFORE the dot): X is the actual kernel queue the
+     * peer created + reads, e.g. ConfigServer addresses its own EditThread's connect-ack + config-notify
+     * to ".EditThreadNotify" / ".EditThreadQue". q_basename strips the leading dot -> "" -> q_find_slot
+     * matches the empty-named BLACK HOLE (0x30b, id!=0), so every such message is silently dropped and
+     * the EditThread never receives its notify -> it never acks CfgNotifyDone -> the CfgServer SyncMap
+     * subscriber ".EditThreadNotify" sticks (this+232 never clears) -> Fred's CfgWriteNew(0x170461)
+     * defers forever with no CfgWriteDone (Gate 1 of the softkey bar). Resolve ".X" to the real "X"
+     * queue when X exists as a genuinely Q_create'd queue and has NO further dot (a plain notify-queue
+     * name — the compound reply-to "<mailslot>.<notifyq>" case, which has a non-empty before-dot base,
+     * is handled by qident_notify below and is disjoint from this). This is FAITHFUL routing of a real
+     * message to its real destination queue, NOT a synthesized reply. Gated HEROS_QIDENT_DOTLEAD
+     * (default ON; =0 disables). Note nm=="" (the CFG_REPLY_ROUTE empty-target reply path) is NOT
+     * matched here (nm[0] must be '.'), so that mechanism is unaffected. */
+    if(qident_dotlead && nm && nm[0]=='.' && nm[1] && !strchr(nm+1,'.')){
+        lock(); int ds=q_find_slot(nm+1); uint32_t did=(ds>=0)?C->queues[ds].id:0; unlock();
+        if(did){ LOG("Q_ident \"%s\" -> 0x%x (leading-dot notify queue \"%s\")\n",nm,did,nm+1); return did; }
+    }
     /* "<oem>/mmi.qHF" = the MMI host-FRAME embed queue. GuppyRegisterWindow's NO_NCK_WINMGR
      * (no-window-manager) path PROBES it: present -> embed this X window into the host frame
      * (return 1 -> WndFocusPane falls back to non-bind-capable); ABSENT -> the window SELF-binds
@@ -2928,6 +2946,7 @@ static void ensure_init(void){
         const char *ad=getenv("HEROSCALL_AS_DELIVER"); as_deliver=!(ad&&ad[0]=='0');
         const char *aq=getenv("HEROSCALL_AUTO_QUEUE"); q_autocreate=!(aq&&aq[0]=='0');
         const char *qn=getenv("HEROS_QIDENT_NOTIFY"); qident_notify=!(qn&&qn[0]=='0');
+        const char *qdl=getenv("HEROS_QIDENT_DOTLEAD"); qident_dotlead=!(qdl&&qdl[0]=='0');
         const char *qw=getenv("HEROSCALL_QREAD_MAXWAIT"); qread_maxwait=0;
         if(qw) for(const char*q=qw; *q>='0'&&*q<='9'; q++) qread_maxwait=qread_maxwait*10+(uint32_t)(*q-'0');
         const char *st=getenv("HEROSCALL_SYNC_TIMEOUT"); sync_timeout=0;

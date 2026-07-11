@@ -36,6 +36,9 @@ for s in arena_stub; do $CC -shared -fPIC -O2 -Wl,--version-script="$EMU/arena.m
 for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 -o "$R/lib/$s.so" "$EMU/$s.c" 2>&1 | sed "s/^/  $s: /"; done
 $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
 $CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
+$CC -shared -fPIC -O2 -o "$R/lib/cfg461probe.so" "$EMU/cfg461probe.c" 2>&1 | sed "s/^/  cfg461probe: /"  # Gate-1 OnWriteNew(0x170461) fork tracer (no -ldl: maps-base+offset)
+# CFG461PROBE=1 -> prepend the OnWriteNew fork tracer to ConfigServer's LD_PRELOAD (logs to /tmp/cfg461.log)
+CFG461_PL=""; [ "${CFG461PROBE:-0}" = "1" ] && { CFG461_PL="/lib/cfg461probe.so:"; : > /tmp/cfg461.log; echo "  cfg461probe: ENABLED (trace -> /tmp/cfg461.log)"; }
 # FULL-SET: parse the constellation batch ONCE (main scope) -> set file (name|image) + distinct image list
 # (the sudo staging block + heros_rtos INJECT_FMLOAD_SET both consume these).
 BATCH="$CFG/batch/TNC640heros.txt"; SETF=/tmp/fmload_set.txt
@@ -203,7 +206,8 @@ echo '  heuserver listening:' \$( (ss -ltn 2>/dev/null||true) | grep -c ':19093'
 echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer AppStartMP CfgServerQueue ###'
 # ConfigServer must be task 0x100 (its hardcoded run-up); it starts BEFORE AppStartMP so it owns the
 # real CfgServerQueue (not an AppStartMP black-hole). Then AppStartMP's config query reaches it (+INJECT_ACK).
-( timeout -s KILL 300 env LD_PRELOAD=/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+( timeout -s KILL 300 env LD_PRELOAD=${CFG461_PL}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+    CFG461_LOG=/tmp/cfg461.log \
     CFGFIX_SYS=/tmp/s/:/mnt/sys/ CFGFIX_OEM=/tmp/o/:/mnt/plc/ \
     HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 \
     FEXInterpreter $R/heros5/bin/ConfigServer.elf -p=~/cfgserver cfgserver \
