@@ -103,15 +103,26 @@ for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualm
   printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
 sudo chmod -R a+rX /mnt/sys/config /mnt/plc/config /mnt/sys/cache
 echo "  config-#6 fix: /mnt/sys/config ($(ls /mnt/sys/config 2>/dev/null|wc -l)) + /mnt/plc/config ($(ls /mnt/plc/config 2>/dev/null|wc -l)) staged, controlmark=16"
-sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sudo pkill -x Xvfb 2>/dev/null; sudo pkill -x openbox 2>/dev/null
+sudo pkill -KILL -x FEXInterpreter 2>/dev/null; sudo pkill -9 -x Xvfb 2>/dev/null; sudo pkill -9 -x openbox 2>/dev/null
 sudo rm -f /dev/shm/heros_rtos_ctl /dev/shm/heros_reg_* /dev/shm/_heusrv_shm /dev/shm/hrctlU501 /dev/shm/hregU501_* 2>/dev/null
 
 echo "=== [3] start Xvfb $DISP + openbox (native aarch64, outside the ns) ==="
+# Rapid re-runs can leave a stale Xvfb / X lock that silently blocks the new Xvfb (empty log, no socket) ->
+# winmgr gets no X and the whole GUI/bar path breaks. Force-clear the display lock + socket, then WAIT for the
+# socket (retry the start once) so a broken X can never invalidate a run.
+sudo rm -f /tmp/.X${DISP#:}-lock /tmp/.X11-unix/X${DISP#:} 2>/dev/null
 Xvfb $DISP -screen 0 1280x1024x16 -nolisten tcp >/tmp/xvfb.log 2>&1 & XVFB=$!
-sleep 2
+for w in 1 2 3 4 5 6 7 8; do [ -S /tmp/.X11-unix/X${DISP#:} ] && break; sleep 1; done
+if [ ! -S /tmp/.X11-unix/X${DISP#:} ]; then
+  echo "  *** Xvfb $DISP failed to create socket; force-reclaim + retry ***"; cat /tmp/xvfb.log 2>/dev/null | head -3
+  sudo pkill -9 -x Xvfb 2>/dev/null; sleep 1; sudo rm -f /tmp/.X${DISP#:}-lock /tmp/.X11-unix/X${DISP#:} 2>/dev/null
+  Xvfb $DISP -screen 0 1280x1024x16 -nolisten tcp >/tmp/xvfb.log 2>&1 & XVFB=$!
+  for w in 1 2 3 4 5 6 7 8; do [ -S /tmp/.X11-unix/X${DISP#:} ] && break; sleep 1; done
+fi
 DISPLAY=$DISP openbox >/tmp/openbox.log 2>&1 & OB=$!
 sleep 2
 echo "  Xvfb pid $XVFB, openbox pid $OB; X socket: $(ls /tmp/.X11-unix/ 2>/dev/null)"
+[ -S /tmp/.X11-unix/X${DISP#:} ] || echo "  *** WARNING: no X socket after retry — GUI/bar path will fail ***"
 
 echo "=== [4] guard: real /etc baseline ==="
 B_PASSWD=$(sudo md5sum /etc/passwd | cut -d' ' -f1); echo "  /etc/passwd md5 = $B_PASSWD"
