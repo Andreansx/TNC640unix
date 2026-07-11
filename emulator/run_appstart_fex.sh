@@ -185,7 +185,14 @@ rm -f /tmp/a_strace.log
 # A redirect lets timeout return; the explicit pkill below reaps the detached FEX. (Spin is gone now, so
 # the log is small — no head cap needed.)
 # HEROS_EVENTS_PIPE=1: /dev/events = blocking pipe (kills the busy-spin) -> AppStartMP connects to X +
-# spawns the LogoModule thread, then cleanly blocks on Ev_receive(0x01019007) before the constellation spawn.
+# spawns the LogoModule thread. NOTE (2026-07-11): the old "cleanly blocks on Ev_receive(0x01019007) before
+# the constellation spawn" was NOT a missing event — it was the MISSING `-f=` START-SCRIPT ARG. AppStartMP takes
+# `-p=<parent> <procname> -f=<script>` (real cmdline recovered from work/control/sysroot/application:375). Passing
+# the batch as a BARE arg made HeROS consume it as the process NAME (FProcess::ProcessName), so Procedures never
+# ran the script (stayed State 0) and nothing spawned. With the genuine cmdline below, Procedures reads the script
+# (State->1) and REALLY PCreate-spawns winmgr/skmgr/... (INJECT_FMLOAD/SUBSYS now default 0 — the fakes are dead).
+# Next real gate: cross-process P_ident("winmgr/winmgr") -> -1 (spawned children must register p_name in a
+# registry the parent sees). See docs/PROGRESS-LOG.md + the real-driver-appstartmaster memory.
 # Experimental knobs (default OFF; see herosapi_shim.c / heros_rtos.c):
 #   HEROSCALL_SELECT_CAP_MS=N  caps the dispatcher select() (no effect on this gate — the block is a heros
 #                              event-wait, not select).
@@ -195,9 +202,9 @@ rm -f /tmp/a_strace.log
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
 timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
-  HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-1} \
+  HEROSCALL_INJECT_FMLOAD=${HEROSCALL_INJECT_FMLOAD:-0} \
   HEROSCALL_INJECT_FMLOAD_PRESENT=${HEROSCALL_INJECT_FMLOAD_PRESENT:-1} \
-  HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-1} \
+  HEROSCALL_INJECT_SUBSYS=${HEROSCALL_INJECT_SUBSYS:-0} \
   HEROS_PCREATE_FEX=${HEROS_PCREATE_FEX:-1} \
   HEROS_PCREATE_IMGFROM=/tmp/b/ HEROS_PCREATE_IMGTO=$R/heros5/bin/ \
   ${HEROSCALL_INJECT_FMLOAD_SET:+HEROSCALL_INJECT_FMLOAD_SET=$HEROSCALL_INJECT_FMLOAD_SET} \
@@ -205,7 +212,7 @@ timeout -s KILL 220 /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
   LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter $R/heros5/bin/AppStartMP.elf /tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
+  FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/TNC640heros.txt >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
 rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null
