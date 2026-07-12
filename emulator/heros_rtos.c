@@ -1980,16 +1980,24 @@ static void* wm_activate_thread_fn(void* arg){
      * q_send notifies winmgr's main thread cross-process; CAS prevents 4-process spam). NB: the timer runs
      * on a NEW pthread, whose task_self() is a fresh id != winmgr's 0x106, so an owner==self check would
      * never fire — that's why we post from whichever process wins the CAS, not the queue owner. */
+    /* WMACT_ONCE=1: post the alt->tgt switch EXACTLY ONCE and stop — a CLEAN, STABLE foreground on the
+     * target screen. The default re-post loop toggles alt<->tgt every 8s (14 rounds), which floods the WM
+     * client with a rapid 0<->1 SCREENCHANGED flicker (27 events observed) so a screen-driven view never
+     * sees a stable foreground. Use ONCE when the target must STAY foreground (e.g. switch to the Editor
+     * screen so Fred's view activates). */
+    int wmact_once=0; { const char*o=getenv("HEROSCALL_WMACT_ONCE"); wmact_once=o&&o[0]=='1'; }
+    int max_rounds=wmact_once?1:14;
     int claimed=0, rounds=0;
-    for(int tries=0; tries<180 && rounds<14; tries++){
+    for(int tries=0; tries<180 && rounds<max_rounds; tries++){
         lock(); int q=q_find_slot("Q_WMGRMSG"); uint32_t qid=(q>=0)?C->queues[q].id:0; unlock();
         if(qid){
             if(!claimed){
                 if(__atomic_exchange_n(&C->wm_activate_posted,1,__ATOMIC_ACQ_REL)!=0) return NULL; /* another won */
                 claimed=1;
-                fprintf(stderr,"[wmact] timer fired -> activating Q_WMGRMSG 0x%x (pid %d)\n",qid,(int)getpid());
+                fprintf(stderr,"[wmact] timer fired -> activating Q_WMGRMSG 0x%x (pid %d)%s\n",qid,(int)getpid(),wmact_once?" [ONCE]":"");
             }
             inject_wmgr_activate(qid); rounds++;
+            if(wmact_once) break;                        /* clean single switch: no re-post, stay foreground */
             struct timespec r={8,0}; nanosleep(&r,0);   /* re-activate every 8s to cover bring-up timing */
         } else {
             struct timespec r={1,0}; nanosleep(&r,0);   /* Q_WMGRMSG not up yet — retry ~1s */
