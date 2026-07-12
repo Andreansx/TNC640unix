@@ -83,12 +83,24 @@ sets state=3→GData::Notify→`SkMgrFrame::OnActivation@0x42170` draws), SENT b
 `WMACT_SCREEN=1` (byte-exact `WmSelectForegroundMsg` = the genuine screen-switch, NOT INJECT_SK_ACTIVATE): winmgr
 foregrounded Edit (openbox "desktop 1" popup), **Fred RECEIVED the SCREENCHANGED(0x3067)** (never did before) and
 reacted (19× 0x3038 GetScreens) — but did NOT activate its view / send SkMgrActivate. So a raw SCREENCHANGED is
-necessary-but-NOT-sufficient; Fred's view-activation is gated on something more (RE in progress: what calls
-`TncEditCtrl::AfterActivate`/`SkMgrCtrlInterfaceImpl::Activate` — likely boot-readiness / a focus/map event / an
-AppStartMaster msg; the constellation is stuck at prom's boot splash). Real render CONFIRMED: the TNC640 startup
-splash draws (scratchpad/shots/gate2_230.png). Repro: `HEROSCALL_INJECT_WMGR_ACTIVATE=1 HEROSCALL_WMACT_SELECT=1
-HEROSCALL_WMACT_SCREEN=1 HEROSCALL_WMACT_DELAY=150 APPSTART_BATCH_NAME=TNC640heros_bar3.txt APPSTART_TIMEOUT=360
-bash emulator/run_appstart_fex.sh`.
+necessary-but-NOT-sufficient. **RE'd the FULL chain (2026-07-12):** the bar draws on Fred's real
+`SkMgrActivate(0x028a0200)`, sent only after `FControl` activation-state=3, set ONLY by a **prom
+`PromActivateNotifyMsg(0x404703E0)`**. prom (=promview.elf) withholds it because its boot startup picture is
+still up (`PromFrame::OnScreenChanged` early-returns "PLC is not ready yet"). On a real boot `startup.elf` clears
+it with a `PromHideStartupPictureMsg`; startup.elf is trimmed. **FAITHFUL FIX implemented (commit 2378a57,
+`HEROSCALL_INJECT_PROM_HIDE`, default off): post the byte-exact `PromHideStartupPictureMsg` [0x404705C0][0] to
+prom's QProMViewer(0x323) — the real boot-completion signal startup.elf sends, NOT a fake SkMgrActivate — then
+drive `WmSelectForeground(editor desktop 1)`; the rest runs on the control's own code.**
+**★ PROVABLE BLOCKER (session exit): promview CRASHES AT INIT.** Test run: hide posted + editor-select fired, but
+prom READ NOTHING — it aborts at a_appstart line 1544 with `terminate ... PciHardware::Exception` (libhwaccess.so),
+thrown when `M_attach` of the IPO shared-memory region (`IpoSharedMemory`) returns 0 — that region is created by
+the NCK/IPO (ipo.elf), NOT in the bar3 trim. Both the ProM viewer pull-path AND the ProM server live inside
+promview, so **prom must survive first**. **NEXT: register/stub the `IpoSharedMemory` region (zeroed, correct
+size ~64MB — confirm via IpoSharedMemory::Init) so promview's M_attach succeeds, then re-run hide + editor-select;
+then the winmgr focus-grant (secondary).** Real render CONFIRMED: TNC640 startup splash (scratchpad/shots/gate2_230.png).
+See [[project-gate2-prom-activation-chain]]. Repro: `HEROSCALL_INJECT_PROM_HIDE=1 HEROSCALL_INJECT_WMGR_ACTIVATE=1
+HEROSCALL_WMACT_SELECT=1 HEROSCALL_WMACT_SCREEN=1 HEROSCALL_WMACT_ONCE=1 HEROSCALL_WMACT_DELAY=210
+APPSTART_BATCH_NAME=TNC640heros_bar3.txt APPSTART_TIMEOUT=400 bash emulator/run_appstart_fex.sh`.
 
 ## Prior frontier (2026-07-11) — REAL-DRIVER path, 5 procs spawned, crash=0
 **The real AppStartMaster now drives the constellation FEX-native**: `AppStartMP.elf
