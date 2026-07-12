@@ -99,23 +99,32 @@ size=12 tag=404703e0 ->t10e`) → Fred read editor softkey-menu config → **Fre
 `SkMgrActivate(0x028a0200)` to skmgr** (`QS [31a]Q_SkMgr tag=028a0200 sndr=t10e`) → skmgr `SkMgrFrame::OnActivation
 @0x42170` queried the HSoftKeyArea geometry (0x3003/0x300c) + **loaded the REAL .bmx softkey bitmaps** (end.bmx,
 copy_paste.bmx). NO fake SkMgrActivate. See [[project-gate2-pathb-promactivate-wire]].
-**★★ MAP GATE (the last mile) CROSSED — the softkey area is REALIZED (2026-07-12).** After activation the editor
-`ScreenEDIT_HorizontalManager` (0x800004, sized 1280x88@y936) was **IsUnMapped**, DefaultView child **1x1** (skmgr
-drew into a 1x1 view). RE: `WindowManager::SelectForeground@0x15070 → WmScreen::Map@0x2e590` Resyncs each
-`WmWindowDesc` (`Resync@0x36c00` maps iff visible-flag desc+20 set). The WMACT editor-foreground ran at T+150s
-BEFORE the T+165s notify made skmgr register+show its softkey window, so that first `WmScreen::Map` saw the desc
-not-yet-visible and Map doesn't auto-re-run. FIX **`HEROSCALL_PROM_ACT_REMAP=1`** (default on): after the notify,
-re-post the genuine `WmSelectForegroundMsg(editor)` → Map re-runs → Resync maps it. **VERIFIED un-fakeably
-(xwininfo): DefaultView 1x1 → 1280x88 mapped** (vertical → 134x868) — the bar is real, sized, drawn pixels.
-(Dropping prom — bar4 — was a REGRESSION: Fred stalls at its QProMRequest registration when prom's queues don't
-exist, so bar3 with the crashed-but-present prom is required.) **Capture nuance:** editor foreground is TRANSIENT
-(the control re-selects the Machine screen, unmapping the area) → `HEROSCALL_PROM_ACT_REMAP_HOLD=N` re-asserts it
-so a tight `xwd -id 0x800006` grab catches the bar mapped. Forward every new knob in run_appstart_fex.sh's env
-block (HOLD was silently 0 until forwarded). See [[project-gate2-pathb-promactivate-wire]]. Repro:
-`HEROSCALL_INJECT_PROM_ACTIVATE=1 HEROSCALL_PROM_ACT_REMAP_HOLD=200 HEROSCALL_INJECT_WMGR_ACTIVATE=1
-HEROSCALL_WMACT_SELECT=1 HEROSCALL_WMACT_SCREEN=1 HEROSCALL_WMACT_ONCE=1 HEROSCALL_WMACT_DELAY=150
-HEROSCALL_PROM_ACTIVATE_DELAY=15 HEROSCALL_PROM_ACT_REMAP_DELAY=15 APPSTART_BATCH_NAME=TNC640heros_bar3.txt
-APPSTART_TIMEOUT=440 bash emulator/run_appstart_fex.sh`.
+**★ LAST-MILE BLOCKER — the bar does NOT yet draw pixels; provable + un-fakeably measured (2026-07-12).**
+[CORRECTS an earlier overstatement: the map gate is NOT crossed. The RE-MAP only RESIZED a child window; it did
+not MAP the area.] After the real PATH-B activation the editor softkey area `ScreenEDIT_HorizontalManager`
+(0x800004) stays **IsUnMapped** and its DefaultView (0x800006) **IsUnviewable** — 40/40 `xwininfo` samples across a
+full REMAP-HOLD run, `_NET_CURRENT_DESKTOP`=0 throughout (scratchpad/bardiag.sh). The RE-MAP
+(`HEROSCALL_PROM_ACT_REMAP`, re-post `WmSelectForegroundMsg(editor)`) only RESIZES the DefaultView geometry
+(1x1→1280x88 via `WmWindowDesc::Resync@0x36c00`→`OnWindowUpdate`, the handle-EXISTS geometry-update branch); it does
+NOT map. `WmScreen::Map@0x2e590`→`Resync` only CREATES+maps (`ReportMapped`) a desc when handle==null AND the
+visible flag (desc+20) is set — and that flag is set by a client SHOW that **skmgr never issues**: after activation
+skmgr QUERIES the softkey-area geometry (0x3003/0x300c) then SPINS on the screen-state poll **0x3038 (186×)** waiting
+for its screen (Edit) to become the genuine foreground. It never does — the boot Machine screen ("PLC not ready"
+splash) keeps winning (curDesk stays 0; the WMACT `WmSelectForegroundMsg` foregrounds Edit in winmgr only
+transiently, openbox's current desktop doesn't follow). **ROOT CAUSE = the SAME prom crash**: promview.elf
+(PciHardware::Exception at init) never runs its loop, so nothing ARBITRATES the persistent screen-foreground that
+would let skmgr's poll proceed to the show. PATH B routed the ACTIVATION around prom; the persistent FOREGROUND
+arbitration is a SECOND prom responsibility not yet routed around. **Faithful next step** (NOT a synthesized show —
+that's a fake): make Edit the persistent foreground so skmgr's OWN 0x3038 poll proceeds to its OWN show → visible
+flag set → Resync maps the area. Needs either the promview PciHardware crash resolved OR a persistent genuine
+`WmSelectForegroundMsg` that wins the arbitration, VERIFIED by skmgr advancing past its 0x3038 poll to a
+window-show. (Dropping prom — bar4 — was a REGRESSION: Fred stalls at its QProMRequest registration when prom's
+queues don't exist, so bar3 with the crashed-but-present prom is required.) See
+[[project-gate2-pathb-promactivate-wire]]. Diagnostic repro (map-state, no pixel): `HEROSCALL_INJECT_PROM_ACTIVATE=1
+HEROSCALL_PROM_ACT_REMAP_HOLD=250 HEROSCALL_INJECT_WMGR_ACTIVATE=1 HEROSCALL_WMACT_SELECT=1 HEROSCALL_WMACT_SCREEN=1
+HEROSCALL_WMACT_ONCE=1 HEROSCALL_WMACT_DELAY=150 HEROSCALL_PROM_ACTIVATE_DELAY=15 HEROSCALL_PROM_ACT_REMAP_DELAY=20
+APPSTART_BATCH_NAME=TNC640heros_bar3.txt APPSTART_TIMEOUT=450 bash emulator/run_appstart_fex.sh` + scratchpad/bardiag.sh
+→ area IsUnMapped, dv IsUnviewable (un-fakeable).
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness

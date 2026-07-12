@@ -3822,23 +3822,37 @@ Guppy's GData softkey-thread wedge (or synthesize the login+SetMenu content emul
 > queried the HSoftKeyArea geometry (0x3003/0x300c) and **loaded the REAL .bmx softkey bitmaps**
 > (`%SYS%\resource\sk\1024x768\allg\end.bmx`, `ncedit\copy_paste.bmx`) + drew 24 softkeys.
 >
-> **The last-mile map gate — RE'd + crossed with a faithful re-map.** After activation the softkey area window
-> `ScreenEDIT_HorizontalManager` (0x800004, correctly sized 1280×88@y936) was `IsUnMapped` and its DefaultView
-> child stuck at 1×1 (skmgr drew into a 1×1 view). RE: `WindowManager::SelectForeground@0x15070 → WmScreen::Map
-> @0x2e590` walks the screen's WmWindowDesc tree calling `WmWindowDesc::Resync@0x36c00`, which maps a window iff
-> its visible flag (desc+20) is set. The WMACT editor-foreground (WmSelectForeground) ran at T+150s — **before**
-> the T+165s notify made skmgr register+show its softkey window — so that first `WmScreen::Map` saw the desc not
-> yet visible and left it unmapped, and Map does not auto-re-run. Fix (`HEROSCALL_PROM_ACT_REMAP=1`, default on):
-> after the notify + a settle, **re-post the genuine `WmSelectForegroundMsg(editor)`** so `WmScreen::Map` re-runs
-> and Resync maps the now-registered softkey area. VERIFIED un-fakeably: the `ScreenEDIT_HorizontalManager_DefaultView`
-> jumped from **1×1 → 1280×88 mapped** (xwininfo), and `ScreenEDIT_VerticalManager_DefaultView` to 134×868 — the
-> bar is realized as real, sized, drawn pixels.
+> **The last-mile map gate — RE'd, NOT crossed. CORRECTION (2026-07-12, later same day).** An earlier draft of
+> this entry claimed the re-map produced a "1×1 → 1280×88 mapped ... realized, drawn pixels" softkey bar. That was
+> an OVERSTATEMENT and is retracted. A dedicated map-state diagnostic (scratchpad/bardiag.sh — logs `xwininfo`
+> Map State, not just geometry) taken across a full REMAP-HOLD run gave a uniform result over **40/40 samples**:
+> the softkey area `ScreenEDIT_HorizontalManager` (0x800004) is **IsUnMapped**, its DefaultView (0x800006) is
+> **IsUnviewable**, and `_NET_CURRENT_DESKTOP`=0 (Machine) the entire time. What the re-map actually does:
+> `WmScreen::Map@0x2e590` walks the screen's WmWindowDesc tree calling `WmWindowDesc::Resync@0x36c00`. Resync has
+> two branches — if the window handle already EXISTS (this+96 non-null) it calls `OnWindowUpdate` = a geometry
+> update ONLY (this is what resized the DefaultView, and it is *not* a map); the CREATE+map+`ReportMapped` branch
+> runs only when handle==null AND the visible flag (desc+20) is set. The area already has a handle and its visible
+> flag is never set, so the re-map only ever RESIZES — never maps. The visible flag is set by a client SHOW, and
+> **skmgr never issues one**: post-activation the [hst] trace shows skmgr QUERY the area geometry (0x3003/0x300c,
+> 9×) then SPIN on the screen-state poll **0x3038 (186×)** — no window-show/map message at all. skmgr is waiting
+> for its screen (Edit) to become the genuine foreground, which never happens: curDesk stays 0, the WMACT
+> `WmSelectForegroundMsg` foregrounds Edit inside winmgr only transiently, openbox's current desktop doesn't
+> follow, and the boot Machine "PLC not ready" splash keeps the foreground. **Root cause = the SAME prom crash**
+> (promview.elf PciHardware::Exception at init): nothing arbitrates the persistent screen-foreground that would let
+> skmgr advance to the show. PATH B routed the ACTIVATION around the dead prom; the persistent screen-FOREGROUND
+> arbitration is a second prom responsibility that is not yet routed around.
 >
-> **Capture nuance:** the editor foreground is transient (the control re-selects the Machine screen a few seconds
-> later, unmapping the softkey area again), so a screenshot must be timed to the editor-foreground window. Knob
-> `HEROSCALL_PROM_ACT_REMAP_HOLD=N` re-asserts editor foreground N times so a tight external grab of the softkey
-> window (xwd -id 0x800006) catches it mapped. Memory: [[project-gate2-pathb-promactivate-wire]]. Repro:
-> `HEROSCALL_INJECT_PROM_ACTIVATE=1 HEROSCALL_PROM_ACT_REMAP_HOLD=140 HEROSCALL_INJECT_WMGR_ACTIVATE=1
+> **So where the bar stands, honestly:** it is ACTIVATED and its bitmaps are LOADED by the real control code
+> (PATH B, un-fakeable), and winmgr has the area laid out at the correct 1280×88 geometry — but the area is never
+> mapped, so there are **no on-screen pixels to capture**. This is the single provable last-mile blocker
+> (decompilation: WmScreen::Map + Resync in scratchpad/winmgr_map_resync.txt; un-fakeable metric: xwininfo
+> IsUnMapped 40/40 + the 0x3038-spin/no-show trace). **Faithful next step** (explicitly NOT a synthesized show or a
+> visible-flag poke — that would be a fake FINAL draw command): make Edit the PERSISTENT foreground so skmgr's own
+> 0x3038 poll advances to its own window-show → desc+20 set → Resync maps the area. That requires either the
+> promview PciHardware crash resolved (the deprioritized Path A) OR a persistent genuine `WmSelectForegroundMsg`
+> that wins the arbitration, verified by skmgr advancing past its 0x3038 poll to a show — NOT by forcing the pixel.
+> Memory: [[project-gate2-pathb-promactivate-wire]]. Diagnostic repro (map-state, no pixel):
+> `HEROSCALL_INJECT_PROM_ACTIVATE=1 HEROSCALL_PROM_ACT_REMAP_HOLD=250 HEROSCALL_INJECT_WMGR_ACTIVATE=1
 > HEROSCALL_WMACT_SELECT=1 HEROSCALL_WMACT_SCREEN=1 HEROSCALL_WMACT_ONCE=1 HEROSCALL_WMACT_DELAY=150
-> HEROSCALL_PROM_ACTIVATE_DELAY=15 HEROSCALL_PROM_ACT_REMAP_DELAY=15 APPSTART_BATCH_NAME=TNC640heros_bar3.txt
-> APPSTART_TIMEOUT=430 bash emulator/run_appstart_fex.sh`.
+> HEROSCALL_PROM_ACTIVATE_DELAY=15 HEROSCALL_PROM_ACT_REMAP_DELAY=20 APPSTART_BATCH_NAME=TNC640heros_bar3.txt
+> APPSTART_TIMEOUT=450 bash emulator/run_appstart_fex.sh` + scratchpad/bardiag.sh.
