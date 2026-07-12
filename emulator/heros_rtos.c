@@ -81,7 +81,7 @@ static const char* msascii(const void*p,uint32_t n){
 #define MAXSEM  512
 #define MAXQ    2048       /* ConfigServer registers a ~1000-entry HwsM<task>N<ctr> mailslot pool
                             * at startup; 96 overflowed → "table full" → a retry spin (1.4GB log). */
-#define MAXREG  64
+#define MAXREG  256
 #define QSLOTS  12         /* messages buffered per queue                        */
 #define QMSGCAP 16384      /* max bytes per message (kernel caps Q_send @ 0x8000) */
 #define NAMELEN 32
@@ -2928,7 +2928,7 @@ static uint32_t reg_ident(const char*name){
     for(int i=0;i<MAXREG;i++) if(C->regs[i].used&&!strcmp(C->regs[i].name,name)){
         uint32_t id=C->regs[i].id; unlock(); LOG("M_ident \"%s\" -> 0x%x\n",name,id); return id; }
     int s=-1; for(int i=0;i<MAXREG;i++) if(!C->regs[i].used){ s=i; break; }
-    if(s<0){ unlock(); return (uint32_t)-2; }
+    if(s<0){ unlock(); fprintf(stderr,"[rtos] M_ident \"%s\" -> TABLE FULL (MAXREG=%d) -> -2\n",name,MAXREG); return (uint32_t)-2; }
     C->regs[s].used=1; C->regs[s].id=C->next_reg++; C->regs[s].size=REGION_BYTES;
     strncpy(C->regs[s].name,name,sizeof C->regs[s].name-1);
     uint32_t id=C->regs[s].id; unlock();
@@ -2946,7 +2946,7 @@ static struct { uint32_t id; void* ptr; } attach_cache[MAXREG];
 static void* reg_attach(uint32_t id){
     for(int i=0;i<MAXREG;i++) if(attach_cache[i].ptr&&attach_cache[i].id==id) return attach_cache[i].ptr;
     int s=-1; for(int i=0;i<MAXREG;i++) if(C->regs[i].used&&C->regs[i].id==id){ s=i; break; }
-    if(s<0){ LOG("M_attach 0x%x UNKNOWN\n",id); return 0; }
+    if(s<0){ fprintf(stderr,"[rtos] M_attach 0x%x UNKNOWN -> 0 (PciHardware throws)\n",id); return 0; }
     char path[64]; /* shared file so all procs map the SAME physical region */
     strcpy(path,"/dev/shm/heros_reg_");
     char*p=path+strlen(path); for(const char*q=C->regs[s].name;*q;q++){ char ch=*q; *p++=(ch=='/'||ch==' ')?'_':ch; } *p=0;
@@ -2955,7 +2955,7 @@ static void* reg_attach(uint32_t id){
     raw5(SYS_ftruncate,fd,C->regs[s].size,0,0,0);
     void*m=mmap(0,C->regs[s].size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     raw5(SYS_close,fd,0,0,0,0);
-    if(m==MAP_FAILED){ LOG("M_attach \"%s\" 0x%x -> MAP_FAILED\n",C->regs[s].name,id); return 0; }
+    if(m==MAP_FAILED){ fprintf(stderr,"[rtos] M_attach \"%s\" 0x%x sz %u -> MAP_FAILED errno=%d -> 0 (PciHardware throws)\n",C->regs[s].name,id,C->regs[s].size,errno); return 0; }
     for(int i=0;i<MAXREG;i++) if(!attach_cache[i].ptr){ attach_cache[i].id=id; attach_cache[i].ptr=m; break; }
     LOG("M_attach \"%s\" 0x%x -> %p\n",C->regs[s].name,id,m);
     return m;
