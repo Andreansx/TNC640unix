@@ -2085,6 +2085,44 @@ static void* wm_activate_thread_fn(void* arg){
             if(t==0) fprintf(stderr,"[promact] waiting for %s ...\n",qn);
             struct timespec r={1,0}; nanosleep(&r,0);
         }
+        /* RE-MAP (HEROSCALL_PROM_ACT_REMAP=1, default ON): the softkey area window (ScreenEDIT_HorizontalManager)
+         * is correctly sized but stays IsUnMapped because WindowManager::SelectForeground->WmScreen::Map@0x2e590
+         * (which Resyncs each WmWindowDesc -> maps the visible ones) ran with the WMACT foreground switch ABOVE,
+         * BEFORE this activation caused skmgr to register+show its softkey window into the HSoftKeyArea usage slot
+         * (so the desc's visible flag WmWindowDesc+20 was still 0 at that first Map). Re-post the alt->tgt
+         * WmSelectForeground switch now, after a settle for skmgr to finish OnActivation, so WmScreen::Map re-runs
+         * and Resync maps the now-visible softkey area. Faithful: the genuine screen-select message, same as WMACT. */
+        int remap=1; { const char*e=getenv("HEROSCALL_PROM_ACT_REMAP"); if(e&&e[0]=='0') remap=0; }
+        const char* ws=getenv("HEROSCALL_WMACT_SELECT");
+        if(remap && ws && ws[0]=='1'){
+            long rd=20; const char* e=getenv("HEROSCALL_PROM_ACT_REMAP_DELAY");
+            if(e){ rd=0; for(const char*p=e;*p>='0'&&*p<='9';p++) rd=rd*10+(*p-'0'); }
+            { struct timespec s={rd,0}; nanosleep(&s,0); }   /* let skmgr finish OnActivation + register the softkey window */
+            uint32_t tgt=0; { const char* t=getenv("HEROSCALL_WMACT_SCREEN"); if(t&&*t) tgt=(uint32_t)strtoul(t,0,0); }
+            uint32_t alt=(tgt==1)?0u:1u; { const char* a=getenv("HEROSCALL_WMACT_ALT_SCREEN"); if(a&&*a) alt=(uint32_t)strtoul(a,0,0); }
+            uint32_t wq=0;
+            for(int t=0;t<60 && !wq;t++){
+                lock(); int q=q_find_slot("Q_WMGRMSG"); wq=(q>=0)?C->queues[q].id:0; unlock();
+                if(!wq){ struct timespec r={1,0}; nanosleep(&r,0); }
+            }
+            if(wq){
+                fprintf(stderr,"[promact] RE-MAP: re-post WmSelectForeground %u->%u -> WmScreen::Map (map registered softkey area)\n",alt,tgt);
+                post_wm_select_inline(wq,alt); post_wm_select_inline(wq,tgt);
+                /* HOLD (HEROSCALL_PROM_ACT_REMAP_HOLD, default 0 = off): the editor foreground is TRANSIENT — the
+                 * control re-selects the Machine screen shortly after, unmapping the softkey area again. Re-assert
+                 * editor foreground repeatedly so a tight external capture loop can grab the softkey window while it
+                 * is momentarily mapped (1280x88). Each re-post is the genuine WmSelectForegroundMsg; when the
+                 * foreground has reverted to Machine, posting the editor screen is a real switch -> WmScreen::Map
+                 * re-runs -> Resync re-maps the (still-visible) softkey area. */
+                int hold=0; { const char*e=getenv("HEROSCALL_PROM_ACT_REMAP_HOLD"); if(e) hold=(int)strtol(e,0,0); }
+                for(int h=0; h<hold; h++){
+                    post_wm_select_inline(wq,tgt);                              /* re-assert editor foreground */
+                    struct timespec s={0,500000000}; nanosleep(&s,0);          /* 0.5s */
+                    if((h&7)==0){ post_wm_select_inline(wq,alt); post_wm_select_inline(wq,tgt); } /* force a switch periodically */
+                }
+                if(hold) fprintf(stderr,"[promact] RE-MAP HOLD done (%d cycles)\n",hold);
+            }
+        }
     }
     return NULL;
 }

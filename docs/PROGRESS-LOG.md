@@ -3796,3 +3796,49 @@ Guppy's GData softkey-thread wedge (or synthesize the login+SetMenu content emul
 `INJECT_SK_FLOW=1` now WITH WMQ_BREAK — it was only ever tried WITHOUT).** Run:
 `INJECT_WMGR_TIMER=1 WINMGR=1 XDISPLAY=:0 WMQ_BREAK=1 INJECT_SK_ACTIVATE=1 SK_ACT_SCREEN=4 AREA_RECT_FORCE=1 bash emulator/run_3proc_skmgr_guppy.sh`.**
 
+
+---
+
+> ## ★★★★★★★★ GATE 2 — SOFTKEY BAR REALIZED via PATH B (prom-less activation) + the WmScreen::Map re-map (2026-07-12)
+>
+> The softkey bar's full activation chain now fires **entirely on the control's own code**, driven by delivering
+> the one genuine message the (crashed) prom would have sent. No fabricated SkMgrActivate, no synthesized draw.
+>
+> **PATH B — deliver PromActivateNotifyMsg to Fred (commit 03d8226).** promview.elf crashes at init
+> (`terminate: PciHardware::Exception`, a_appstart 1544) before its message loop, so on a real boot it never
+> sends the editor its activation grant → Fred's `FControl` activation-state (member85) never reaches 3 → Fred
+> never emits its own `SkMgrActivate(0x028a0200)` → no bar. Fix (`HEROSCALL_INJECT_PROM_ACTIVATE=1`, default off):
+> post the **byte-exact default `PromActivateNotifyMsg`** — 12-byte wire `E0 03 47 40 00 00 00 00 00 00 00 00` =
+> `[0x404703E0][screen=0][state=0]`, produced by the genuine libGMessageGui serializer (scratchpad/build_promwire.c;
+> ctor `libGMessageGui.so @0x1d6720`) — to **ProgEditQueue(id 332)**, the queue Fred itself advertises to prom in
+> its QProMRequest registration payload ("Ed/mmi.ProgEditQueue"). `FControl::DispatchMessage@0x89b10` routes
+> `*(msg+4)&0x7FFFFFFF==0x404703E0` → `OnProMActivateNotify@0x891a0` → (state 0 ≠ 3) LABEL_10 → **member85=3** +
+> `FControlCallbackTarget::RequestClientFocus`. member136 (this+544, prom's registration id) only gates a harmless
+> ack back to the dead prom, so delivery is robust regardless of its value — this is exactly the prom-less path
+> `FControl::ActivateMyApp@0x89450` runs in-process when member136==-1. **Un-fakeable (hst trace):**
+> `QS [332]ProgEditQueue size=12 tag=404703e0 ->t10e` → Fred reads the editor softkey-menu config
+> (PROGRAM-EDITOR / feature options) → `QS [31a]Q_SkMgr tag=028a0200 sndr=t10e` (**Fred's OWN real SkMgrActivate**)
+> → skmgr `SkMgrGMsgController::OnActivation@0x5a5a0` (state=3, GData::Notify) → `SkMgrFrame::OnActivation@0x42170`
+> queried the HSoftKeyArea geometry (0x3003/0x300c) and **loaded the REAL .bmx softkey bitmaps**
+> (`%SYS%\resource\sk\1024x768\allg\end.bmx`, `ncedit\copy_paste.bmx`) + drew 24 softkeys.
+>
+> **The last-mile map gate — RE'd + crossed with a faithful re-map.** After activation the softkey area window
+> `ScreenEDIT_HorizontalManager` (0x800004, correctly sized 1280×88@y936) was `IsUnMapped` and its DefaultView
+> child stuck at 1×1 (skmgr drew into a 1×1 view). RE: `WindowManager::SelectForeground@0x15070 → WmScreen::Map
+> @0x2e590` walks the screen's WmWindowDesc tree calling `WmWindowDesc::Resync@0x36c00`, which maps a window iff
+> its visible flag (desc+20) is set. The WMACT editor-foreground (WmSelectForeground) ran at T+150s — **before**
+> the T+165s notify made skmgr register+show its softkey window — so that first `WmScreen::Map` saw the desc not
+> yet visible and left it unmapped, and Map does not auto-re-run. Fix (`HEROSCALL_PROM_ACT_REMAP=1`, default on):
+> after the notify + a settle, **re-post the genuine `WmSelectForegroundMsg(editor)`** so `WmScreen::Map` re-runs
+> and Resync maps the now-registered softkey area. VERIFIED un-fakeably: the `ScreenEDIT_HorizontalManager_DefaultView`
+> jumped from **1×1 → 1280×88 mapped** (xwininfo), and `ScreenEDIT_VerticalManager_DefaultView` to 134×868 — the
+> bar is realized as real, sized, drawn pixels.
+>
+> **Capture nuance:** the editor foreground is transient (the control re-selects the Machine screen a few seconds
+> later, unmapping the softkey area again), so a screenshot must be timed to the editor-foreground window. Knob
+> `HEROSCALL_PROM_ACT_REMAP_HOLD=N` re-asserts editor foreground N times so a tight external grab of the softkey
+> window (xwd -id 0x800006) catches it mapped. Memory: [[project-gate2-pathb-promactivate-wire]]. Repro:
+> `HEROSCALL_INJECT_PROM_ACTIVATE=1 HEROSCALL_PROM_ACT_REMAP_HOLD=140 HEROSCALL_INJECT_WMGR_ACTIVATE=1
+> HEROSCALL_WMACT_SELECT=1 HEROSCALL_WMACT_SCREEN=1 HEROSCALL_WMACT_ONCE=1 HEROSCALL_WMACT_DELAY=150
+> HEROSCALL_PROM_ACTIVATE_DELAY=15 HEROSCALL_PROM_ACT_REMAP_DELAY=15 APPSTART_BATCH_NAME=TNC640heros_bar3.txt
+> APPSTART_TIMEOUT=430 bash emulator/run_appstart_fex.sh`.

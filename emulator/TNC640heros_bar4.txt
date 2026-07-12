@@ -1,0 +1,78 @@
+(* TNC640heros_bar4.txt  --  bar3 MINUS prom (Gate-2 PATH B last-mile test)                                   *)
+(* bar3 kept prom in the trim only because Fred registers with it (QProMRequest) and prom creates the         *)
+(* boot "Startup" picture. But promview.elf CRASHES at init (PciHardware::Exception) before its message loop,  *)
+(* so prom contributes NOTHING except (a) queues Fred registers against (Fred tolerates their absence — it     *)
+(* already keeps running when prom is dead) and (b) an ORPHANED full-screen startup picture that winmgr uses   *)
+(* to SUPPRESS editor screen-content mapping, leaving the softkey area (ScreenEDIT_HorizontalManager)          *)
+(* IsUnMapped forever. PATH B (HEROSCALL_INJECT_PROM_ACTIVATE) supplies FControl activation without prom, so   *)
+(* prom is no longer needed. Dropping it should remove the startup-picture suppression -> softkey area maps    *)
+(* + skmgr draws the bar. If AppStartMaster refuses to spawn Ed without prom READY, revert to bar3.            *)
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\jh.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\product.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\tnc.cfg")
+
+FmCommandLineOption (
+    caption:="e",
+    value:="SYS:\\runtime\\LogFile.log")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_PORTRAIT_MODE_TOUCH_SCREEN")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_TOUCHSCREEN")
+
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_SIDESCREEN_MODE")
+
+FmLoadSubsystem (
+    subsystem:="winmgr",
+    localNamespace:="winmgr",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/winmgr",
+            commandLineOptions:="-m=5 -i=%LAYOUT_FILE% -o=afk -s=%WINMGR_SCREENSIZE% -k=%KEYMAP_FILE% -c=%CHARMAP_FILE% -f=%FCTKEYMAP_FILE%",
+            imagePath:="%EXECDIRH%\\winmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="SkManager",
+    localNamespace:="SkManager",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/skmgr",
+            commandLineOptions:="-w -k",
+            imagePath:="%EXECDIRH%\\skmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Event",
+    localNamespace:="Event",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/evtserver",
+            commandLineOptions:="-i=Nc -m=7 -n=7",
+            imagePath:="%EXECDIRH%\\evtserver.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Ed",
+    localNamespace:="Ed",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/mmi",
+            commandLineOptions:="-i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60",
+            imagePath:="%EXECDIRH%\\Fred.elf" )
+    ])
