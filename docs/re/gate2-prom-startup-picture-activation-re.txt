@@ -1,0 +1,240 @@
+TNC640 — ProM startup-picture / activation RE  (idalib/Hex-Rays, 2026-07-15)
+Binaries: work/control/sysroot/heros5/bin/{promview.elf, startup.elf, libGMessageGui.so}
+All addresses resolved by SYMBOL NAME first (nm), not the stale hints.
+
+Resolved addresses (current):
+  promview.elf   PromFrame::OnScreenChanged            0x7e520
+                 PromFrame::IsStartupPicVisible        0x77e70
+                 PromModule::OnHideStartupPicture      0x6ded0
+                 PromFrame::UnloadStartupPicture       0x79270
+                 PromFrame::ActivateGroup              0x7c800
+                 PromFrame::HandleStoredGuiProcess     0x7e2c0
+                 PromFrame::ScreenChangeObserver::OnNotify 0x7e760
+                 PromModule::DispatchMessage           0x737a0
+                 PromModule::ConnectPlcServer          0x6dd90
+                 PromFrame::SetPlcScreenApi            0x78fc0
+  startup.elf    FipsNc::NotifyStartupComplete         0x507f0
+                 FipsNc::EnterNcOp                      0x56a90
+                 FipsIfProM::HideStartupPicture         0x90ad0  (VIRTUAL, vtbl slot disp 0xB4)
+                 FipsUI::EnterPowerInterrupt            0x6d8c0  (ONLY caller of HideStartupPicture)
+                 FipsNc::CallStartupCycle               0x50790
+                 FipsNc::InterpretChMStartupCycleAck    0x5c270
+  libGMessageGui.so  PromHideStartupPictureMsg::ctor()  0x1d8a00 / ctor(bool) 0x1d8a70
+                 PromActivateNotifyMsg::ctor()          0x1d6720
+                 PromActivateApplication::ctor()        0x1d3b00
+
+==============================================================================
+Q1 — PromFrame::OnScreenChanged early-returns while startup pic visible: CONFIRMED
+==============================================================================
+Guard (verbatim):
+    IsStartupPicVisible = PromFrame::IsStartupPicVisible((PromFrame *)a1);
+    v4 = IsStartupPicVisible;
+    ...
+    printf("PromFrame::OnScreenChanged():0: ... startupPicVisible=%d\n", ...);
+    if ( v4 != 0 )
+    {
+      puts("PromFrame::OnScreenChanged():1-99: PLC is not ready yet: Startup picture is visible");
+      return PUnlockInput();          // <-- EARLY RETURN, no ActivateGroup
+    }
+    ... GetGroupByTabId / HandleStoredGuiProcess / ActivateGroup ...   // only reached when NOT visible
+The log line "PLC is not ready yet: Startup picture is visible" is exactly this branch.
+ActivateGroup (0x7c800) is called ONLY further down, after the guard passes (v4==0).
+
+==============================================================================
+Q2 (DECISIVE) — Does PromModule::OnHideStartupPicture self-re-drive activation?
+==============================================================================
+ANSWER: **NO.** It only clears/tears down the startup-picture state and returns.
+A SEPARATE screen-change notification is required afterwards to activate Fred.
+
+PromModule::OnHideStartupPicture (0x6ded0) — full body:
+    int OnHideStartupPicture(PromFrame **a1) {
+      if ( *((_BYTE*)a1+401) != 0 ) {
+        puts("PromModule::OnHideStartupPictureMsg");
+        if ( *((_BYTE*)a1+388) != 0 )
+          return PromFrame::UnloadStartupPicture(a1[98]);
+    LABEL_5:
+        *((_BYTE*)a1+388) = PromModule::ConnectPlcServer((PromModule*)a1);   // connect to PLC
+        return PromFrame::UnloadStartupPicture(a1[98]);
+      }
+      if ( *((_BYTE*)a1+388) == 0 ) goto LABEL_5;
+      return PromFrame::UnloadStartupPicture(a1[98]);                        // EVERY path ends here
+    }
+The ONLY things it does: (a) optionally PromModule::ConnectPlcServer (opens Q_PLC_FRONTSTAGE,
+builds ClientPlcController/ClientPlcInterfaceImpl — a PLC connection, NOT activation), and
+(b) PromFrame::UnloadStartupPicture. It NEVER calls OnScreenChanged / ActivateGroup /
+ActivateGroupById / HandleStoredGuiProcess / OnActivateGroupByKey.
+
+PromFrame::UnloadStartupPicture (0x79270) — what it actually does:
+  - if a busy/pending counter (this+1094) set -> just marks (this+4381)=1 and returns (defer).
+  - if IsStartupPicVisible: PSelectScreenLayout(0,"Screen","Base"); PSelectScreenLayout(1,"Screen","Base")
+    (switch screens 0 & 1 back to the Base layout).
+  - LogoView::UnloadImage x2 (unload the two logo images).
+  - if (this+4319): puts("... Startup phase seems to be over: m_Startup=false"); (this+4344)=0.
+  - erase an Rb_tree (this+4384); reset list ptrs.
+  - if (m_Startup now 0): PGetForegroundScreen(); PromFrame::SetPlcScreenApi(this, fg);
+    (SetPlcScreenApi only pushes the screen-id value out over ClientPlcInterface via a
+     PlcApi::tncScreens loop — it does NOT activate a prom group.)
+  - if (this+4329): DncConnections GData / PromviewerInterface Connect + call [vtbl+36]
+    (a DNC/PLC-connection notification, codes (3,6,18)/(3,6,19) — NOT a group activation).
+  => Clears state + updates PLC screen-id + optional DNC notify. No activation re-drive.
+
+Where activation actually comes from (xref proof):
+  XrefsTo ActivateGroup(0x7c800): OnActivateGroupByMouse(0x7c976), ActivateGroupById(0x7ca21),
+                                  OnScreenChanged(0x7e613, 0x7e648).
+  XrefsTo OnScreenChanged(0x7e520): ONLY PromFrame::ScreenChangeObserver::OnNotify(0x7e78e).
+  ScreenChangeObserver::OnNotify(0x7e760):
+      v2 = this->owner; PGetForegroundScreen(); PromFrame::OnScreenChanged(v2, &info);
+  ScreenChangeObserver::Attach(0x76810): PSession::AddObserver(...)  (subscribes to screen change)
+  => The ONLY automatic path to ActivateGroup is:
+        <a screen-change/foreground event> -> PSession notify -> ScreenChangeObserver::OnNotify
+        -> OnScreenChanged -> (guard now passes since pic hidden) -> ActivateGroup.
+CONCLUSION for the emulator: hiding the picture is NECESSARY (it drops the OnScreenChanged
+guard) but NOT SUFFICIENT. Prom will NOT activate Fred inside the hide call. After the hide,
+a subsequent screen-foreground/screen-change notification must arrive to fire OnScreenChanged.
+(This matches the current CLAUDE.md blocker: "persistent screen-foreground arbitration is a
+SECOND prom responsibility not yet routed around." UnloadStartupPicture's PSelectScreenLayout is
+a LAYOUT swap on screens 0/1, not guaranteed to raise a foreground-change notify, so it is not
+a reliable self-trigger.)
+
+==============================================================================
+Q3 — startup.elf: what gates HideStartupPicture; is it early/unconditional?
+==============================================================================
+IMPORTANT CORRECTION to the question's premise: FipsNc::NotifyStartupComplete does NOT call
+HideStartupPicture. They are two DIFFERENT state machines inside startup.elf:
+  * FipsNc  = NC-subsystem coordinator.
+  * FipsUI  = MMI/UI coordinator  <-- this is the one that hides the picture.
+
+FipsNc::NotifyStartupComplete (0x507f0) — a transit-queue CALLBACK scheduled by FipsNc::EnterNcOp
+(the "State NcOp entered." operational state). Full body:
+    FipsIfEvtServer::NotifyStartupComplete(a2[51]);
+    FipsIfIpo::NotifyStartupComplete(a2[53]);
+    FipsIfPlc::NotifyStartupComplete(a2[54]);
+    FipsIfChM::NotifyStartupComplete(a2[55]);
+    FipsIfOsci::NotifyStartupComplete(a2[59]);
+  => It BROADCASTS "startup complete" to EvtServer, Ipo, Plc, ChM, Osci. It does not touch ProM
+     and does not hide the picture. (So "which subsystem NotifyStartupComplete must fire" is the
+     wrong axis — none of them hides the picture.)
+
+Who ACTUALLY hides the picture (proven un-fakeably):
+  - Full-image raw-pointer scan: the address 0x90ad0 (FipsIfProM::HideStartupPicture) is referenced
+    from EXACTLY ONE location: 0x104110 = the FipsIfProM vtable slot (disp 0xB4 from vptr).
+  - Indirect-call scan for `call [reg+0xB4]` across all functions: EXACTLY ONE caller ->
+    FipsUI::EnterPowerInterrupt @ 0x6d914.
+  FipsUI::EnterPowerInterrupt (0x6d8c0):
+    EvtMgr::FVerbosePrint(..., "State PowerInterrupt entered.");
+    (*(iface_vtbl+0xB4))(iface);          // = FipsIfProM::HideStartupPicture()  -> sends the wire
+    (*(iface_vtbl+0xB8))(iface, 19267589); // = SetTitle(0x01260005 "Power interrupted")
+    FipsUI::SetSubtitle(a2);
+  => The startup picture is hidden EXACTLY when the FipsUI state machine ENTERS the PowerInterrupt
+     state (the "Power interrupted" boot screen that the operator acknowledges with CE).
+
+What that transition WAITS ON (message/event driven, NOT a timer/semaphore/config-flag):
+  - The NC startup handshake is a MESSAGE cycle:
+      FipsNc::CallStartupCycle (0x50790):
+        FipsIfDNC::NotifyNcStartupCycle(a2[56], true);
+        FipsIfChM::StartupCycle(a2[55]);          // ask the Channel Manager to run the cycle
+      FipsNc::InterpretChMStartupCycleAck (0x5c270):
+        msg = GetLastReceivedMsg();
+        if ( msg && GMessage::IsA(msg, 0xB700E0) && Assign(StUpStartupCycleAck, msg+84) ) OK
+        else FVerbosePrint("No or invalid message returned.");
+      => it WAITS for the ChM's StUpStartupCycleAck message (GMessage type id 0xB700E0).
+  - FipsIfProM handlers that advance the UI machine are message handlers, not polls:
+      HandleStUpStartupCycleAck (0x90630), HandleStUpPowerInterruptionAck (0x904f0, sets
+      busyAsProgressStep from StUpPowerInterruptionAck body), HandlePlcSrvReply/Notify,
+      HandleSTestStartMachine.
+  - FipsNc/FipsUI are coupled: FipsNc::EnterNcOp uses AddContentsToWait_StateReached on the UI
+    machine and AddTransitQueueEntry_RemoteTransition, i.e. the two machines step forward together,
+    gated by PLC/IPO/ChM/self-test acks.
+REACHABILITY: NOT early / NOT unconditional. HideStartupPicture is emitted only after the NC
+startup cycle progresses far enough for the UI machine to enter PowerInterrupt — i.e. after a
+real NC cycle (ChM StUpStartupCycleAck, PLC connect/load, IPO up, self-test). A minimal faithful
+boot must deliver those subsystem acks/notifications (chiefly the ChM StUpStartupCycleAck 0xB700E0
+and the PLC/IPO startup notifications) so the FipsUI machine reaches PowerInterrupt.
+
+==============================================================================
+Q4 — PromHideStartupPictureMsg (GMessage 0x404705C0) wire + target queue
+==============================================================================
+Defined in libGMessageGui.so.
+PromHideStartupPictureMsg::PromHideStartupPictureMsg()  (0x1d8a00):
+    GMessage::GMessage(this, 0x404705C0);      // <-- GMessage TYPE ID = 0x404705C0
+    *((_DWORD*)this + 3) = 1;                  // GMessage flag word
+    *(_DWORD*)this = vtable(off_310A34);
+    body = new(8);  this[2] = body;
+    body[0] = 0x404705C0;                      // body header dword = the type id, echoed
+    body[1] = 0;                               // the bool payload (default false)
+PromHideStartupPictureMsg::PromHideStartupPictureMsg(bool a2)  (0x1d8a70):
+    GMessage::GMessage(this, 0x404705C0);
+    GMessage::QuickConstr1(this+8, size=8, 0x404705C0);
+    *(body + 4) = a2;                          // bool -> body[1]
+PromHideStartupPictureMsg::Body()  (0x1ddb80):  return msg+8;   (body starts at msg+8)
+PromHideStartupPictureMsg::TypeId()/Meta() (0x1d89c0/0x1d10d0): return &m_46_m_ (static meta).
+
+WIRE / serialized body (8 bytes):
+    dword[0] = 0x404705C0   (message type id, repeated as body header)
+    dword[1] = 0x00000000   (bool flag; FipsIfProM::HideStartupPicture sets it =0 explicitly)
+  (cf. the analogous PromActivateNotifyMsg body = 12B [0x404703E0][screen][state].)
+
+SENDER + TARGET QUEUE:
+  FipsIfProM::HideStartupPicture (0x90ad0):
+      PromHideStartupPictureMsg msg;   // body [0x404705C0][0]
+      *(bodyptr + 4) = 0;
+      MessageBox::PostMessageWpn(this, &msg, 0xD);   // 0xD = 13
+  FipsProcess::MainContext (0x44947 area) registers the OUT queues by index:
+      index 12 -> "QProMRequest"   (EvalContextOutQueue ... 12)
+      index 13 -> "QProMViewer"    (EvalContextOutQueue ... 13)
+  => PostMessageWpn wpn/index 0xD (13) == the **QProMViewer** out-queue. TARGET = QProMViewer.
+  (The prompt's "QProMViewer" is confirmed by name; the numeric HeROS queue id 0x323 is assigned
+   by the runtime queue registry and is not embedded in these binaries.)
+  Receiver: promview.elf PromModule::DispatchMessage (0x737a0):
+      id = (*(msg+4) & 0x7FFFFFFF);
+      ... if (id == 0x404705C0) return PromModule::OnHideStartupPicture(this); ...
+
+ProM message-id constants (verified from the GMessage ctors, not guessed):
+  0x00470100  PromActivateApplication   (ctor: GMessage::GMessage(this, 0x470100))   -> matches prompt
+  0x404703E0  PromActivateNotifyMsg     (ctor: GMessage::GMessage(this, 0x404703E0)) -> matches prompt (the grant to Fred)
+  0x404705C0  PromHideStartupPictureMsg (ctor: GMessage::GMessage(this, 0x404705C0))
+              *** CORRECTION: the real id is 0x404705C0, NOT 0x004705C0. ***
+              The prompt's 0x004705C0 is that value with the 0x40000000 GMessage-class bit dropped.
+              DispatchMessage masks the stored id with 0x7FFFFFFF and compares == 0x404705C0.
+
+==============================================================================
+EMPIRICAL REVIVE RESULTS (2026-07-15, bar5/bar6/bar7 — this session)
+==============================================================================
+bar5 (bar3 + NcS[startup.elf + ChannelManager]):
+  startup.elf SPAWNS + registers with prom (QProMRequest "Nc/startup.QStartUp"), creates
+  QFipsIntern + Q_PLC_FRONTSTAGE, talks to HWServer/EvtServer. Runs CRASH-FREE. Throws one
+  (non-fatal) GMsgException, then STALLS in its startup cycle (no ChM StUpStartupCycleAck,
+  no IPO/PLC). Picture never hides (startupPicVisible=1). => startup.elf needs the NC channel.
+
+bar6 (bar5 + SEPARATE Nc subsystem[ipo_progstation + monitoring + PlcDaemon + plc]):
+  ipo_progstation NEVER SPAWNED. Root cause = the AppStart Monitor per-subsystem SEQUENCING
+  gate: the Monitor thread t106 idles at Ev_receive(want=0x01019007, to=inf) after loading the
+  NcS subsystem, waiting for a subsystem-ready event that the stalled startup.elf never emits,
+  so the next (Nc) subsystem never loads. This is the SAME 0x01019007 Monitor gate flagged in
+  the real-driver memory ("t106 idles at Ev_receive(0x01019007) after Event"), now one subsystem
+  later. It is a constellation-GROWTH gate, orthogonal to process behaviour, UPSTREAM of even
+  getting ipo_progstation to run.
+
+bar7 (bar3 + ONE combined Nc subsystem = IPO+plc+PlcDaemon+MON+CM+startup):
+  Puts every NC-channel process in a SINGLE FmLoadSubsystem so the Monitor spawns them all in
+  one load (before its next 0x01019007 wait) — sidesteps the sequencing gate WITHOUT faking any
+  process behaviour. [result appended after run]
+
+bar7 RESULT (combined Nc subsystem — SUCCESS at loading, blocked at NCK hardware):
+  The ENTIRE genuine NC channel SPAWNS + REGISTERS under FEX for the FIRST TIME: Nc/IPO
+  (ipo_progstation.elf, the 8.2MB NCK), Nc/plc, Nc/PlcDaemon, Nc/MON, Nc/CM, Nc/startup —
+  16 FEX procs alive alongside winmgr/skmgr/prom/evtserver/Fred. Sidestepping the Monitor
+  sequencing gate (one combined subsystem) WORKED — ipo_progstation runs.
+  ONE PROVABLE BLOCKER (un-fakeable): ipo_progstation (Nc/IPO, thread t11d) requests a PCI
+  I/O range from the HW server (QHWServer request tagged "Nc/IPO:GetIoRange"); the emulator's
+  HWS stub only ECHOES QHWServer requests (enough for the run-up GetData's status==0, NOT for
+  a GetIoRange reply), so guest-side PciHardware::GetIoRange(PlAddresses&) @libhwsinterface.so+0x69
+  throws a GMsgException (x3-4). The NCK reports the exception to EvtServer and its threads block
+  in WAIT (stalled, NOT a hard crash — the 16 procs stay alive). => the NC startup cycle never
+  runs (no ChM StartupCycle handshake, no NcOp, no self-test) -> FipsUI never reaches
+  PowerInterrupt -> HideStartupPicture never sent -> startupPicVisible stays 1 -> prom never
+  activates (404705c0=0, 404703e0=0, 028a0200=0).
+  NEXT (faithful): extend the HWS stub to answer GetIoRange with a valid PlAddresses I/O-range
+  reply (needs RE of the libhwsinterface reply schema), then the NCK will try to USE the range
+  (map/read PCI regs) — a cascade of NCK hardware-access emulation. Same PciHardware CLASS as the
+  fixed prom crash (GetMemoryPointer/shm 0666), distinct facet (GetIoRange/PCI I/O port range).

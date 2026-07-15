@@ -60,7 +60,39 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-15) — REAL-DRIVER bar: GATE 1 CROSSED; PROM CRASH CROSSED; FRED SIGSEGV CROSSED; next = the DRAW (SkMgrActivate 028a0200)
+## Current frontier (2026-07-15) — REAL-DRIVER bar: GATE 1 CROSSED; PROM CRASH CROSSED; FRED SIGSEGV CROSSED; the DRAW pinned to the NC-software startup (blocker = NCK GetIoRange)
+**★★★★★★★★★★★ THE BAR-DRAW PRECONDITION DEFINITIVELY PINNED — LIVE prom does NOT self-activate; it correctly
+waits for the NC-software startup; NO inject needed to prove it (2026-07-15).** Decisive test of the "revive prom,
+don't bypass" thesis: with prom alive (d19d86b) + Fred alive (9731af9), **LIVE prom sends `PromActivateNotifyMsg
+(0x404703E0)` 0 times and Fred sends `SkMgrActivate(0x028a0200)` 0 times** on the clean no-inject bar3 constellation
+— reproduced **2× un-fakeably, crash=0**, prom alive & serving, Fred driving the full softkey login/menu/.bmx
+conversation then idling. prom is blocked at `PromFrame::OnScreenChanged: startupPicVisible=1` → "PLC is not ready
+yet: Startup picture is visible" — NOT a bug; prom correctly waits for a boot signal bar3 never produces.
+**The precondition is TWO-part (idalib-pinned over promview.elf+startup.elf; `docs/re/gate2-prom-startup-picture-activation-re.txt`):
+(A)** the picture is hidden by **`FipsUI::EnterPowerInterrupt`** (★ CORRECTS the prior memo — it is NOT
+`FipsNc::NotifyStartupComplete` that hides it) → `HideStartupPicture` (GMessage **0x404705C0** → QProMViewer),
+reached only after the NC startup cycle completes (ChM `StUpStartupCycleAck 0xB700E0` + PLC/IPO up + self-test);
+**(B)** hiding is **necessary but NOT sufficient** — `PromModule::OnHideStartupPicture` does NOT self-re-drive
+activation (xref-proven: only `UnloadStartupPicture`), so a **separate** post-hide screen-change must fire
+`ScreenChangeObserver::OnNotify`→`OnScreenChanged`→`ActivateGroup`→activation (the "persistent foreground
+arbitration", now code-confirmed). **yeen oracle** (scratchpad/yeen_{splash,mid,mmi}.png): the full x86_64 boot
+shows "The NC software is being started" (splash, NO bar) → completes (~75-90s) → the MMI with the 8-cell softkey
+bar; our bar3 is frozen at yeen's pre-completion state. **Root cause = bar3 dropped the entire NC-software startup**
+(startup.elf + ipo_progstation/plc/ChM). **Faithful revive attempt (NO inject), 3 trimmed batches:** `bar5` (=bar3+
+startup.elf+CM) — startup.elf runs crash-free but stalls w/o the NC channel; `bar6` (+separate Nc subsystem) — blocked
+by the AppStart **Monitor per-subsystem sequencing gate** (t106 idles at `Ev_receive(0x01019007)`), ipo_progstation
+never spawns; `bar7` (=bar3 + ONE combined Nc subsystem IPO+plc+PlcDaemon+MON+CM+startup, sidesteps the Monitor gate)
+— **the ENTIRE genuine NC channel spawns+registers under FEX for the FIRST time (16 procs: Nc/IPO=ipo_progstation
+8.2MB, Nc/plc, Nc/PlcDaemon, Nc/MON, Nc/CM, Nc/startup)**. **★ THE ONE PROVABLE BLOCKER:** ipo_progstation (Nc/IPO
+t11d) requests a PCI I/O range from the HW server (`QHWServer` "Nc/IPO:GetIoRange"); the HWS stub only ECHOES QHWServer
+requests, so guest **`PciHardware::GetIoRange(PlAddresses&)` @libhwsinterface.so+0x69 throws** (×3-4) → the NCK
+stalls (threads WAIT, not a hard crash) → the NC startup cycle never runs → no PowerInterrupt → no picture-hide → no
+activation. Same PciHardware CLASS as the fixed prom crash, distinct facet (PCI I/O range vs shm attach). **NEXT
+(faithful):** extend the HWS stub (`emulator/heros_rtos.c` `hws_autoreply`) to answer GetIoRange with a valid
+PlAddresses I/O-range reply (RE the libhwsinterface reply schema), then the NCK will try to USE the range (map/read
+PCI regs) — a cascade of NCK hardware-access emulation. Inject knobs (INJECT_PROM_ACTIVATE/WMACT/REMAP/INJECT_PROM_HIDE)
+all OFF and proven UNNECESSARY. See [[project-gate2-startup-picture-nc-cycle]].
+
 **★★★★★★★★★★ FRED SIGSEGV CROSSED — it was NOT a UAF; two config/resource gaps, faithful fixes, no inject
 (2026-07-15).** The `FThread::EvalContextInQueue/EvalContextModule` SIGSEGV that gated the bar was a *downstream
 symptom*, not a lifetime bug (the `~FThread` free of `m_0x60` — RA=libbackend+0x26ec3 — was a red herring; a
