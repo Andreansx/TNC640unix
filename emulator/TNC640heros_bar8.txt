@@ -1,0 +1,138 @@
+(* TNC640heros_bar8.txt  --  bar7 + the REAL hwserver.elf (the genuine QHWServer server)                       *)
+(* WHY: bar7 spawned the whole NC channel (ipo_progstation Nc/IPO) for the first time, but ipo_progstation's   *)
+(* PciHardware::GetIoRange(PlAddresses&) request to QHWServer threw because the emulator's HWS stub only ECHOES *)
+(* (enough for run-up GetData status==0, NOT a GetIoRange reply). yeen ground truth (working x86_64 boot,       *)
+(* guest root ps): the QHWServer server is a REAL i386 process -- "hwserver.elf Server:Server/hwserver -U"      *)
+(* (PID 9068) -- running alongside "ipo_progstation.elf Nc:Nc/IPO -k=NC -M" (PID 9515); the boot completes and  *)
+(* draws the softkey bar. hwserver self-selects SIMULATED PCI on a programming station (HWSSimulationModule /   *)
+(* ProductId::IsProgStationVersion / PciPlCtrl::SetSimulated) and ANSWERS GetIoRange. So the FAITHFUL fix is to *)
+(* RUN the real server (exactly as the genuine boot does), NOT hand-roll a PlAddresses reply. The HWS stub now  *)
+(* DEFERS QHWServer to the real hwserver once it is alive (heros_rtos hwserver_alive flag) -- no double reply.  *)
+(*                                                                                                              *)
+(* Placement: hwserver in its genuine "Server" subsystem/namespace, loaded BEFORE the Nc subsystem so it owns   *)
+(* QHWServer before ipo_progstation issues GetIoRange. (Genuine boot order: winmgr<skmgr<prom<Event<Server<Nc.) *)
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\jh.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\product.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\tnc.cfg")
+
+FmCommandLineOption (
+    caption:="e",
+    value:="SYS:\\runtime\\LogFile.log")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_PORTRAIT_MODE_TOUCH_SCREEN")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_TOUCHSCREEN")
+
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_SIDESCREEN_MODE")
+
+FmLoadSubsystem (
+    subsystem:="winmgr",
+    localNamespace:="winmgr",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/winmgr",
+            commandLineOptions:="-m=5 -i=%LAYOUT_FILE% -o=afk -s=%WINMGR_SCREENSIZE% -k=%KEYMAP_FILE% -c=%CHARMAP_FILE% -f=%FCTKEYMAP_FILE%",
+            imagePath:="%EXECDIRH%\\winmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="SkManager",
+    localNamespace:="SkManager",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/skmgr",
+            commandLineOptions:="-w -k",
+            imagePath:="%EXECDIRH%\\skmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="prom",
+    localNamespace:="prom",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/prom",
+            imagePath:="%EXECDIRH%\\promview.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Event",
+    localNamespace:="Event",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/evtserver",
+            commandLineOptions:="-i=Nc -m=7 -n=7",
+            imagePath:="%EXECDIRH%\\evtserver.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Ed",
+    localNamespace:="Ed",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/mmi",
+            commandLineOptions:="-i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60",
+            imagePath:="%EXECDIRH%\\Fred.elf" )
+    ])
+
+(* ★ NEW (bar8): the real hardware server. Genuine cmdline "-U", genuine "Server" namespace (yeen: PID 9068     *)
+(* "hwserver.elf Server:Server/hwserver -U"). Owns QHWServer; answers ipo_progstation's Nc/IPO:GetIoRange with  *)
+(* SIMULATED PCI addresses (progstation self-simulation). Loaded before Nc so QHWServer exists first.           *)
+FmLoadSubsystem (
+    subsystem:="Server",
+    localNamespace:="Server",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/hwserver",
+            commandLineOptions:="-U",
+            imagePath:="%EXECDIRH%\\hwserver.elf" )
+    ])
+
+(* bar7's combined NC channel as ONE subsystem (sidesteps the AppStart Monitor per-subsystem sequencing gate:   *)
+(* t106 idles at Ev_receive(0x01019007) between subsystems). Now hwserver is present, so ipo_progstation's      *)
+(* GetIoRange reaches the real server -> the NC startup cycle can proceed.                                      *)
+
+FmLoadSubsystem (
+    subsystem:="Nc",
+    localNamespace:="Nc",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/IPO",
+            commandLineOptions:="-k=NC -M",
+            imagePath:="%EXECDIRH%\\ipo_progstation.elf" ),
+        FmLoadProcess(
+            processName:="~/plc",
+            commandLineOptions:="-k=NC -m -p=LoadOEM -q=UnloadOEM -r=LoadOEMPython3",
+            imagePath:="%EXECDIRH%\\plc.elf" ),
+        FmLoadProcess(
+            processName:="~/PlcDaemon",
+            commandLineOptions:="-f=SYS:\\plc\\compiled\\SymbolDebug.txt -c=%EXECDIRH%\\plccomp.elf",
+            imagePath:="%EXECDIRH%\\PlcDaemon.elf" ),
+        FmLoadProcess(
+            processName:="~/MON",
+            commandLineOptions:="-k=NC",
+            imagePath:="%EXECDIRH%\\monitoring.elf" ),
+        FmLoadProcess(
+            processName:="~/CM",
+            commandLineOptions:="-k=NC",
+            imagePath:="%EXECDIRH%\\ChannelManager.elf" ),
+        FmLoadProcess(
+            processName:="~/startup",
+            commandLineOptions:="-s=StartNc",
+            imagePath:="%EXECDIRH%\\startup.elf" )
+    ])

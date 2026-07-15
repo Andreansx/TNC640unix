@@ -1,0 +1,132 @@
+(* TNC640heros_bar2.txt  --  TRIMMED bar-path start script (stage 2b: + prom, which serves Fred QProMRequest)                 *)
+(* Goal: get the REAL driver to PCreate-spawn mmi = Fred.elf (the operator MMI in       *)
+(* subsystem "Ed") and observe Fred's actual startup — which peer queues it Q_idents,    *)
+(* what it blocks on — so stage 2b can add exactly the hard peers it needs (CM/graphics) *)
+(* with the correct namespace. winmgr+skmgr+evtserver are proven to reach READY, so Ed   *)
+(* loads and Fred spawns. Ed drops the ConfigReady procedure gating (we own -f=) + all    *)
+(* 12 Ed co-processes; config comes from the foundation ConfigServer. Faithful trim.      *)
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\jh.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\product.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\tnc.cfg")
+
+FmCommandLineOption (
+    caption:="e",
+    value:="SYS:\\runtime\\LogFile.log")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_PORTRAIT_MODE_TOUCH_SCREEN")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_TOUCHSCREEN")
+
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_SIDESCREEN_MODE")
+
+FmLoadSubsystem (
+    subsystem:="winmgr",
+    localNamespace:="winmgr",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/winmgr",
+            commandLineOptions:="-m=5 -i=%LAYOUT_FILE% -o=afk -s=%WINMGR_SCREENSIZE% -k=%KEYMAP_FILE% -c=%CHARMAP_FILE% -f=%FCTKEYMAP_FILE%",
+            imagePath:="%EXECDIRH%\\winmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="SkManager",
+    localNamespace:="SkManager",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/skmgr",
+            commandLineOptions:="-w -k",
+            imagePath:="%EXECDIRH%\\skmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="prom",
+    localNamespace:="prom",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/prom",
+            imagePath:="%EXECDIRH%\\promview.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Event",
+    localNamespace:="Event",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/evtserver",
+            commandLineOptions:="-i=Nc -m=7 -n=7",
+            imagePath:="%EXECDIRH%\\evtserver.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Ed",
+    localNamespace:="Ed",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/mmi",
+            commandLineOptions:="-i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60",
+            imagePath:="%EXECDIRH%\\Fred.elf" )
+    ])
+
+(* bar9 = bar7 + the REAL hwserver.elf FOLDED INTO the combined Nc subsystem (as the first process).   *)
+(* WHY here (not a separate subsystem): bar8 put hwserver in its genuine separate "Server" subsystem    *)
+(* before Nc, and the AppStart Monitor sequencing gate (t106 idles at Ev_receive(0x01019007)) blocked   *)
+(* Nc from loading after it — so ipo_progstation never spawned (same gate bar6 hit). bar8 PROVED         *)
+(* hwserver.elf runs crash-free under FEX and self-simulates (it created LE422_IO_SIMULATION 64MB +      *)
+(* LE422_REMA_SIMULATION regions + owns QHWServer/QHWServer_int). Folding hwserver into the SAME         *)
+(* combined subsystem as the NC channel makes the Monitor spawn hwserver + ipo_progstation in ONE load   *)
+(* (no gate between them), exactly as bar7 folds startup+CM+IPO+plc. hwserver FIRST so it owns QHWServer  *)
+(* before ipo_progstation's blocking GetIoRange arrives. Namespace becomes Nc/hwserver (vs genuine       *)
+(* Server/hwserver) — a LOAD-orchestration detail only: QHWServer is a GLOBAL queue, hwserver's behavior *)
+(* (create QHWServer, self-simulate PCI, answer GetIoRange) is namespace-independent. Genuine cmdline -U.*)
+(* This is the bar7 pattern extended: ONE combined subsystem, no faked process behavior.                *)
+
+FmLoadSubsystem (
+    subsystem:="Nc",
+    localNamespace:="Nc",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/hwserver",
+            commandLineOptions:="-U",
+            imagePath:="%EXECDIRH%\\hwserver.elf" ),
+        FmLoadProcess(
+            processName:="~/IPO",
+            commandLineOptions:="-k=NC -M",
+            imagePath:="%EXECDIRH%\\ipo_progstation.elf" ),
+        FmLoadProcess(
+            processName:="~/plc",
+            commandLineOptions:="-k=NC -m -p=LoadOEM -q=UnloadOEM -r=LoadOEMPython3",
+            imagePath:="%EXECDIRH%\\plc.elf" ),
+        FmLoadProcess(
+            processName:="~/PlcDaemon",
+            commandLineOptions:="-f=SYS:\\plc\\compiled\\SymbolDebug.txt -c=%EXECDIRH%\\plccomp.elf",
+            imagePath:="%EXECDIRH%\\PlcDaemon.elf" ),
+        FmLoadProcess(
+            processName:="~/MON",
+            commandLineOptions:="-k=NC",
+            imagePath:="%EXECDIRH%\\monitoring.elf" ),
+        FmLoadProcess(
+            processName:="~/CM",
+            commandLineOptions:="-k=NC",
+            imagePath:="%EXECDIRH%\\ChannelManager.elf" ),
+        FmLoadProcess(
+            processName:="~/startup",
+            commandLineOptions:="-s=StartNc",
+            imagePath:="%EXECDIRH%\\startup.elf" )
+    ])

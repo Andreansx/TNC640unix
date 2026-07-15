@@ -133,6 +133,15 @@ struct ctl {
     struct { uint32_t len; uint8_t data[EVTMSGCAP]; } evt_ring[EVTRING];
     volatile uint32_t sk_flow_posted;                /* INJECT_SK_FLOW single-poster guard (CAS 0->1) */
     volatile uint32_t wm_activate_posted;            /* INJECT_WMGR_ACTIVATE single-poster guard (CAS 0->1) */
+    volatile uint32_t hwserver_alive;                /* set when the REAL hwserver.elf (Server:Server/hwserver -U,
+                                                        the genuine QHWServer server) initialises. While 0 (early
+                                                        boot, no real HW server yet) the HWS stub echoes QHWServer
+                                                        run-up GetData so the config foundation can come up; once
+                                                        the real server is alive the stub DEFERS all QHWServer
+                                                        traffic (run-up GetData AND GetIoRange) to it — no double
+                                                        reply. Faithful: the stub was only a crutch for hwserver's
+                                                        ABSENCE (bar3..bar7). yeen ground truth: hwserver.elf runs
+                                                        and answers ipo_progstation's Nc/IPO:GetIoRange. */
 };
 static struct ctl *C;
 
@@ -2509,6 +2518,10 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
  * deserializer/status path accepts any well-formed reply, or needs specific fields. */
 static void hws_autoreply(uint32_t target_qid,const void*msg,uint32_t size){
     if(!hws_stub||!msg||size<20) return;
+    /* DEFER to the real hwserver.elf once it is alive: it serves BOTH run-up GetData and GetIoRange
+     * (which the echo stub cannot). Set by the hwserver process in ensure_init. While 0 (early boot,
+     * before hwserver spawns) the stub still answers run-up GetData so the config foundation comes up. */
+    if(C && __atomic_load_n(&C->hwserver_alive,__ATOMIC_ACQUIRE)) return;
     int s=q_slot(target_qid); if(s<0||strcmp(C->queues[s].name,"QHWServer")) return;
     const unsigned char*m=msg; int at=-1;
     for(uint32_t i=0;i+16<=size;i++) if(m[i]=='H'&&m[i+1]=='w'&&m[i+2]=='s'&&m[i+3]=='M'){ at=(int)i; break; }
@@ -3122,6 +3135,16 @@ static void ensure_init(void){
             fprintf(stderr,"[rtos] SELF pid=%d pname_reg=1 self_pname=\"%s\" (HEROS_PROC_NAME=\"%s\")\n",
                     (int)getpid(), self_pname, getenv("HEROS_PROC_NAME")?getenv("HEROS_PROC_NAME"):"(unset)"); fflush(stderr); }
         ctl_init();
+        /* If THIS process is the real hwserver.elf (QHWServer server), publish a shared flag so every
+         * other process's HWS stub DEFERS QHWServer to it (no stub/hwserver double-reply). self_pname is
+         * the canonical "Server/hwserver" (parse_self_pname strips the "Server:" subsystem prefix). Set
+         * unconditionally of HWS_STUB — the flag governs OTHER processes' stubs, not this one's. */
+        if(!self_pname[0]) parse_self_pname();   /* ensure identity even if HEROSCALL_PNAME is off */
+        if(self_pname[0] && strstr(self_pname,"hwserver")){
+            __atomic_store_n(&C->hwserver_alive,1,__ATOMIC_RELEASE);
+            fprintf(stderr,"[rtos] REAL hwserver.elf init (self=\"%s\") -> HWS stub now DEFERS QHWServer to it\n",self_pname);
+            fflush(stderr);
+        }
         __atomic_store_n(&g_inited,1,__ATOMIC_RELEASE);
     }
     __atomic_store_n(&g_guard,0,__ATOMIC_RELEASE);

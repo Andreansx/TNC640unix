@@ -238,3 +238,60 @@ bar7 RESULT (combined Nc subsystem — SUCCESS at loading, blocked at NCK hardwa
   reply (needs RE of the libhwsinterface reply schema), then the NCK will try to USE the range
   (map/read PCI regs) — a cascade of NCK hardware-access emulation. Same PciHardware CLASS as the
   fixed prom crash (GetMemoryPointer/shm 0666), distinct facet (GetIoRange/PCI I/O port range).
+
+==============================================================================
+GetIoRange — RESOLVED as "RUN THE REAL HW SERVER", NOT stub-a-reply (2026-07-15, cont.)
+==============================================================================
+The "extend the HWS stub to answer GetIoRange" NEXT above is SUPERSEDED. yeen oracle
+first (mandated): on the working x86_64 boot (guest root ps, scratchpad/yeen_proclist_evidence.txt)
+the QHWServer server is a REAL i386 process -- "hwserver.elf Server:Server/hwserver -U" (PID 9068) --
+running alongside "ipo_progstation.elf Nc:Nc/IPO -k=NC -M" (9515); the boot COMPLETES and DRAWS the
+softkey bar (scratchpad/yeen_bar_confirm.png). hwserver self-selects SIMULATED PCI on a programming
+station (HWSSimulationModule / ProductId::IsProgStationVersion / PciPlCtrl::SetSimulated) and answers
+GetIoRange. The genuine boot launches it: work/control/sysroot/batch/TNC640heros.txt:90 (~/hwserver -U,
+subsystem "Server").
+
+VERDICT = EMULATE-by-running-the-real-server. Hand-stubbing a PlAddresses reply is the treadmill trap:
+CASCADE MAP (idalib) -- client requests (libhwsinterface, the NCK's HW-request menu, ~8-10 SETUP types):
+  GetIoRange(PlAddresses), GetBaseAddresses(BaseAddresses,SimMode), GetAddresses/Get42xRTAddresses,
+  GetPciBase/GetPhysPciBase/GetVirtPciBase, GetNumberAnalogOut, GetAdcSettings(SimMode),
+  PciPlCtrl::GetBaseAddress/SetSimulated, HwsMailslotQueue::SubscribeInterrupt(HWSIntSources).
+  Runtime register I/O is DIRECT MEMORY (no server): PciIoRange::Read/Write @libhwsinterface 0x36d.. =
+  `*(this+4)+idx*stride` (throw PciHardware::Exception(3) if base==0). Sim variants PciSimInputRange/
+  PciSimOutputRange (SetSimulated) back onto SIMULATED shared memory (LE422_IO_SIMULATION/LE422_REMA_
+  SIMULATION, 64MB each, created by hwserver). Server side: hwserver.elf has DOZENS of Handle*
+  dispatchers -- hand-stubbing that menu is the treadmill; running the real server handles it all.
+
+FIX (emulator/heros_rtos.c): shared `hwserver_alive` flag in struct ctl, set by the hwserver.elf process
+at init (self_pname contains "hwserver"); hws_autoreply() DEFERS all QHWServer traffic to the real server
+once alive (early boot, before hwserver spawns, the stub still echoes run-up GetData so the config
+foundation comes up). No per-process env split, no regression.
+
+RESULTS (crash=0 throughout; LE422 sim regions + QHWServer_int created; all un-fakeable):
+  bar8 (hwserver in its GENUINE separate "Server" subsystem, before Nc): hwserver runs crash-free under
+    FEX, self-simulates (LE422_IO_SIMULATION/REMA 64MB), PUBLISHES the public QHWServer (read by t112) +
+    runs its PCI-sim self-test (4x own Server/hwserver:GetIoRange). BUT the AppStart Monitor per-subsystem
+    SEQUENCING gate (t106 idles at Ev_receive(want=0x01019007,c=2)) blocks the Nc subsystem from loading
+    after the Server subsystem -> ipo_progstation never spawns. THE remaining faithful blocker.
+  bar9 (hwserver FOLDED into the combined Nc subsystem, bar7 pattern) [REPRODUCED 2x: bar9 + bar9b, identical]:
+    Nc loads -> ALL 13 procs spawn
+    (winmgr/skmgr/prom/evtserver/Fred + hwserver + ipo_progstation/plc/CM/PlcDaemon/monitoring/startup),
+    crash=0, PciHardware throw=0. ipo_progstation ISSUES Nc/IPO:GetIoRange (+GetBaseAddresses) to the
+    REAL server -- the bar7 throw is CROSSED. BUT hwserver, racing 5 NC procs for CPU, reaches
+    subsystem-ready + creates its INTERNAL queues (QHWServer_int 346/QHWServer_intRT 347, owner t116) yet
+    does NOT publish the PUBLIC QHWServer (30c) nor run its self-test -> QR[30c]=0, ipo's GetIoRange is
+    DELIVERED-BUT-UNSERVED (ipo blocks). (bar8, hwserver alone, DID publish -> contention, not a hard dep.)
+  foundation (hwserver launched by the run script BEFORE AppStartMP, HWSERVER_FOUNDATION=1): DEAD END --
+    hwserver blocks EARLIEST (init + LE422 only, no QHWServer_int, threads in Ev_receive) because it needs
+    constellation peers not yet up. Foundation-before-AppStartMP ordering is wrong.
+
+NEXT (faithful, the one clean remaining blocker): make the bar8 structure work -- crack the AppStart
+Monitor sequencing gate (0x01019007, c=2) so the Nc subsystem loads AFTER hwserver's separate Server
+subsystem reaches ready. Then hwserver (fully initialised, public QHWServer published, self-test done, as
+in bar8) serves ipo_progstation's GetIoRange when Nc loads. This is the genuine boot order
+(winmgr<skmgr<prom<Event<Server<Nc). The Monitor gate is the same recurring gate bar6 hit / bar7 sidesteps
+by combining -- but hwserver CANNOT be combined with the NC channel (it gets CPU-starved before publishing
+the public queue). So the Monitor gate must be understood (why does a 1-process Server subsystem not satisfy
+want=0x01019007 c=2, when bar3's winmgr/skmgr/prom/Event/Ed subsystems do?) and crossed.
+Batches: emulator/TNC640heros_bar8.txt (separate Server subsystem), TNC640heros_bar9.txt (folded into Nc).
+Knob (dead-end, kept as a scouting record): HWSERVER_FOUNDATION=1 (run_appstart_fex.sh).

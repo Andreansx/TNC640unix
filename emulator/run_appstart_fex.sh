@@ -227,7 +227,7 @@ echo '  heuserver listening:' \$( (ss -ltn 2>/dev/null||true) | grep -c ':19093'
 echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer AppStartMP CfgServerQueue ###'
 # ConfigServer must be task 0x100 (its hardcoded run-up); it starts BEFORE AppStartMP so it owns the
 # real CfgServerQueue (not an AppStartMP black-hole). Then AppStartMP's config query reaches it (+INJECT_ACK).
-( timeout -s KILL 300 env LD_PRELOAD=${CFG461_PL}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+( timeout -s KILL ${CFGSRV_TIMEOUT:-$((APPSTART_TIMEOUT + 80))} env LD_PRELOAD=${CFG461_PL}/lib/cfgfix.so:/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
     CFG461_LOG=/tmp/cfg461.log \
     CFGFIX_SYS=/tmp/s/:/mnt/sys/ CFGFIX_OEM=/tmp/o/:/mnt/plc/ \
     HEROSCALL_INJECT_REREAD=1 HEROSCALL_INJECT_UPD=1 \
@@ -236,6 +236,30 @@ echo '### ConfigServer (bg) — AppStartMP is a CONFIG CLIENT; it must answer Ap
 i=0; while [ \$i -lt 120 ]; do grep -q "HWS stub: replied" /tmp/a_cfgsrv.log 2>/dev/null && break; sleep 0.5; i=\$((i+1)); done
 sleep 4
 echo '  ConfigServer run-up (HWS stub):' \$(grep -c "HWS stub: replied" /tmp/a_cfgsrv.log 2>/dev/null) ' main task:' \$(grep -m1 "task_self -> new id" /tmp/a_cfgsrv.log|sed "s/.*new id //;s/ .*//")
+
+# HWSERVER_FOUNDATION=1: launch the REAL hwserver.elf (the genuine QHWServer server) as a FOUNDATION process
+# BEFORE AppStartMP spawns the constellation — so it FULLY initialises (creates the public QHWServer serve
+# queue + LE422 sim regions + does its PCI-sim self-test) before the NC channel (ipo_progstation) ever issues
+# GetIoRange. This mirrors the genuine boot order (Server subsystem hwserver loads + reaches ready BEFORE the
+# Nc subsystem) WITHOUT the emulator's AppStart Monitor per-subsystem sequencing gate (0x01019007) that
+# defeated the faithful separate-Server-subsystem placement (bar8), and WITHOUT the concurrent-spawn race that
+# left the public QHWServer uncreated (bar9, hwserver folded into the combined Nc subsystem). yeen ground
+# truth: hwserver.elf (Server:Server/hwserver -U) serves ipo_progstation's Nc/IPO:GetIoRange on the real boot.
+# Use with a batch that does NOT itself launch hwserver (e.g. TNC640heros_bar7.txt) to avoid two servers.
+if [ "${HWSERVER_FOUNDATION:-0}" = "1" ]; then
+echo '### hwserver (bg foundation) — REAL QHWServer server; UP before the NC channel spawns ###'
+( timeout -s KILL ${CFGSRV_TIMEOUT:-$((APPSTART_TIMEOUT + 80))} env \
+    LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+    HEROSCALL_HWS_STUB=1 HEROSCALL_PNAME=1 HEROS_PROC_NAME=Server:Server/hwserver \
+    HEROS_EVENTS_PIPE=1 HEROSCALL_TIMERS=1 \
+    HEROS_PCREATE_FEX=1 HEROS_PCREATE_IMGFROM=/tmp/b/ HEROS_PCREATE_IMGTO=$R/heros5/bin/ \
+    FEXInterpreter $R/heros5/bin/hwserver.elf Server:Server/hwserver -U > /tmp/a_hwserver.log 2>&1 ) &
+# wait until hwserver publishes the CLIENT-facing QHWServer serve queue (the thing ipo_progstation sends to);
+# fall back to a fixed settle if that marker never prints.
+i=0; while [ \$i -lt 160 ]; do grep -qE "QC \"QHWServer\" |QR \[[0-9a-f]+\]\"QHWServer\" " /tmp/a_hwserver.log 2>/dev/null && break; sleep 0.5; i=\$((i+1)); done
+sleep 3
+echo '  hwserver foundation: QHWServer published =' \$(grep -acE "QC \"QHWServer\" " /tmp/a_hwserver.log 2>/dev/null) ' init =' \$(grep -ac "REAL hwserver.elf init" /tmp/a_hwserver.log 2>/dev/null) ' (waited '\$i' x0.5s)'
+fi
 
 echo '### AppStartMP (fg, ~45s) — RTOS process-manager; spawns the constellation ###'
 # AppStartMP issues heroscalls (libheros.so.1) -> needs heros_rtos; arena_stub bridges arena_exclusive.
