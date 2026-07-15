@@ -60,7 +60,31 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-15) — REAL-DRIVER bar: GATE 1 CROSSED; GATE-2 PROM CRASH CROSSED (real fix); new blocker = Fred SIGSEGV
+## Current frontier (2026-07-15) — REAL-DRIVER bar: GATE 1 CROSSED; PROM CRASH CROSSED; FRED SIGSEGV CROSSED; next = the DRAW (SkMgrActivate 028a0200)
+**★★★★★★★★★★ FRED SIGSEGV CROSSED — it was NOT a UAF; two config/resource gaps, faithful fixes, no inject
+(2026-07-15).** The `FThread::EvalContextInQueue/EvalContextModule` SIGSEGV that gated the bar was a *downstream
+symptom*, not a lifetime bug (the `~FThread` free of `m_0x60` — RA=libbackend+0x26ec3 — was a red herring; a
+targeted leak `emulator/fkeepvec.c FKEEPVEC=1` did NOT fix it, just moved the fault → allocator-timing hypothesis
+DISPROVEN). Method that cracked it: run WITHOUT the fmdel free-logger so the crash-handler stderr is CLEAN, then
+READ the actual log errors instead of chasing the memory-corruption symptom. Two real causes: **(1) `JH_NCTYPE`
+unseeded** — `PLib++ Error: Fred.xml(516/537): uninitialized variable JH_NCTYPE` on `<?NCKcondition if =
+"JH_NCTYPE ! \"TNC640\"" ?>`. It is a PLib++ NCK-condition var seeded by `PMetricsFactory::PMetricsFactory()`
+(libProductMetrics 0xc3c0) via `AddGlobalConditionalVariable("JH_NCTYPE", getenv("JH_NCTYPE"))`; at 0xc451
+`getenv==NULL → je c8c0` SKIPS the seed, so an unset env var leaves it uninitialized. **FIX = export
+`JH_NCTYPE=TNC640`** in the constellation env (run_appstart_fex.sh; children inherit) — the genuine env-driven
+config path. **(2) 0-byte frontend.dat** — `FResMgr: Can't find SoftkeyView in file frontend.dat` (fresmgr.cpp:205):
+the run staged resources via `cp -aL` from the Mac **virtiofs** mount, which silently corrupts ~2800/3400 files to
+0 bytes under load; the empty frontend.dat (really `#SoftkeyView Type=5`) → SoftkeyView not built → NULL module →
+the EvalContextModule crash. **FIX = `restage_resources()`** — individual single-file re-copy of every 0-byte dest
+whose source is non-empty (single-file virtiofs reads are reliable), for both `$SYSW/resource` and
+`/mnt/sys/resource`. **VERIFIED un-fakeably, reproduced 2×:** crash=0 (no signal 11 / no fault), JH_NCTYPE
+errors=0, SoftkeyView-missing=0, frontend.dat=1008B, and **Fred drives the FULL real softkey conversation**
+(SkMgrLogin 028a0120 → resp 028a0140 → SetMenu 028a0981 → 24× key msgs 028a01e0 → real `.bmx` loads 028a0421)
+then stays ALIVE in its MMI event loop registering Ed/mmi.ProgEditQueue — NO inject. **NEXT = the DRAW:** Fred has
+not yet sent `SkMgrActivate(0x028a0200)` (count 0), the bar pixel-draw trigger = the separate downstream
+prom-foreground-arbitration / PATH-B activation gate (below), NOT the Fred crash. See
+[[project-gate2-fred-crash-jhnctype-frontend-dat]].
+
 **★★★★★★★★★ GATE-2 PROM CRASH CROSSED — REAL ROOT-CAUSE FIX, no inject (2026-07-15).** promview's
 `terminate: PciHardware::Exception` (the provable Gate-2 blocker that stalled the bar for weeks) was NOT
 missing hardware — it was a **cross-UID shared-memory permission bug**. Pinned un-fakeably with a new

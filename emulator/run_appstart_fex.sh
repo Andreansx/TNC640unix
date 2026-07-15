@@ -38,6 +38,8 @@ $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s
 $CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
 $CC -shared -fPIC -O2 -o "$R/lib/cfg461probe.so" "$EMU/cfg461probe.c" 2>&1 | sed "s/^/  cfg461probe: /"  # Gate-1 OnWriteNew(0x170461) fork tracer (no -ldl: maps-base+offset)
 $CC -shared -fPIC -O2 -o "$R/lib/fredfree.so" "$EMU/fredfree.c" 2>&1 | sed "s/^/  fredfree: /"  # Gate-2 Fred UAF diagnostic (FREDFREE=1: process-scoped no-op free in Ed/mmi only)
+$CC -shared -fPIC -O2 -o "$R/lib/fmdel.so" "$EMU/fmdel.c" 2>&1 | sed "s/^/  fmdel: /"  # Gate-2 UAF free-site capture (FMDEL=1: log FrameModule-size sized-deletes in Ed/mmi)
+$CC -shared -fPIC -O2 -o "$R/lib/fkeepvec.so" "$EMU/fkeepvec.c" 2>&1 | sed "s/^/  fkeepvec: /"  # Gate-2 Fred UAF FIX (FKEEPVEC=1: reproduce reference lazy-reuse for the ~FThread module-vector delete)
 # CFG461PROBE=1 -> prepend the OnWriteNew fork tracer to ConfigServer's LD_PRELOAD (logs to /tmp/cfg461.log)
 CFG461_PL=""; [ "${CFG461PROBE:-0}" = "1" ] && { CFG461_PL="/lib/cfg461probe.so:"; : > /tmp/cfg461.log; echo "  cfg461probe: ENABLED (trace -> /tmp/cfg461.log)"; }
 # FULL-SET: parse the constellation batch ONCE (main scope) -> set file (name|image) + distinct image list
@@ -90,6 +92,23 @@ echo "  batch selected: $BATCH_NAME (present: $([ -e "$SYSW/batch/$BATCH_NAME" ]
 # PReplacePath(%SYS% -> getenv SYS=/tmp/s) + FVolumePathname::Convert (\->/) => /tmp/s/resource/*.
 # Stage the control's resource dir so the default keyboard/char/function-key maps load (the PLIB++ wall).
 sudo cp -aL "$CFG/resource" "$SYSW/resource" 2>/dev/null
+# VIRTIOFS-CORRUPTION REPAIR (durable lesson): a bulk `cp -aL` from the Mac virtiofs mount silently stages
+# ~2800/3400 resource files as 0 bytes under load (correct name, empty content). That makes Fred load an EMPTY
+# frontend.dat -> "FResMgr: Can't find SoftkeyView in file frontend.dat" -> malformed softkey context -> Fred
+# SIGSEGV in FThread::EvalContextModule. SINGLE-file virtiofs reads ARE reliable, so re-copy every 0-byte dest
+# whose source is non-empty, individually (a few passes converge). Applied to every resource dest below.
+restage_resources(){ sudo bash -c '
+  s="$1"; d="$2"
+  for pass in 1 2 3; do n=0
+    while IFS= read -r -d "" f; do rel=${f#$s/}
+      if [ -s "$f" ] && [ ! -s "$d/$rel" ]; then mkdir -p "$d/$(dirname "$rel")"; cp -f "$f" "$d/$rel" && n=$((n+1)); fi
+    done < <(find -L "$s" -type f -print0)
+    [ "$n" = 0 ] && break
+  done
+  chmod -R a+rX "$d" 2>/dev/null
+  echo "  resource repair $d: $(find "$d" -type f -size 0 2>/dev/null | wc -l) still-empty of $(find "$d" -type f 2>/dev/null | wc -l)"
+  ' _ "$1" "$2"; }
+restage_resources "$CFG/resource" "$SYSW/resource"
 echo "  staged SYS resource files: $(ls "$SYSW/resource" 2>/dev/null | wc -l) (keymap_us101.xml present: $([ -e "$SYSW/resource/keymap_us101.xml" ] && echo yes || echo NO))"
 sudo chmod -R u+w "$SYSW/runtime"
 ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bin" /tmp/b
@@ -102,6 +121,7 @@ sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
 # SYS symlink) — durable lesson: a custom %SYS%/resource layout must be present there too, else winmgr
 # throws uncaught "File not found". Stage the resource dir to both /tmp/s/resource (below) and here.
 sudo mkdir -p /mnt/sys/resource; sudo cp -aL "$CFG/resource/." /mnt/sys/resource/ 2>/dev/null; sudo chmod -R a+rX /mnt/sys/resource
+restage_resources "$CFG/resource" /mnt/sys/resource   # same virtiofs 0-byte repair for winmgr's ReadLayout path
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
 for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do
   printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
@@ -253,6 +273,7 @@ rm -f /tmp/a_strace.log
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
 timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
+  JH_NCTYPE=${JH_NCTYPE:-TNC640} \
   HEROSCALL_REGLOG=${HEROSCALL_REGLOG:-0} \
   HEROSCALL_PNAME=1 HEROS_PROC_NAME=AppStart.AppStart HEROSCALL_BTRACE=${HEROSCALL_BTRACE:-1} \
   HEROSCALL_WMQ_BREAK=${HEROSCALL_WMQ_BREAK:-1} HEROSCALL_WMQ_BREAK_N=${HEROSCALL_WMQ_BREAK_N:-2000} \
@@ -278,7 +299,7 @@ timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect
   ${HEROSCALL_INJECT_FMLOAD_MAX:+HEROSCALL_INJECT_FMLOAD_MAX=$HEROSCALL_INJECT_FMLOAD_MAX} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
-  LD_PRELOAD=$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')$([ "${FREDFREE:-0}" = 1 ] && printf '/lib/fredfree.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  LD_PRELOAD=$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')$([ "${FREDFREE:-0}" = 1 ] && printf '/lib/fredfree.so:')$([ "${FMDEL:-0}" = 1 ] && printf '/lib/fmdel.so:')$([ "${FKEEPVEC:-0}" = 1 ] && printf '/lib/fkeepvec.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   ${HEROS_PIN_CPU:+taskset -c $HEROS_PIN_CPU} FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/$BATCH_NAME >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
