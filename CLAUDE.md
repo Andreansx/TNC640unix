@@ -60,7 +60,29 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-12) — REAL-DRIVER bar: GATE 1 (config write) CROSSED; GATE 2 (activation) live
+## Current frontier (2026-07-15) — REAL-DRIVER bar: GATE 1 CROSSED; GATE-2 PROM CRASH CROSSED (real fix); new blocker = Fred SIGSEGV
+**★★★★★★★★★ GATE-2 PROM CRASH CROSSED — REAL ROOT-CAUSE FIX, no inject (2026-07-15).** promview's
+`terminate: PciHardware::Exception` (the provable Gate-2 blocker that stalled the bar for weeks) was NOT
+missing hardware — it was a **cross-UID shared-memory permission bug**. Pinned un-fakeably with a new
+`__cxa_throw` interceptor (`emulator/cxathrow.c`, knob `CXATHROW=1`): throw type `PciHardware::Exception`,
+code 3, **site = libhwaccess.so +0x208f = `IpoSharedMemory::GetMemoryPointer`'s `m_attach==0` path** (the
+earlier 6d0452c triage instrumented m_ident/m_attach but the SUCCESS/openat-fail paths were LOG-suppressed).
+Root cause via `HEROSCALL_REGLOG=1` (new): `M_attach "TR_en"/"IPO_SHARED_MEMORY" -> openat(/dev/shm/heros_reg_*)
+FAILED rc=-13 (EACCES)`. The region files are created **0600 root:root** by root procs (ConfigServer/IPO), but
+**promview drops to a non-root UID** (opens the ctl file 0600 while still root at init, then the setuid — invisible
+to the execve-only strace filter — precedes the region attaches), so its `openat` is denied → `m_attach` returns
+0 → `GetMemoryPointer`/`GetVirtPciBaseSingle` throw. **FIX (`emulator/heros_rtos.c` `reg_attach`+`ctl_init`):
+create /dev/shm region + ctl files 0666 + explicit `fchmod(0666)` — models the genuine "the WHOLE control
+constellation shares this memory" semantics.** VERIFIED un-fakeably: region files now `rw-rw-rw-`, **EACCES=0,
+PciHardware throws=0, promview STAYS ALIVE** (pid Sl), reaches `OnCfgClientIsConnected():99:`, reads PLC config,
+serves QProMViewer. **NEW downstream blocker exposed (genuine progress):** with prom alive, the crash MOVED to
+**Fred (Ed/mmi) SIGSEGV in `libbackend.so` `FThread::EvalContextInQueue` (+0x27bf2, from `FThread::Run`), wild
+deref addr=0x05b306da** — Fred's message-dispatch core, only reached now that it converses with a live prom. Next:
+RE that FThread context crash (is it a message Fred mis-parses from prom, or a missing waitable/context?). Fred
+crashes before completing activation, so "does prom arbitrate foreground on its own" is not yet observable. See
+[[project-gate2-prom-crash-fixed-uid-perms]]. Diagnostics (default OFF, keep): `CXATHROW=1` (throw tracer),
+`HEROSCALL_REGLOG=1` (region-op log).
+
 **★★★★★★★★ GATE 1 CROSSED (commit 353856c).** On the real-driver bar3 path Fred blocked forever on its
 `CfgWriteNew(0x170461)` — no `CfgWriteDone`. Root-caused un-fakeably via `emulator/cfg461probe.c` (LD_PRELOAD
 tracer over libConfigSystem.so): `CfgServer::OnWriteNew`→`CheckNotification` EARLY-OUTs (defers, no reply)
@@ -100,8 +122,11 @@ size=12 tag=404703e0 ->t10e`) → Fred read editor softkey-menu config → **Fre
 @0x42170` queried the HSoftKeyArea geometry (0x3003/0x300c) + **loaded the REAL .bmx softkey bitmaps** (end.bmx,
 copy_paste.bmx). NO fake SkMgrActivate. See [[project-gate2-pathb-promactivate-wire]].
 **★ LAST-MILE BLOCKER — the bar does NOT yet draw pixels; provable + un-fakeably measured (2026-07-12).**
-[CORRECTS an earlier overstatement: the map gate is NOT crossed. The RE-MAP only RESIZED a child window; it did
-not MAP the area.] After the real PATH-B activation the editor softkey area `ScreenEDIT_HorizontalManager`
+[SUPERSEDED 2026-07-15: this paragraph's "ROOT CAUSE = the SAME prom crash" is now CROSSED by the real 0666
+fix at the top of this section — prom stays alive with NO inject. The PATH-B inject knobs below are a scouting
+fallback, not the path. The current blocker is Fred's `FThread::EvalContextInQueue` SIGSEGV, downstream of the
+now-live prom.] [CORRECTS an earlier overstatement: the map gate is NOT crossed. The RE-MAP only RESIZED a child
+window; it did not MAP the area.] After the real PATH-B activation the editor softkey area `ScreenEDIT_HorizontalManager`
 (0x800004) stays **IsUnMapped** and its DefaultView (0x800006) **IsUnviewable** — 40/40 `xwininfo` samples across a
 full REMAP-HOLD run, `_NET_CURRENT_DESKTOP`=0 throughout (scratchpad/bardiag.sh). The RE-MAP
 (`HEROSCALL_PROM_ACT_REMAP`, re-post `WmSelectForegroundMsg(editor)`) only RESIZES the DefaultView geometry

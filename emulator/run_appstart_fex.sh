@@ -252,6 +252,7 @@ rm -f /tmp/a_strace.log
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
 timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
+  HEROSCALL_REGLOG=${HEROSCALL_REGLOG:-0} \
   HEROSCALL_PNAME=1 HEROS_PROC_NAME=AppStart.AppStart HEROSCALL_BTRACE=${HEROSCALL_BTRACE:-1} \
   HEROSCALL_WMQ_BREAK=${HEROSCALL_WMQ_BREAK:-1} HEROSCALL_WMQ_BREAK_N=${HEROSCALL_WMQ_BREAK_N:-2000} \
   HEROSCALL_INJECT_WMGR_ACTIVATE=${HEROSCALL_INJECT_WMGR_ACTIVATE:-0} \
@@ -276,7 +277,7 @@ timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect
   ${HEROSCALL_INJECT_FMLOAD_MAX:+HEROSCALL_INJECT_FMLOAD_MAX=$HEROSCALL_INJECT_FMLOAD_MAX} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
-  LD_PRELOAD=/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  LD_PRELOAD=$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/$BATCH_NAME >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"

@@ -150,8 +150,11 @@ static void unlock(void){
 
 static void ctl_init(void){
     const char *path="/dev/shm/heros_rtos_ctl";
-    int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)path,O_RDWR|O_CREAT,0600,0);
+    /* 0666 (see reg_attach): the shared control segment is opened by EVERY control process and some
+     * (promview) run as a non-root UID, so a 0600 root-created ctl would be un-openable by them. */
+    int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)path,O_RDWR|O_CREAT,0666,0);
     if(fd<0){ fprintf(stderr,"[rtos] cannot open %s (%d)\n",path,fd); _exit(97); }
+    raw5(SYS_fchmod,fd,0666,0,0,0);   /* force world-rw regardless of the creator's umask (best-effort) */
     raw5(SYS_ftruncate,fd,sizeof(struct ctl),0,0,0);
     void *m=mmap(0,sizeof(struct ctl),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     raw5(SYS_close,fd,0,0,0,0);
@@ -3008,16 +3011,22 @@ static void inject_broadcast_register_reply(uint32_t target_qid,const void*msg,u
 
 /* ---------------- regions (named shared memory) ---------------- */
 #define REGION_BYTES (64u*1024u*1024u)
+/* HEROSCALL_REGLOG=1 -> log EVERY region op (ident/create/attach) + result unconditionally,
+ * even with VERBOSE=0 in spawned children. Needed to observe the IPO_SHARED_MEMORY sequence
+ * behind promview's PciHardware::Exception (success paths are otherwise LOG-suppressed). */
+static int reglog(void){ static int v=-1; if(v<0){ const char*e=getenv("HEROSCALL_REGLOG"); v=(e&&e[0]=='1')?1:0; } return v; }
 static uint32_t reg_ident(const char*name){
     lock();
     for(int i=0;i<MAXREG;i++) if(C->regs[i].used&&!strcmp(C->regs[i].name,name)){
-        uint32_t id=C->regs[i].id; unlock(); LOG("M_ident \"%s\" -> 0x%x\n",name,id); return id; }
+        uint32_t id=C->regs[i].id; unlock(); LOG("M_ident \"%s\" -> 0x%x\n",name,id);
+        if(reglog()){fprintf(stderr,"[rtos] M_ident \"%s\" -> 0x%x (existing)\n",name,id);fflush(stderr);} return id; }
     int s=-1; for(int i=0;i<MAXREG;i++) if(!C->regs[i].used){ s=i; break; }
     if(s<0){ unlock(); fprintf(stderr,"[rtos] M_ident \"%s\" -> TABLE FULL (MAXREG=%d) -> -2\n",name,MAXREG); return (uint32_t)-2; }
     C->regs[s].used=1; C->regs[s].id=C->next_reg++; C->regs[s].size=REGION_BYTES;
     strncpy(C->regs[s].name,name,sizeof C->regs[s].name-1);
     uint32_t id=C->regs[s].id; unlock();
-    LOG("M_ident \"%s\" -> 0x%x (new)\n",name,id); return id;
+    LOG("M_ident \"%s\" -> 0x%x (new)\n",name,id);
+    if(reglog()){fprintf(stderr,"[rtos] M_ident \"%s\" -> 0x%x (new)\n",name,id);fflush(stderr);} return id;
 }
 /* Per-process cache of attached region mappings. Real HeROS M_attach of a named
  * region returns a stable view of the SAME physical memory; a program that attaches
@@ -3029,20 +3038,33 @@ static uint32_t reg_ident(const char*name){
  * while the /dev/shm file keeps the physical memory shared across processes. */
 static struct { uint32_t id; void* ptr; } attach_cache[MAXREG];
 static void* reg_attach(uint32_t id){
-    for(int i=0;i<MAXREG;i++) if(attach_cache[i].ptr&&attach_cache[i].id==id) return attach_cache[i].ptr;
+    for(int i=0;i<MAXREG;i++) if(attach_cache[i].ptr&&attach_cache[i].id==id){
+        if(reglog()){fprintf(stderr,"[rtos] M_attach 0x%x -> %p (cached)\n",id,attach_cache[i].ptr);fflush(stderr);}
+        return attach_cache[i].ptr; }
     int s=-1; for(int i=0;i<MAXREG;i++) if(C->regs[i].used&&C->regs[i].id==id){ s=i; break; }
     if(s<0){ fprintf(stderr,"[rtos] M_attach 0x%x UNKNOWN -> 0 (PciHardware throws)\n",id); return 0; }
     char path[64]; /* shared file so all procs map the SAME physical region */
     strcpy(path,"/dev/shm/heros_reg_");
     char*p=path+strlen(path); for(const char*q=C->regs[s].name;*q;q++){ char ch=*q; *p++=(ch=='/'||ch==' ')?'_':ch; } *p=0;
-    int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)path,O_RDWR|O_CREAT,0600,0);
-    if(fd<0) return 0;
-    raw5(SYS_ftruncate,fd,C->regs[s].size,0,0,0);
+    /* World-accessible (0666), NOT 0600: HeROS shared-memory regions (IPO_SHARED_MEMORY, TR_*, PCI
+     * bases) are shared by the WHOLE control constellation. Under the emulator the procs do NOT all run
+     * as the same UID — promview.elf runs as a non-root user, so a region file created 0600 by a root
+     * proc (ConfigServer/IPO) was un-openable by prom -> openat EACCES(-13) -> reg_attach returns 0 ->
+     * IpoSharedMemory::GetMemoryPointer/GetVirtPciBaseSingle throw PciHardware::Exception -> promview
+     * aborts before its message loop can arbitrate the softkey activation/foreground. 0666 + an explicit
+     * fchmod (the *creator* sets it, so later cross-UID openers already see 0666) models the genuine
+     * "all control processes share this memory" semantics and clears the crash. */
+    int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)path,O_RDWR|O_CREAT,0666,0);
+    if(fd<0){ fprintf(stderr,"[rtos] M_attach \"%s\" 0x%x -> openat(%s) FAILED rc=%d -> 0 (PciHardware throws)\n",C->regs[s].name,id,path,fd); fflush(stderr); return 0; }
+    raw5(SYS_fchmod,fd,0666,0,0,0);   /* force world-rw even if the creator's umask stripped it (best-effort) */
+    long tr=raw5(SYS_ftruncate,fd,C->regs[s].size,0,0,0);
+    if(tr<0 && reglog()){ fprintf(stderr,"[rtos] M_attach \"%s\" ftruncate(%u) rc=%ld (continuing)\n",C->regs[s].name,C->regs[s].size,tr); fflush(stderr); }
     void*m=mmap(0,C->regs[s].size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     raw5(SYS_close,fd,0,0,0,0);
     if(m==MAP_FAILED){ fprintf(stderr,"[rtos] M_attach \"%s\" 0x%x sz %u -> MAP_FAILED errno=%d -> 0 (PciHardware throws)\n",C->regs[s].name,id,C->regs[s].size,errno); return 0; }
     for(int i=0;i<MAXREG;i++) if(!attach_cache[i].ptr){ attach_cache[i].id=id; attach_cache[i].ptr=m; break; }
     LOG("M_attach \"%s\" 0x%x -> %p\n",C->regs[s].name,id,m);
+    if(reglog()){fprintf(stderr,"[rtos] M_attach \"%s\" 0x%x sz %u -> %p (new mmap)\n",C->regs[s].name,id,C->regs[s].size,m);fflush(stderr);}
     return m;
 }
 
