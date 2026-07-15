@@ -37,6 +37,7 @@ for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 
 $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
 $CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
 $CC -shared -fPIC -O2 -o "$R/lib/cfg461probe.so" "$EMU/cfg461probe.c" 2>&1 | sed "s/^/  cfg461probe: /"  # Gate-1 OnWriteNew(0x170461) fork tracer (no -ldl: maps-base+offset)
+$CC -shared -fPIC -O2 -o "$R/lib/fredfree.so" "$EMU/fredfree.c" 2>&1 | sed "s/^/  fredfree: /"  # Gate-2 Fred UAF diagnostic (FREDFREE=1: process-scoped no-op free in Ed/mmi only)
 # CFG461PROBE=1 -> prepend the OnWriteNew fork tracer to ConfigServer's LD_PRELOAD (logs to /tmp/cfg461.log)
 CFG461_PL=""; [ "${CFG461PROBE:-0}" = "1" ] && { CFG461_PL="/lib/cfg461probe.so:"; : > /tmp/cfg461.log; echo "  cfg461probe: ENABLED (trace -> /tmp/cfg461.log)"; }
 # FULL-SET: parse the constellation batch ONCE (main scope) -> set file (name|image) + distinct image list
@@ -277,8 +278,8 @@ timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect
   ${HEROSCALL_INJECT_FMLOAD_MAX:+HEROSCALL_INJECT_FMLOAD_MAX=$HEROSCALL_INJECT_FMLOAD_MAX} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
-  LD_PRELOAD=$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
-  FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/$BATCH_NAME >/tmp/a_appstart.log 2>&1
+  LD_PRELOAD=$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')$([ "${FREDFREE:-0}" = 1 ] && printf '/lib/fredfree.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  ${HEROS_PIN_CPU:+taskset -c $HEROS_PIN_CPU} FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/$BATCH_NAME >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
 rm -f "/%SYS%" "/%OEM%" "/%USR%" 2>/dev/null

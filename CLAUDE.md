@@ -75,13 +75,28 @@ to the execve-only strace filter — precedes the region attaches), so its `open
 create /dev/shm region + ctl files 0666 + explicit `fchmod(0666)` — models the genuine "the WHOLE control
 constellation shares this memory" semantics.** VERIFIED un-fakeably: region files now `rw-rw-rw-`, **EACCES=0,
 PciHardware throws=0, promview STAYS ALIVE** (pid Sl), reaches `OnCfgClientIsConnected():99:`, reads PLC config,
-serves QProMViewer. **NEW downstream blocker exposed (genuine progress):** with prom alive, the crash MOVED to
-**Fred (Ed/mmi) SIGSEGV in `libbackend.so` `FThread::EvalContextInQueue` (+0x27bf2, from `FThread::Run`), wild
-deref addr=0x05b306da** — Fred's message-dispatch core, only reached now that it converses with a live prom. Next:
-RE that FThread context crash (is it a message Fred mis-parses from prom, or a missing waitable/context?). Fred
-crashes before completing activation, so "does prom arbitrate foreground on its own" is not yet observable. See
-[[project-gate2-prom-crash-fixed-uid-perms]]. Diagnostics (default OFF, keep): `CXATHROW=1` (throw tracer),
-`HEROSCALL_REGLOG=1` (region-op log).
+serves QProMViewer. **NEW downstream blocker PINNED to a Fred USE-AFTER-FREE (2026-07-15 cont.):** with prom
+alive, Fred (Ed/mmi) SIGSEGVs in `libbackend.so` **`FThread::EvalContextModule` (libbackend+0x28bf2 `call
+*0x18(%edx)`**, reached `FrameThread::MainContext`←`CreateContext`←`CreateMainContext`←`FThread::Run`; the
+`+0x27bf2/EvalContextInQueue` in the earlier note was the NEXT call in the same MainContext — misattributed).
+Root cause pinned un-fakeably (4x repro A–D, ground-truth via the crash handler now dumping GP regs +
+`this`→`m_0x4c`(registry)/`m_0x60`(module-array)): the re-eval path (count=2,idx=0) reads
+`P = this->m_0x60[0]` — a FThread **context object that is a DANGLING pointer**: sometimes UNMAPPED (fault
+reading `*P` at +0x28bef), sometimes readable-but-garbage-vtable (`*P`=0x0 / 0x656d6186 / 0x881c04fe, a
+DIFFERENT garbage every run). **Forks RULED OUT:** (a) emulator message misroute/misserialize — the pre-crash
+msg `QR[307]"QEvtServer" size=373 tag=0x00320221` is **Fred-INTERNAL** (t10e→t10d, both Fred) and passed
+q_send **verbatim** (no mutation for queue 307), so a yeen byte-diff is moot by construction; (b) loader/reloc —
+all `FrameModuleAlloc`/`FrameModule` vtables + `R_386_RELATIVE` slots valid, and ONLY Fred faults; (c)
+parallelism race — pinning to 1 CPU (`HEROS_PIN_CPU=0`) still crashes deterministically. **UAF CONFIRMED** via
+`emulator/fredfree.c` (`FREDFREE=1`, process-scoped no-op `free`/`delete` in Ed/mmi only): loading it in Fred
+MOVED the crash PAST EvalContextModule (to libbackend+0x31470) — a use-before-init could not be moved by a
+free-noop, so arr[0]'s object is genuinely freed-then-reused. **Next: find the erroneous FREE site** (a
+free-logger ring in Fred + dump-on-crash → the caller that frees the context object; then decide emulator
+event-ordering vs genuine Fred double-free/temp-lifetime). NOT yet a bar draw; Fred still dies before
+activation. See [[project-gate2-fred-eval-context-uaf]], [[project-gate2-prom-crash-fixed-uid-perms]].
+Diagnostics (default OFF, keep): `CXATHROW=1` (throw tracer), `HEROSCALL_REGLOG=1` (region-op log),
+`HEROS_PIN_CPU=N` (1-CPU serialize test), `FREDFREE=1` (Fred-scoped no-op-free UAF probe); the crash handler's
+reg+FThread-walk dump is always-on under `HEROSCALL_BTRACE=1`.
 
 **★★★★★★★★ GATE 1 CROSSED (commit 353856c).** On the real-driver bar3 path Fred blocked forever on its
 `CfgWriteNew(0x170461)` — no `CfgWriteDone`. Root-caused un-fakeably via `emulator/cfg461probe.c` (LD_PRELOAD

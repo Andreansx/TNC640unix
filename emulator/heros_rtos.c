@@ -3177,6 +3177,16 @@ static void crash_locate(int sig,siginfo_t*si,void*ucv){
     raw5(SYS_write,2,(long)"\n=== [rtos] FAULT sig=",22,0,0); hx(sig);
     raw5(SYS_write,2,(long)" eip=",5,0,0); hx(uc?(unsigned long)uc->uc_mcontext.gregs[REG_EIP]:0);
     raw5(SYS_write,2,(long)" addr=",6,0,0); hx(si?(unsigned long)si->si_addr:0);
+    /* GP registers (no deref -> always async-signal safe). Pins the faulting operands: e.g. the
+     * FThread::EvalContextModule crash (libbackend+0x28bf2 `call *0x18(%edx)`) has esi=this(FThread),
+     * eax=P(the module-alloc array element), edx=*P (its vtable) — so a garbage eax/edx localises the
+     * corrupt object without guessing. */
+    if(uc){ static const struct{ char n[5]; int r; } RG[8]={
+              {" eax",REG_EAX},{" ebx",REG_EBX},{" ecx",REG_ECX},{" edx",REG_EDX},
+              {" esi",REG_ESI},{" edi",REG_EDI},{" ebp",REG_EBP},{" esp",REG_ESP} };
+        raw5(SYS_write,2,(long)"\n regs:",7,0,0);
+        for(int i=0;i<8;i++){ raw5(SYS_write,2,(long)RG[i].n,4,0,0); raw5(SYS_write,2,(long)"=",1,0,0);
+            hx((unsigned long)uc->uc_mcontext.gregs[RG[i].r]); } }
     /* EBP-chain walk + raw stack dump from ESP (catches the smashing function even
      * when glibc's abort path omits frame pointers — correlate addrs with maps). */
     raw5(SYS_write,2,(long)"\n frames:",9,0,0);
@@ -3190,7 +3200,31 @@ static void crash_locate(int sig,siginfo_t*si,void*ucv){
     raw5(SYS_write,2,(long)"\n--- /proc/self/maps ---\n",25,0,0);
     int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)"/proc/self/maps",0,0,0);
     if(fd>=0){ char buf[1024]; long r; while((r=raw5(SYS_read,fd,(long)buf,sizeof buf,0,0))>0) raw5(SYS_write,2,(long)buf,r,0,0); raw5(SYS_close,fd,0,0,0,0); }
-    raw5(SYS_write,2,(long)"=== [rtos] end fault ===\n",25,0,0);
+    /* FThread-field walk for the EvalContextModule corruption: this=esi has m_0x4c=registry R
+     * (R+0x20=count, R+0x1c=idx) and m_0x60=allocator array; the crash reads P=arr[idx] then *P.
+     * Range-guard every deref (0x1000..0xfffff000) so a garbage field can't double-fault; placed
+     * AFTER maps so even a double-fault keeps the maps output. Only decodes when the fault is at the
+     * known EvalContextModule call sites (edx-relative call) — otherwise esi is unrelated. */
+    if(uc){ unsigned long esi=(unsigned long)uc->uc_mcontext.gregs[REG_ESI];
+        raw5(SYS_write,2,(long)"\n--- FThread(esi) walk ---\n this=",32,0,0); hx(esi);
+        if(esi>0x1000&&esi<0xfffff000){
+            unsigned long R=*(unsigned long*)(esi+0x4c), arr=*(unsigned long*)(esi+0x60);
+            raw5(SYS_write,2,(long)" m4c(R)=",8,0,0); hx(R);
+            raw5(SYS_write,2,(long)" m60(arr)=",10,0,0); hx(arr);
+            if(R>0x1000&&R<0xfffff000){
+                unsigned long cnt=*(unsigned long*)(R+0x20), idx=*(unsigned long*)(R+0x1c);
+                raw5(SYS_write,2,(long)"\n R.count=",10,0,0); hx(cnt);
+                raw5(SYS_write,2,(long)" R.idx=",7,0,0); hx(idx);
+                if(arr>0x1000&&arr<0xfffff000&&idx<0x1000){
+                    raw5(SYS_write,2,(long)" arr[idx]=P=",11,0,0);
+                    hx(*(unsigned long*)(arr+idx*4));
+                    raw5(SYS_write,2,(long)" arr[0..3]=",11,0,0);
+                    for(unsigned k=0;k<4&&k<=idx+1;k++){ raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(arr+4*k)); }
+                }
+            }
+        }
+    }
+    raw5(SYS_write,2,(long)"\n=== [rtos] end fault ===\n",26,0,0);
     if(sig>0&&sig<40&&ctrl_h[sig].set){  /* chain to control's handler */
         if((ctrl_h[sig].flags&SA_SIGINFO)&&ctrl_h[sig].sa) ctrl_h[sig].sa(sig,si,ucv);
         else if(ctrl_h[sig].h) ctrl_h[sig].h(sig); }
