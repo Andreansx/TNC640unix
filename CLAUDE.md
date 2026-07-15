@@ -60,7 +60,37 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-15) — REAL-DRIVER bar: GATE 1 CROSSED; PROM CRASH CROSSED; FRED SIGSEGV CROSSED; the DRAW pinned to the NC-software startup (blocker = NCK GetIoRange)
+## Current frontier (2026-07-15) — NCK GetIoRange THROW CROSSED by running the REAL hwserver.elf; next blocker = the AppStart Monitor sequencing gate (0x01019007) for the faithful Server-before-Nc ordering
+**★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
+no inject (2026-07-15 cont., commit 0edd4dd).** The prior "extend the HWS stub to answer GetIoRange" plan is
+SUPERSEDED. **yeen oracle first (mandated):** on the working x86_64 boot (guest root ps, `scratchpad/yeen_proclist_evidence.txt`)
+the QHWServer server is a **REAL i386 process — `hwserver.elf Server:Server/hwserver -U` (PID 9068)** — running
+alongside `ipo_progstation.elf Nc:Nc/IPO -k=NC -M` (9515); the boot COMPLETES and DRAWS the bar (`scratchpad/yeen_bar_confirm.png`).
+hwserver self-selects **SIMULATED PCI** on a programming station (HWSSimulationModule / ProductId::IsProgStationVersion /
+PciPlCtrl::SetSimulated) and answers GetIoRange. Genuine boot launches it (`TNC640heros.txt:90`, `~/hwserver -U`, subsystem
+"Server"). **VERDICT = EMULATE-by-running-the-real-server** — hand-stubbing a PlAddresses reply is the treadmill (cascade
+map: ~8-10 client setup requests + DOZENS of hwserver Handle* dispatchers; runtime register I/O is DIRECT simulated memory
+`LE422_IO_SIMULATION`/`LE422_REMA_SIMULATION` 64MB, not per-access messages). **FIX (`emulator/heros_rtos.c`):** shared
+`hwserver_alive` flag in `struct ctl`, set by the hwserver.elf process at init (self_pname contains "hwserver");
+`hws_autoreply()` DEFERS all QHWServer traffic to the real server once alive (early boot the stub still echoes run-up GetData
+so the config foundation comes up — no per-process env split, no regression). **RESULTS (crash=0):** **bar8**
+(`TNC640heros_bar8.txt`, hwserver in its GENUINE separate "Server" subsystem): hwserver runs crash-free under FEX,
+self-simulates, **PUBLISHES the public QHWServer + runs its PCI-sim self-test (4× own GetIoRange)** — BUT the **AppStart
+Monitor per-subsystem SEQUENCING gate** (t106 `Ev_receive(want=0x01019007,c=2)`) blocks the Nc subsystem loading after
+Server → ipo never spawns. **bar9** (`TNC640heros_bar9.txt`, hwserver FOLDED into the combined Nc subsystem; **reproduced 2×,
+bar9+bar9b identical**): Nc loads → **ALL 13 procs spawn** (winmgr/skmgr/prom/evtserver/Fred + hwserver + full NC channel),
+crash=0, **PciHardware throw=0**, ipo_progstation **ISSUES `Nc/IPO:GetIoRange` (+GetBaseAddresses) to the REAL server — the
+bar7 throw is CROSSED**. But hwserver, racing 5 NC procs for CPU, reaches subsystem-ready + `QHWServer_int`(346)/`intRT`(347)
+yet does NOT publish the PUBLIC `QHWServer` (30c) nor run its self-test → **QR[30c]=0, GetIoRange DELIVERED-BUT-UNSERVED**
+(ipo blocks; startupPicVisible=1, boot NOT advanced past the HW gate). **foundation** (`HWSERVER_FOUNDATION=1`): DEAD END —
+hwserver blocks earliest (init + LE422 only, threads in Ev_receive) because it needs constellation peers not yet up.
+**NEXT (faithful, the one clean remaining blocker): crack the Monitor sequencing gate (0x01019007, c=2)** so bar8's genuine
+Server-before-Nc ordering loads Nc AFTER hwserver reaches ready (where it DOES publish the public queue + self-test) → hwserver
+serves ipo's GetIoRange. Same recurring gate bar6 hit / bar7 sidesteps by combining — but hwserver CANNOT be combined with the
+NC channel (CPU-starved before publishing). Why does a 1-process Server subsystem not satisfy `want=0x01019007 c=2` when
+bar3's winmgr/skmgr/prom/Event/Ed subsystems do? See [[project-gate2-hwserver-getiorange-run-real-server]] +
+`docs/re/gate2-prom-startup-picture-activation-re.txt`.
+
 **★★★★★★★★★★★ THE BAR-DRAW PRECONDITION DEFINITIVELY PINNED — LIVE prom does NOT self-activate; it correctly
 waits for the NC-software startup; NO inject needed to prove it (2026-07-15).** Decisive test of the "revive prom,
 don't bypass" thesis: with prom alive (d19d86b) + Fred alive (9731af9), **LIVE prom sends `PromActivateNotifyMsg
