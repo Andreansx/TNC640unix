@@ -3427,7 +3427,14 @@ long syscall(long n,...){
                 * q_ident() still black-holes absent fire-and-forget sinks (QEvtServer, …)
                 * so strict FMailslotQueue::Write succeeds, but reports presence-probed names
                 * (QueueHeLogger, HwsM* temp slots) as not-found. */
-        if(p&&p[0]){ uint32_t id=q_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-1; }
+        if(p&&p[0]){ const char*qn=(const char*)(uintptr_t)p[0]; uint32_t id=q_ident(qn);
+                     /* HSTRACE: Q_ident is a DECISION for some clients, not just addressing —
+                      * hwserver's HWServerModule::IsExtControlPresent() is literally
+                      * `FMailslotQueue::Open("AppStartMaster")` = `q_ident(name)!=-1`, and its result
+                      * gates optionSimulation/optionSik (HWSMain::CheckInitMode). Log the resolution so
+                      * such probes are visible without a full VERBOSE run. */
+                     HST(task_self(),0,"QI \"%s\" -> 0x%x (t%x)\n",qn,id,task_self());
+                     return id?(long)id:-1; }
         LOG("Q_ident EMPTY/NULL name (p0=%08x) -> -1 (reply will black-hole)\n", p?p[0]:0);
         return -1;
     case 0x0d:{ /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */

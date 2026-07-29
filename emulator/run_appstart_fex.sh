@@ -123,6 +123,19 @@ sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
 sudo mkdir -p /mnt/sys/resource; sudo cp -aL "$CFG/resource/." /mnt/sys/resource/ 2>/dev/null; sudo chmod -R a+rX /mnt/sys/resource
 restage_resources "$CFG/resource" /mnt/sys/resource   # same virtiofs 0-byte repair for winmgr's ReadLayout path
 [ -f /mnt/plc/config/configfiles.cfg ] || sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/config/ 2>/dev/null
+# hwserver's config-entity file (SYS:\config\Hardware.cfg, passed with its own -f=) REFERENCES further
+# files by volume path: SYS:\TABLE\DevTable.hwd (fatal if missing -> "Could not read configuration data
+# from file ..." -> the config list stays empty -> every HWS GetData answers NCK_SRV_RESULT=1 -> hwserver's
+# DetectMainboard fails -> HWSMain State RunUpFailed -> no FmProcessState(INITIALIZED) -> AppStart never
+# dispatches the next subsystem). PLC:\TABLE\DevTable.hwd + PLC:\CONFIG\SuppressCc600MHz.cfg are optional
+# (WARN only). Stage the image's own table/ dirs under the resolved volume roots, uppercase TABLE/CONFIG
+# to match the literal path in Hardware.cfg (case matters on Linux).
+sudo mkdir -p /mnt/sys/TABLE /mnt/plc/TABLE /mnt/plc/CONFIG "$SYSW/TABLE"
+sudo cp -aL "$CFG/table/." /mnt/sys/TABLE/ 2>/dev/null; sudo cp -aL "$CFG/table/." "$SYSW/TABLE/" 2>/dev/null
+sudo cp -aL "$CFG/default/oem/table/." /mnt/plc/TABLE/ 2>/dev/null
+sudo cp -aL "$CFG/default/oem/config/." /mnt/plc/CONFIG/ 2>/dev/null
+sudo chmod -R a+rX /mnt/sys/TABLE /mnt/plc/TABLE /mnt/plc/CONFIG "$SYSW/TABLE" 2>/dev/null
+echo "  hwserver config refs: /mnt/sys/TABLE/DevTable.hwd present: $([ -s /mnt/sys/TABLE/DevTable.hwd ] && echo yes || echo NO)"
 for kv in controlmark:16 exportversion:0 ncstate:1 progstationversion:1 virtualmachine:1; do
   printf "%s\n" "${kv#*:}" | sudo tee /mnt/sys/cache/nckern/productid/${kv%:*}.conf >/dev/null; done
 sudo chmod -R a+rX /mnt/sys/config /mnt/plc/config /mnt/sys/cache

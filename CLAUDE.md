@@ -101,11 +101,30 @@ ending `84000000 0e000000 / e7000080` = status **14** plus an **ABSENT value att
 (a)** the server data tree not readable in run-up state DetectMainboard (`_HWSTREE.TXT:
 ioc:=HWSIoc(state:=NotLoaded)`; the GetConfigData state that loads it runs AFTER DetectMainboard) — best fit
 for "every GetData errors"; **(b)** the exposed-item namespace not matching the requested names; **(c)** the
-init-mode SM having no state (demoted — it cannot explain the unrelated `mainboard\ident\type` failing the
-same way). Concrete step: map wire attr index → `HWSSrvReply` member offset (schema in
-**libGMessageHardware.so**) to name the status field / decode 14, then RE the server branch that emits it.
-Full RE + hwserver's complete option map + evidence: **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**;
-see [[project-appstart-gate-is-fmprocessstate-initialized]].
+init-mode SM having no state. **SERVER SIDE RE'd + THREE MORE HYPOTHESES KILLED:** the handler is
+`HWSServer_::HWSServer::ReadConfig@0x1f8ea0`; it succeeds only via `HWSMain::ReadConfig@0x1cb130` and its
+value-1 failure branches are **"No config data found"** and **"No primary data"** (`NCK_SRV_RESULT` literals in
+libGMessageHardware: FAILED/BAD_IDENT/BAD_HANDLE/TOO_COMPLEX) — the observed reply is NCK_SRV_RESULT=1.
+**(1) `optionSimulation` is fine:** `CheckInitMode` short-circuits on it, and it is set by
+`ConfigOptions@0x26e370` iff `IsExtControlPresent@0x26e2d0` — which is literally
+`FMailslotQueue::Open("AppStartMaster")` = `q_ident(name)!=-1`. New HST **`QI`** line (Q_ident logging,
+heros_rtos case 0x0b) proves `QI "AppStartMaster" -> 0x308 (t112)` ×5 from hwserver itself ⇒ set. **(2) the
+empty `config` list is fine now:** `HWSMain::ReadConfig` searches a static list filled only by
+`ReadConfigFile` under `if (configFileGiven)`, so `-U`-only leaves it empty. **bar11** (`-f=SYS:\config\Hardware.cfg`)
+⇒ the option IS accepted but hwserver converts `\`→`/` WITHOUT resolving the `SYS:` volume; **bar12**
+(`-f=/tmp/s/config/Hardware.cfg`, absolute, as ConfigServer is already passed) ⇒ reads it, then dies on the
+file it REFERENCES (`SYS:\TABLE\DevTable.hwd`); **run_appstart_fex.sh now stages the image's `table/` to
+/mnt/sys/TABLE + /mnt/plc/TABLE + /mnt/plc/CONFIG + $SYSW/TABLE** (uppercase — case matters) ⇒ **Hardware.cfg
++ DevTable.hwd both load cleanly, the "Could not read configuration data" ERROR is GONE — and DetectMainboard
+fails IDENTICALLY.** A real staging gap fixed, hypothesis disconfirmed. **⇒ By elimination the branch is
+"No primary data": `initMode` resolves but has no primary data.** It is in no `.atr` schema — it is the exposed
+state of the HWSsmtInitMode machine registered by `AddStateMachine@0x1cad70` onto a list at **HWSMain+620**, a
+DIFFERENT collection from the `config` list. **NEXT: RE the HEAD of `HWSServer_::HWSServer::ReadConfig@0x1f8ea0`**
+(before the shown branches) — how a requested item name resolves against the HWSMain+620 registry, and why the
+initMode entry yields no primary data. Registration: `HWSMain::Init@0x1ce010` at 0x1d0b6c calls
+`AddExtStateTransition(sm@HWSMain+0xC8, id=0, from=0, to=2, 2, cb=NULL, chk=NULL)` — EXTERNALLY triggered, and
+`_HWSERVER.TXT` never shows a TRNS line for that machine. Full RE + hwserver's complete option map + evidence:
+**`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
 no inject (2026-07-15 cont., commit 0edd4dd).** The prior "extend the HWS stub to answer GetIoRange" plan is

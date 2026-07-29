@@ -335,6 +335,93 @@ libGMessageHardware.so, which defines HWSSrvReply) to name the status field and 
 value 14, then RE the server-side handler branch that produces it.
 
 
+4e. WHO SETS optionSimulation — AND WHY IT IS NOT THE PROBLEM (Q_ident trace)
+----------------------------------------------------------------------------
+HWSMain::CheckInitMode@0x1d5de0 short-circuits when the global optionSimulation (0x578AAE) is 0:
+
+    cmp byte [HWSMain+0x235], 0   ; jnz 0x1D6228
+    cmp byte [0x578AAE], 0        ; jz  0x1D61E7   <- optionSimulation
+    ... SimMode (global @0x578AC0, value at 0x578AC8, set by -s) ...
+    ... if (value==0 && HWSMain::ReadConfig(CfgSystemInfo)) value = cfg+48 ...
+    map 0->0, 1->1, 2|3->3, 4->2
+
+optionSimulation (and optionSik) are set ONLY by HWServerModule::ConfigOptions@0x26e370, and only if
+HWServerModule::IsExtControlPresent@0x26e2d0 is true.  That function is, in full:
+
+    FMailslotQueue q; bool ok = q.Open("AppStartMaster", true); if (ok) q.Close(); return ok;
+
+and FMailslotQueue::Open(astring const&,bool)@libbackend+0x22a50 is, in full,
+`this->4 = q_ident(name.c_str()); return this->4 != -1;`.  main@0xc5b40 calls
+IsExtControlPresent() -> operateByExtControl, then ReadCommandLineOptions(), then ConfigOptions().
+
+Added HST "QI" logging of every Q_ident (emulator/heros_rtos.c, case 0x0b) to check it.  Result:
+
+    [hst] QI "AppStartMaster" -> 0x308 (t112)      x5, from hwserver's own main task
+
+=> IsExtControlPresent() succeeds, optionSimulation/optionSik are set, and this is NOT the blocker.
+   (The same trace shows hwserver's SikModule task t114 resolving "CfgServerQueue" -> 0x303 but never
+   sending to it, and the HwsM* temp-mailslot probes returning 0 then the real id, as designed.)
+
+
+4f. THE SERVER-SIDE HANDLER, AND THE CONFIG-FILE EXPERIMENT (bar11/bar12)
+-------------------------------------------------------------------------
+Server side of the client's GetData is HWSServer_::HWSServer::ReadConfig@0x1f8ea0.  Its success path is
+`if (HWSMain::ReadConfig(hwsMain, clonedRequest)) { TemporaryJob::AddValToReply(); SendReply(); }`.
+Its failure paths build an HWSSrvReply with:
+
+    "Reply has too many elements"  -> NCK_SRV_RESULT(4)
+    "No config data found"         -> NCK_SRV_RESULT(1)
+    "No primary data"              -> NCK_SRV_RESULT(1)
+
+NCK_SRV_RESULT literals (libGMessageHardware.so): ... FAILED, BAD_IDENT, BAD_HANDLE, TOO_COMPLEX.
+The observed reply carried NCK_SRV_RESULT = 1, so it is one of the two value-1 branches.
+
+HWSMain::ReadConfig@0x1cb130 linearly searches a static `config` std::list and returns false when it is
+EMPTY; the list is filled only by HWSMain::ReadConfigFile, called from EnterInit under
+`if (configFileGiven)` — i.e. only with hwserver's own `-f=<configuration data file>`.  The genuine
+batch passes only `-U`, so the list is empty.  The image ships SYS:\config\Hardware.cfg (HWS config
+entities CfgFirmware*, schemas HwsCfg.atr / HwsGlobalsCfg.atr), so:
+
+  bar11  (TNC640heros_bar11.txt, `-U -f=SYS:\config\Hardware.cfg`):
+      "Option 3: -f=SYS:/config/Hardware.cfg"
+      ERRO "Could not open config file SYS:/config/Hardware.cfg."
+      => the option IS accepted and the load IS attempted; hwserver converts \ to / but does NOT resolve
+         the SYS: VOLUME prefix.  Same class as the %SYS% macro problem elsewhere in this project.
+
+  bar12  (TNC640heros_bar12.txt, `-U -f=/tmp/s/config/Hardware.cfg`, the absolute staged path, exactly
+         as run_appstart_fex.sh already passes ConfigServer -f=/tmp/s/config/jhconfigfiles.cfg):
+      ACTN "Reading config file /tmp/s/config/Hardware.cfg."
+      ERRO "Could not open config file /mnt/sys/TABLE/DevTable.hwd."      <- referenced file, fatal
+      WARN /mnt/plc/TABLE/DevTable.hwd, /mnt/plc/CONFIG/SuppressCc600MHz.cfg   <- optional
+      ERRO "Could not read configuration data from file /tmp/s/config/Hardware.cfg."
+      => Hardware.cfg references further files by volume path (SYS:\TABLE, PLC:\TABLE, PLC:\CONFIG).
+
+  bar12 + staging (run_appstart_fex.sh now stages the image's table/ dirs to /mnt/sys/TABLE,
+         /mnt/plc/TABLE, /mnt/plc/CONFIG and $SYSW/TABLE — uppercase, case matters on Linux):
+      ACTN "Reading config file /tmp/s/config/Hardware.cfg."
+      ACTN "Reading config file /mnt/sys/TABLE/DevTable.hwd."
+      (only the two optional WARNs remain; the "Could not read configuration data" ERROR is GONE)
+      TRNS Init -> SyncBreakpointMain -> DetectMainboard
+      ERRO "Could not access configuration data."   <- UNCHANGED
+      TRNS RunUpFailed
+
+** So the config list is now genuinely POPULATED and the failure is IDENTICAL. **
+The empty-`config`-list hypothesis is DISCONFIRMED for the initMode read (it did, however, expose and
+fix a real staging gap — hwserver's own config file now loads).  By elimination the failing branch is
+"No primary data": the requested item "initMode" resolves but has no primary data to return.  Note
+"initMode" does not appear in any .atr schema under work/control/sysroot/config/ — it is the exposed
+state of the HWSsmtInitMode state machine mapped into the server interface by
+HWSMain::AddStateMachine@0x1cad70, which pushes {GMessage*, StateMachineBase*} onto a list at
+HWSMain+620 — a DIFFERENT collection from the `config` list ReadConfig searches.
+
+NEXT: RE the head of HWSServer_::HWSServer::ReadConfig@0x1f8ea0 (before the branch shown above) to find
+how a requested item name is resolved against the AddStateMachine registry at HWSMain+620, and why the
+initMode entry yields no primary data.  HWSMain::Init@0x1ce010 registers the initMode transitions at
+0x1d0b6c via AddExtStateTransition(sm@HWSMain+0xC8, id=0, from=HWSsmtInitMode(0), to=HWSsmtInitMode(2),
+HWSsmtInitMode(2), callback=NULL, check=NULL) — an EXTERNALLY triggered transition, and _HWSERVER.TXT
+carries TRNS lines only for HWSMain and FwUpdIndicator, never for the init-mode machine.
+
+
 5. FILES
 --------
   scratchpad/bar8_appstart.log        full HSTRACE of the bar8 run analysed above
