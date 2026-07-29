@@ -658,9 +658,32 @@ NEW FRONTIER (downstream, fresh): hwserver then takes SIGSEGV —
 immediately after "HW-Type: NONE - simulated", i.e. inside DetectSik / SikModule on the
 just-created ProgrammingStation object. So hwserver still does not reach INITIALIZED and Nc is still
 not dispatched — but the blocker is now a crash in newly-reached code, not a rights refusal.
-Next: HEROSCALL_BTRACE is already on; get the faulting EIP -> lib+offset for the SikModule /
-DevProgrammingStation path (cf. DevProgrammingStation::EnterSubDetectInitRunning, which reads the
-optionSimulation global).
+The fault dump (HEROSCALL_BTRACE, already on) identifies it as a
+THREAD STACK OVERFLOW, not a bad pointer:
+
+    === [rtos] FAULT sig=0x0000000b eip=0xffce6418 addr=0xd79ffffc
+     regs: ... ebp=0x00000004 esp=0xd7a00000
+    (and just before: sig=0x0000000b eip=0xffce6956 addr=0x00010021)
+    libheros_sigfaterr: Thread Server/hwserver.Server/hwserver received terminating signal 11
+
+  - esp = 0xd7a00000 is exactly PAGE-ALIGNED and the faulting address 0xd79ffffc is esp-4, i.e. the
+    first word BELOW the stack's lowest page — the classic guard-page signature.
+  - both faulting EIPs fall inside the emulator's own mapping:
+        ffce5000-ffce6000 r--p  /var/tmp/lr/lib/heros_rtos.so
+        ffce6000-ffcf7000 r-xp  /var/tmp/lr/lib/heros_rtos.so
+    so 0xffce6418 = heros_rtos.so +0x1418 and 0xffce6956 = +0x1956.
+
+heros_rtos.so is an i386 LD_PRELOAD and therefore runs on the GUEST thread's stack (see the note at
+heros_rtos.c:414). The guest sizes its own thread stacks — the strace shows hwserver's threads created
+with clone3 stack_size=0x2dfc0 (188 KB) — and the emulator's frames are charged to that same budget.
+heros_rtos has several 16 KB-class stack objects (QMSGCAP / EVTMSGCAP = 16384), so a few nested calls
+on a 188 KB guest stack can exhaust it. hwserver only reaches this path now that DetectMainboard
+succeeds, which is why it never showed up before.
+
+=> NEW FRONTIER, well scoped: the emulator overflows the guest's own 188 KB thread stack on the
+   ProgrammingStation/SikModule path. Fix direction is to stop spending guest stack in heros_rtos —
+   move the large per-call buffers (qmsg/evt-sized locals) off the stack (static/TLS or heap) rather
+   than to enlarge the guest's stack, which is the guest's choice and not ours to change faithfully.
 
 
 5. FILES

@@ -173,9 +173,16 @@ RE predicted:** `GRANT "NC.DataAccessServiceRead"` → `Search for PCI device` �
 hwserver then takes **SIGSEGV** (`libheros_sigfaterr: Thread Server/hwserver … signal 11`) right after
 `HW-Type: NONE - simulated`, i.e. inside DetectSik/SikModule on the just-created ProgrammingStation object —
 so it still never reports INITIALIZED and Nc is still not dispatched, but the blocker is now a crash in
-NEWLY-REACHED code. Next: `HEROSCALL_BTRACE` is already on — get the faulting EIP → lib+offset for the
-SikModule / DevProgrammingStation path (cf. `DevProgrammingStation::EnterSubDetectInitRunning`, which reads
-the `optionSimulation` global). Full RE + hwserver's complete option map + evidence:
+NEWLY-REACHED code. **The fault dump (BTRACE, already on) makes it a THREAD STACK OVERFLOW, not a bad
+pointer:** `FAULT sig=0x0b eip=0xffce6418 addr=0xd79ffffc` with **`esp=0xd7a00000`** — esp is exactly
+page-aligned and the fault address is **esp-4**, the guard-page signature; and both faulting EIPs land inside
+**`/var/tmp/lr/lib/heros_rtos.so`** (`ffce6000-ffcf7000 r-xp`) at +0x1418 / +0x1956. heros_rtos.so is an i386
+LD_PRELOAD running on the GUEST thread's stack (heros_rtos.c:414); the guest creates its threads with
+`clone3 stack_size=0x2dfc0` = **188 KB**, and heros_rtos has several 16 KB-class stack objects
+(`QMSGCAP`/`EVTMSGCAP`=16384), so a few nested calls exhaust it. Only reachable now that DetectMainboard
+succeeds. **NEXT (well-scoped emulator fix): stop spending guest stack in heros_rtos** — move the large
+per-call buffers off the stack (static/TLS/heap) rather than enlarging the guest's stack, which is the
+guest's own choice and not ours to change faithfully. Full RE + hwserver's complete option map + evidence:
 **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
