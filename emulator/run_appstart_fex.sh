@@ -297,6 +297,7 @@ rm -f /tmp/a_strace.log
 #                              single awaited waitable bit (RE the Monitor's waitable to use safely).
 timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect,clone,clone3,fork,vfork,newfstatat,statx,access,faccessat,faccessat2,stat -o /tmp/a_strace.log \
   env HEROS_EVENTS_PIPE=1 HEROSCALL_VERBOSE=0 HEROSCALL_HSTRACE=1 \
+  HEROSCALL_HSTHEX=${HEROSCALL_HSTHEX:-0} \
   JH_NCTYPE=${JH_NCTYPE:-TNC640} \
   HEROSCALL_REGLOG=${HEROSCALL_REGLOG:-0} \
   HEROSCALL_PNAME=1 HEROS_PROC_NAME=AppStart.AppStart HEROSCALL_BTRACE=${HEROSCALL_BTRACE:-1} \

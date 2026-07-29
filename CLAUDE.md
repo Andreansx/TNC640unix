@@ -93,12 +93,18 @@ is an **externally-triggered** transition (`AddExtStateTransition`, registered i
 came from the REAL hwserver (the emulator stub defers once `hwserver_alive`, and only echoes — 51/87B, not the
 observed 72B). Byte-indexing shows all three 0x008404c1 replies identical but for the job id and carrying no
 value ⇒ **every HWS GetData is being answered with an error**, DevPlcSim's `mainboard\ident\type` included (it
-just fails silently). **NEXT (ranked): (i)** the HEU ticket — `GetDataSys` uniquely takes
-`HEUTicketFromStore(2)` (libhwsinterface 0xcb41); hwserver connects to heuserver:19093 but the store may be
-empty ⇒ trace the return; **(ii)** the server tree not readable in run-up state DetectMainboard
-(`_HWSTREE.TXT: ioc:=HWSIoc(state:=NotLoaded)`; GetConfigData comes AFTER DetectMainboard); **(iii)** the
-init-mode SM having no state. Deciding needs a **hex dump of the 0x008404c1 payload** (HSTRACE's `msascii()`
-can't show it). Full RE + option map + evidence: **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**;
+just fails silently). **RAW WIRE (new knob `HEROSCALL_HSTHEX=1`, `mshex()` in heros_rtos.c, default OFF —
+`msascii()` collapsed exactly the deciding bytes):** the two `Create` requests carry the **IDENTICAL** HEU
+ticket `0x7fffffff00000001` (attr 0x1ef) — a maximal-rights-looking value, so **the ticket is DISCONFIRMED as
+the differentiator**; and the two 0x008404c1 replies are **byte-identical but for the session handle**, both
+ending `84000000 0e000000 / e7000080` = status **14** plus an **ABSENT value attribute**. **NEXT (re-ranked):
+(a)** the server data tree not readable in run-up state DetectMainboard (`_HWSTREE.TXT:
+ioc:=HWSIoc(state:=NotLoaded)`; the GetConfigData state that loads it runs AFTER DetectMainboard) — best fit
+for "every GetData errors"; **(b)** the exposed-item namespace not matching the requested names; **(c)** the
+init-mode SM having no state (demoted — it cannot explain the unrelated `mainboard\ident\type` failing the
+same way). Concrete step: map wire attr index → `HWSSrvReply` member offset (schema in
+**libGMessageHardware.so**) to name the status field / decode 14, then RE the server branch that emits it.
+Full RE + hwserver's complete option map + evidence: **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**;
 see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,

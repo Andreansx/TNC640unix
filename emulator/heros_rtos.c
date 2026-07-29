@@ -75,6 +75,20 @@ static const char* msascii(const void*p,uint32_t n){
     for(uint32_t k=0;k<n&&j<sizeof(b)-1;k++){ unsigned char c=((const unsigned char*)p)[k]; b[j++]=(c>=32&&c<127)?c:'.'; }
     b[j]=0; return b;
 }
+/* HEX view of a message body (HEROSCALL_HSTHEX=1). msascii() collapses every non-printable byte to
+ * '.', which hides exactly the fields that decide a protocol outcome — e.g. the HWSSrvReply error
+ * code at +56 that makes HwsMailslotQueue::GetData return false, or the 64-bit HEU ticket a
+ * HwsMailslotQueue::Create request carries. Appended as a second bracket on the HST QS/QR lines. */
+static int hsthex=0;
+static const char* mshex(const void*p,uint32_t n){
+    static char b[3*192+8]; uint32_t j=0;
+    if(!hsthex||!p){ b[0]=0; return b; }
+    if(n>192)n=192;
+    static const char*H="0123456789abcdef";
+    for(uint32_t k=0;k<n&&j<sizeof(b)-4;k++){ unsigned char c=((const unsigned char*)p)[k];
+        b[j++]=H[c>>4]; b[j++]=H[c&15]; if((k&3)==3) b[j++]=' '; }
+    b[j]=0; return b;
+}
 
 /* ---------------- shared control segment ---------------- */
 #define MAXTASK 512
@@ -1535,8 +1549,9 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     futex(&q->tail,FUTEX_WAKE,0x7fffffff,0);          /* wake any Q_read blocker (kernel __wake_up) */
     if(hstrace){ int os=task_slot(owner);
         uint32_t mtag = (msg && size>=4) ? *(const uint32_t*)msg : 0;          /* GMessage type id = 1st dword (LE) */
-        HST(sender,owner,"QS [%x]\"%s\" size=%u tag=%08x sndr=t%x notify=%08x->t%x [%s]\n",
-            id,q->name,size,mtag,sender,nbits,owner, msascii(msg,size)); }
+        HST(sender,owner,"QS [%x]\"%s\" size=%u tag=%08x sndr=t%x notify=%08x->t%x [%s]%s%s\n",
+            id,q->name,size,mtag,sender,nbits,owner, msascii(msg,size),
+            hsthex?" hex=":"", mshex(msg,size)); }
     if(nbits&&owner) ev_send(owner,nbits);            /* event-driven serve loop (kernel Ev_sendtcb +0xb8/+0xe8) */
     /* SOFTKEY-REPLY CROSS-PROCESS POLL WAKE (scoped) — ★ RULED OUT 2026-06-27: cross-process SIGUSR1 to a FEX
      * guest thread CRASHES it. The softkey reply queue "Rts<taskid>" notify to its owner (Guppy's secondary
@@ -2393,7 +2408,7 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
                     qnotify,qowner,id,q->tail-q->head,task_self()); }
             LOG("Q_read <- queue 0x%x size %u\n",id,len);
             { uint32_t mtag = (buf && len>=4) ? *(const uint32_t*)buf : 0;
-              HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len));
+              HST(qowner,0,"QR [%x]\"%s\" size=%u tag=%08x (rdr=t%x, remain=%u) [%s]%s%s\n",id,C->queues[s].name,len,mtag,task_self(),q->tail-q->head,msascii(buf,len),hsthex?" hex=":"",mshex(buf,len));
               /* EVTERR_DEFER release: HrMmi just read the HrMmiCfgGlobal (type 0x290081 = the active-state
                * target bootstrap, OnHrMmiCfgGlobal). Now post the deferred EvtAns so its OneRequestDone fires
                * MoveActiveStateTowardsTarget AFTER the target is set -> Activate -> UpdateDisplay -> window. */
@@ -3102,6 +3117,7 @@ static void ensure_init(void){
         const char *v=getenv("HEROSCALL_VERBOSE"); vrb=v&&v[0]=='1';
         const char *bt=getenv("HEROSCALL_BTRACE"); btrace_on=bt&&bt[0]=='1';
         const char *hs=getenv("HEROSCALL_HSTRACE"); hstrace=hs&&hs[0]=='1';
+        const char *hx=getenv("HEROSCALL_HSTHEX");  hsthex =hx&&hx[0]=='1';
         const char *ht=getenv("HEROSCALL_HSTRACE_TASKS");
         if(ht){ hst_ntasks=0; const char*q=ht;
             while(*q&&hst_ntasks<16){ uint32_t v2=0; int any=0;

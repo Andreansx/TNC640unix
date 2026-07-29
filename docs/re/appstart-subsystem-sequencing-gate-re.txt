@@ -285,20 +285,54 @@ That means DevPlcSim's read of "mainboard\ident\type" (which also checks the ret
 to 0x3427D4 on failure, silently) most likely failed too — i.e. EVERY HWS GetData in this
 environment is answered with an error.  Only DetectMainboard treats it as fatal.
 
-OPEN QUESTION (the next frontier, one level below this session's task):
-why does hwserver's own server interface error every GetData at DetectMainboard time?
-Leading candidates, in order:
-  (i)  the HEU ticket.  GetDataSys uniquely obtains its ticket via HEUTicketFromStore(2)
-       (libhwsinterface 0xcb41) and passes it to HwsMailslotQueue::Create.  hwserver DOES connect
-       to heuserver (strace: connect(9, 127.0.0.1:19093) = 0) but the store may be empty in this
-       harness, giving a null ticket that the server rejects.  Testable with a HEUTicketFromStore
-       return-value tracer.
-  (ii) the server-side data tree is not yet readable in run-up state DetectMainboard
-       (_HWSTREE.TXT shows ioc:=HWSIoc(state:=NotLoaded); the GetConfigData run-up state that
-       loads it comes AFTER DetectMainboard).
-  (iii) the init-mode state machine has no state to report (see 4b).
-Deciding between them needs the raw reply bytes (HWSSrvReply.errorCode) — i.e. a hex dump of the
-008404c1 payload, which the current HSTRACE msascii() view cannot show.
+
+4d. RAW WIRE (new knob HEROSCALL_HSTHEX=1) — the ticket hypothesis is DISCONFIRMED
+---------------------------------------------------------------------------------
+emulator/heros_rtos.c now has mshex() + HEROSCALL_HSTHEX=1 (default OFF), which appends
+"hex=<bytes>" to the HST QS/QR lines; run_appstart_fex.sh forwards HEROSCALL_HSTHEX.
+Re-ran bar8 with it.  Decoded GMessage wires (tag, then tagged attributes):
+
+  Create request, DetectMainboard/t115 (tag 0x008400c0, 87 B):
+      e7000000 10000000 "HwsM00000115N000"        GMsgString: reply mailslot
+      ef010000 01000000 ffffff7f                  type 0x1ef, 64-bit = 0x7fffffff00000001  <- HEU TICKET
+      e7000000 27000000 "Server/hwserver\0Server/hwserver:GetData"
+  Create request, PlInitThread/t116 (tag 0x008400c0, 90 B):
+      ... ef010000 01000000 ffffff7f ...          <- IDENTICAL ticket
+      ... "Server/hwserver\0Server/hwserver:GetIoRange"
+
+  => Both sessions carry the SAME ticket 0x7fffffff00000001, which looks like a maximal-rights
+     value rather than a null/invalid one.  Candidate (i) from the earlier list is DISCONFIRMED as
+     the *differentiator*; HEUTicketFromStore(2) is returning something, not 0.
+
+  GetData reply (tag 0x008404c1, 72 B) — t115 "initMode" vs t116 "mainboard\ident\type":
+      24008400 1a000000     <- session handle (0x1a for t115, 0x27 for t116)   THE ONLY DIFFERENCE
+      24008400 00000000
+      24008400 00000000
+      4b008400 01000000
+      84000000 0e000000     <- generic scalar, value 14
+      e7000080              <- ABSENT GMsgString (0x80000000|0xe7): NO VALUE RETURNED
+      6c008400 01000000
+      4a010000 08000000
+      e7000000 00000000     <- empty GMsgString
+
+  => The two replies are BYTE-IDENTICAL apart from the session handle, and both carry an ABSENT
+     value attribute.  So DevPlcSim's read of "mainboard\ident\type" failed too — it just branches
+     to 0x3427D4 and continues silently, whereas DetectMainboard treats its failure as fatal.
+
+** REVISED BLOCKER: hwserver's own server interface answers EVERY GetData with a non-zero status
+   (HwsMailslotQueue::GetData@0x21670 requires HWSSrvReply+56 == 0) and an ABSENT value. **
+
+Remaining candidates, re-ranked:
+  (a) the server-side data tree is not readable in run-up state DetectMainboard — _HWSTREE.TXT
+      shows ioc:=HWSIoc(state:=NotLoaded), and the GetConfigData run-up state that loads it runs
+      AFTER DetectMainboard.  Fits "every GetData errors" best.
+  (b) the exposed-item namespace is not what the client asks for (both "initMode" and
+      "mainboard\ident\type" unresolved).
+  (c) the init-mode state machine having no state (see 4b) — now demoted: it cannot explain the
+      identical failure of the unrelated "mainboard\ident\type" read.
+Next concrete step: map wire attribute index -> HWSSrvReply member offset (schema is in
+libGMessageHardware.so, which defines HWSSrvReply) to name the status field and the meaning of the
+value 14, then RE the server-side handler branch that produces it.
 
 
 5. FILES
