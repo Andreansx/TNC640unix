@@ -479,6 +479,61 @@ question is what populates the +536 parse-tree root from the +620 registry, and 
 skipped or empty in this environment.
 
 
+4h. ★★ PROOF: the node EXISTS and is VALID when the server refuses it (bar13, hwserver -vs)
+------------------------------------------------------------------------------------------
+Up to 4g the failing cause was pinned by chain-tracing but not proven — the remaining doubt was
+whether "initMode" is simply absent/uninitialised (the init-mode state machine having never
+transitioned), in which case FAILED would be correct behaviour and the bug would lie elsewhere.
+bar13 (TNC640heros_bar13.txt = bar12 + hwserver's own documented `-vs`, "Verbose, log server
+requests") settles it with three independent facts from hwserver's OWN log and tree dump:
+
+ (1) _HWSERVER.TXT: "77 configuration entities read."
+     The config layer is fully healthy — Hardware.cfg + DevTable.hwd parsed, 77 entities loaded.
+     Any residual "hwserver has no configuration" explanation is dead.
+
+ (2) HWSsmtInitMode's GEnum literals (libGMessageHardware.so, in declaration order) are
+         FullOperation = 0, Delivery = 1, SimDrives = 2
+     which independently CONFIRMS the CheckInitMode mapping RE'd in 4e: SimMode 4 -> init mode 2
+     = SimDrives, and DetectMainboard's `if (mode == 2)` is exactly the
+     "Hardware simulation mode requested by configuration." -> HWSProgrammingStation branch.
+
+ (3) _HWSTREE.TXT, hwserver's own dump of the exposed root node, written during DetectMainboard:
+         HWSRootNode ( state:=DetectMainboard, ioc:=HWSIoc(state:=NotLoaded), breakpoints:=...,
+                       initMode:=FullOperation, stateFwUpd:=Idle, stateLog:=Idle, hwSetup:=... )
+     `state:=DetectMainboard` is the run-up state machine's LIVE value — it matches the TRNS
+     sequence (Init -> SyncBreakpointMain -> DetectMainboard) at exactly the moment of the dump.
+     So this dump reflects live, valid state-machine attributes, and therefore
+     **initMode is a PRESENT, VALID attribute of the exposed root node with value FullOperation(0)
+     at the very moment DetectMainboard reads it.**
+
+** PROVEN BLOCKER: the item hwserver's DetectMainboard asks its own server interface for
+   ("initMode", meta "(value)") EXISTS in the exposed tree with a valid value, and the server
+   nevertheless answers NCK_SRV_RESULT = FAILED(1) with an ABSENT value attribute. The failure is
+   in the server-side ident resolution/permission path
+   (Inspect@0x1fac40 -> HandleIdent@0x1f5650 -> TemporaryJob::AccessIdent@0x20c540 ->
+    Job::AccessIdent@0x200660 -> ParseIdentString(ident, HWSRootNode, ..., ParsePermission*)),
+   NOT in a missing node, an unset state machine, an empty config list, the HEU ticket transport,
+   the emulator's HWS stub, or AppStart. **
+
+This also settles what a genuine boot does: the read returns FullOperation(0), so `mode != 2`,
+DetectMainboard falls through to SearchForPCIDevice, that fails on a programming station (no
+mainboard PCI device), and the fallback branch reaches HWSProgrammingStation and SUCCEEDS. Making
+this ONE read work is sufficient to clear hwserver's run-up.
+
+Prime remaining suspect, now that presence/validity is excluded: the per-job USER RIGHT.
+HWSServer_::TemporaryJob::CreateJob(job, handle, 27) for Inspect (and 32 for ReadConfig) passes a
+JhUserRights::UserRight, and ParseIdentString takes a ParsePermission* — so the read is
+rights-gated. The ticket carried by the session is HEUTicketFromStore(2) = 0x7fffffff00000001
+(4d). Note 4d disconfirmed the ticket only as the DIFFERENTIATOR between two failing reads; it
+remains viable as their COMMON cause. Tested: bar14 (TNC640heros_bar14.txt = bar13 + hwserver's own
+`-A=1`, security state "normal" -> the `securityState` global). The option is accepted
+("Option 4: -A=1") and the run is IDENTICAL — 77 entities read, DetectMainboard -> "Could not access
+configuration data." -> RunUpFailed, 1 FmProcessState, GetIoRange 0. Sixth hypothesis eliminated.
+Remaining lever: RE ParsePermission / JhUserRights::UserRight directly (Inspect's job is created with
+right 27, ReadConfig's with 32) and find what grants them — i.e. what the HEU ticket
+0x7fffffff00000001 actually resolves to inside hwserver.
+
+
 5. FILES
 --------
   scratchpad/bar8_appstart.log        full HSTRACE of the bar8 run analysed above

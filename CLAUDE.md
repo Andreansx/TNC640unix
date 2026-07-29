@@ -127,11 +127,25 @@ ReadConfig branches were never on this path. `NCK_SRV_RESULT` is now pinned by t
 **`ParseIdentString("initMode", hwsMain+536, …, job+96)`**, which then requires a walked `ParseTreeNode`
 with non-null `Info()`. That lookup yields nothing ⇒ HandleIdent fails ⇒ Inspect answers FAILED with an
 ABSENT value ⇒ GetDataSys false ⇒ "Could not access configuration data." ⇒ RunUpFailed ⇒ no
-FmProcessState(INITIALIZED) ⇒ Nc never dispatched. **NEXT:** the asymmetry to chase is that
-`AddStateMachine@0x1cad70` registers onto a list at **hwsMain+620** (counter +628) while `Job::AccessIdent`
-parses against **hwsMain+536**; `EnterInit@0x1d6480`'s three AddStateMachine calls all succeeded (none of
-their "Could not map … to server interface." messages appear), so find what populates the +536 parse-tree
-root from the +620 registry and why it is empty here. Full RE + hwserver's complete option map + evidence:
+FmProcessState(INITIALIZED) ⇒ Nc never dispatched. **★★ PROVEN, not inferred (bar13, hwserver's own `-vs`):** the doubt was whether `initMode` is simply
+absent/uninitialised — in which case FAILED would be CORRECT and the bug elsewhere. Three facts from
+hwserver's OWN log/dump kill that: **(a)** `77 configuration entities read.` — the config layer is fully
+healthy; **(b)** `HWSsmtInitMode` literals are **FullOperation=0, Delivery=1, SimDrives=2**, independently
+confirming the 4e mapping (SimMode 4 → 2 = SimDrives = DetectMainboard's success branch); **(c)**
+`_HWSTREE.TXT`, hwserver's own dump of the exposed root, written DURING DetectMainboard, reads
+`HWSRootNode( state:=DetectMainboard, …, initMode:=FullOperation, … )` — and `state:=DetectMainboard` is the
+run-up SM's LIVE value matching the TRNS sequence at that instant, so the dump reflects live valid
+attributes. **⇒ `initMode` is a PRESENT, VALID attribute with value FullOperation(0) at the moment
+DetectMainboard reads it, and the server still answers FAILED with an ABSENT value.** The failure is
+provably in the server-side ident-resolution/permission path, not a missing node, unset state machine,
+empty config list, ticket transport, emulator stub, or AppStart. This also settles the genuine boot: the
+read returns FullOperation(0) ⇒ `mode != 2` ⇒ fall through to `SearchForPCIDevice` ⇒ fails on a
+programming station ⇒ the fallback reaches HWSProgrammingStation and SUCCEEDS. Making this ONE read work
+clears hwserver's run-up. **NEXT:** the read is rights-gated —
+`TemporaryJob::CreateJob(job, handle, 27)` passes a `JhUserRights::UserRight` and `ParseIdentString` takes
+a `ParsePermission*`. bar14 (`-A=1`, security state normal) is accepted and changes nothing (6th
+elimination), so RE `ParsePermission`/`JhUserRights` and what the ticket `0x7fffffff00000001` resolves to
+inside hwserver. Full RE + hwserver's complete option map + evidence:
 **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
