@@ -60,7 +60,47 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-15) — NCK GetIoRange THROW CROSSED by running the REAL hwserver.elf; next blocker = the AppStart Monitor sequencing gate (0x01019007) for the faithful Server-before-Nc ordering
+## Current frontier (2026-07-29) — the "Monitor 0x01019007 sequencing gate" is DISPROVEN; the real per-subsystem gate is FmProcessState(INITIALIZED), and hwserver never sends it because it ends in HWSMain State RunUpFailed
+**★★★★★★★★★★★★★ THE 0x01019007 GATE IS NOT A GATE — the AppStart pacing rule RE'd + PROVEN, and the
+Server-subsystem blocker pinned three levels down to hwserver's DetectMainboard (2026-07-29).**
+`Ev_receive(want=0x01019007, c=2, to=inf)` on t106 is just AppStartMaster's **idle FThread dispatcher wait**
+(the OR of its armed waitable bits); the bar8 trace shows t106 entering/leaving it dozens of times per boot.
+Nothing ever "satisfies" it, there is **no 6-subsystem limit**, and nothing about AppStart is Server-specific —
+the prior framing was wrong. **The REAL rule (idalib over AppStartMP.elf + libbackend.so):** the batch is fed
+**one script message at a time**. `Monitor::OnMessage(FmProcessState)@0x3c400` emits **`FmAppStartAction(0)`**
+when the LAST process of the current subsystem reports **state 3 = INITIALIZED**, and
+`Procedures::OnMessage(FmAppStartAction)@0x4b420` turns action==0 into
+`Procedures::DispatchMessageFromProcedure@0x48c90` = **dispatch the NEXT `FmLoadSubsystem`**. Client side,
+`FProcess::SynchronizeTransition@libbackend+0x25880` writes the `FmProcessState` (wire **tag 0x40c803e0**,
+52B, name at +16) to the **AppStartMaster** queue, then blocks on the per-subsystem semaphore.
+**UN-FAKEABLE PROOF (bar8, `scratchpad/bar8_appstart.log`):** every healthy process sends **2** such messages
+(CREATED+INITIALIZED) — AppStart, winmgr, skmgr, prom, evtserver, Fred — and **`Server:Server/hwserver` sends
+exactly 1**. So Nc is never dispatched. (Same explanation retro-fits bar6: its 6th subsystem NcS never
+reported INITIALIZED either.) **WHY hwserver stops:** its own log `SYS:\runtime\_HWSERVER.TXT` says
+`State DetectMainboard entered` → **`ERRO|DetectMainboard|Could not access configuration data.`** →
+`ERRO|HWSMain|Mainboard detection procedure reported error.` → **`TRNS|HWSMain|State RunUpFailed entered`**
+(terminal ⇒ never INITIALIZED). The failing call is the **first statement** of
+`DetectMainboard::procedure@hwserver+0x14fb00`: **`HwsMailslot::GetDataSys("initMode","(value)")`** returns
+false (`jz 0x14FE20`). Note the shape: **three** later branches all end in `HWSProgrammingStation` and SUCCEED —
+including the `!SearchForPCIDevice` "no mainboard PCI device" fallback, the natural PGM-Platz outcome — so this
+first read is the ONLY fatal exit. **DISCONFIRMED (bar10, `TNC640heros_bar10.txt`, hwserver `-U -s`):** hwserver's
+own documented `-s` "Simulate hardware" sets the global SimMode to 4, which `HWSMain::CheckInitMode@0x1d5de0`
+maps to init mode 2 = the `"Hardware simulation mode requested by configuration."` branch — but the run is
+**byte-for-byte the same failure** (1 FmProcessState, RunUpFailed, GetIoRange=0, crash=0), because CheckInitMode
+is an **externally-triggered** transition (`AddExtStateTransition`, registered in `HWSMain::Init@0x1ce010` at
+0x1d0b6c) that never fires. **The read fails on a SERVER ERROR CODE, not a lost message:**
+`HwsMailslotQueue::GetData@libhwsinterface+0x21670` returns the value only when `HWSSrvReply+56 == 0`; the reply
+came from the REAL hwserver (the emulator stub defers once `hwserver_alive`, and only echoes — 51/87B, not the
+observed 72B). Byte-indexing shows all three 0x008404c1 replies identical but for the job id and carrying no
+value ⇒ **every HWS GetData is being answered with an error**, DevPlcSim's `mainboard\ident\type` included (it
+just fails silently). **NEXT (ranked): (i)** the HEU ticket — `GetDataSys` uniquely takes
+`HEUTicketFromStore(2)` (libhwsinterface 0xcb41); hwserver connects to heuserver:19093 but the store may be
+empty ⇒ trace the return; **(ii)** the server tree not readable in run-up state DetectMainboard
+(`_HWSTREE.TXT: ioc:=HWSIoc(state:=NotLoaded)`; GetConfigData comes AFTER DetectMainboard); **(iii)** the
+init-mode SM having no state. Deciding needs a **hex dump of the 0x008404c1 payload** (HSTRACE's `msascii()`
+can't show it). Full RE + option map + evidence: **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**;
+see [[project-appstart-gate-is-fmprocessstate-initialized]].
+
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
 no inject (2026-07-15 cont., commit 0edd4dd).** The prior "extend the HWS stub to answer GetIoRange" plan is
 SUPERSEDED. **yeen oracle first (mandated):** on the working x86_64 boot (guest root ps, `scratchpad/yeen_proclist_evidence.txt`)

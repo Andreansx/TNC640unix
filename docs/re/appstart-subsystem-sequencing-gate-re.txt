@@ -1,0 +1,315 @@
+AppStart per-subsystem sequencing gate — RE + runtime proof
+===========================================================
+Date: 2026-07-29.  Binaries: heros5/bin/AppStartMP.elf, libbackend.so, hwserver.elf,
+libhwsinterface.so.  Tool: idalib headless (scratchpad/idalibvenv + work/re/scripts/idadecompile.py)
+plus PIC-reference byte scans (scratchpad/find_pic_ref.py, find_pos_ref.py, disasm_range.py).
+Runtime oracle: emulator/run_appstart_fex.sh with APPSTART_BATCH_NAME=TNC640heros_bar8.txt,
+HEROSCALL_HSTRACE=1 (log: scratchpad/bar8_appstart.log).
+
+
+0. CORRECTION TO THE PRIOR FRONTIER MEMO
+----------------------------------------
+The previous write-up called the blocker "the AppStart Monitor per-subsystem SEQUENCING gate —
+t106 idles at Ev_receive(want=0x01019007, c=2)".  That is WRONG as a causal statement.
+
+`Ev_receive(0x01019007, c=2, timeout=inf)` on task t106 is NOT a gate.  It is the ordinary idle
+wait of AppStartMaster's FThread message dispatcher: the OR of its armed waitable bits, entered
+whenever its queues are empty.  The bar8 trace shows t106 entering and leaving that exact wait
+dozens of times during a normal boot, e.g.
+
+    [hst] EV< t106 WAIT want=01019007 c=2 to=inf (have=00000000)
+    [hst] QS [308]"AppStartMaster" size=52 tag=40c803e0 sndr=t10e notify=01000000->t106
+    [hst] EV> t10e -> t106 bits=01000000 (tgt-wait=01019007)
+    [hst] EV< t106 want=01019007 c=2 -> caught 01000000 (woke)
+
+t106 sitting in it forever means only "nobody sent AppStartMaster another message".  The real
+question is who was supposed to send one — answered below.
+
+Consequently the pinned question "why does a 1-process Server subsystem not satisfy want=0x01019007
+c=2 when bar3's winmgr/skmgr/prom/Event/Ed subsystems do?" is malformed: no subsystem ever
+"satisfies" that mask.  There is also no 6-subsystem limit, and nothing Server-specific in AppStart.
+
+
+1. THE ACTUAL SEQUENCING RULE
+-----------------------------
+The batch (-f=SYS:\batch\<script>) is NOT dispatched all at once.  AppStart::Procedures feeds the
+chain ONE script message at a time, and the pump is driven by process-state reports:
+
+  AppStart::Procedures::OnMessage(FmAppStartAction&)            @0x4b420
+      action == 0  ->  AppStart::Procedures::DispatchMessageFromProcedure(this)   @0x48c90
+                       = read + dispatch the NEXT message from the start script.
+
+  AppStart::Monitor::OnMessage(FmProcessState&)                 @0x3c400
+      ps.state == 2 && subsystem.action == 0 && pendingProcesses == 1
+          -> FmSubsystemAction(1)                       (subsystem: CREATED  -> INITIALIZING)
+      ps.state == 3 && subsystem.action == 1 && pendingProcesses == 1
+          -> FmSubsystemAction(2)  AND  FmAppStartAction(0)   <-- THE PUMP
+      ps.state == 4 && subsystem.action == 3 && pendingProcesses == 1
+          -> FmSubsystemAction(4)
+
+  AppStart::Subsystems::OnMessage(FmLoadSubsystem&)             @0x606b0
+      sets subsystem.action (offset +28) and pendingProcesses (offset +32) = number of
+      FmLoadProcess entries, and inserts one FmLoadProcess per process into the chain.
+      Process names are rewritten to "<subsystem>:<processName>" (e.g. "Server:~/hwserver").
+
+  AppStart::Subsystems::OnMessage(FmProcessState&)              @0x5fed0
+      state 2 -> Impl::DecrementPendingProcessesIf(0, idx)
+      state 3 -> Impl::DecrementPendingProcessesIf(1, idx)
+      state 4 -> Impl::DecrementPendingProcessesIf(3, idx)
+      state 5/6 -> DecrementPendingProcesses + EraseProcess
+      (Impl::DecrementPendingProcesses @0x5ea00 just decrements Subsystem+32; the
+       ...If variant @0x5efb0 logs "Will not decrement number of pending processes,
+       subsystem <name> is in other action" when the action does not match.)
+
+So, in one sentence:
+
+  ** The next FmLoadSubsystem in the batch is dispatched only after EVERY process of the
+     current subsystem has reported FmProcessState(state = 3, INITIALIZED). **
+
+Client side (libbackend.so), the reporter is:
+
+  FProcess::SynchronizeTransition(FObjectName const&, FStartable::States, ...)   @0x25880
+      FSemaphore::Open(<subsystem semaphore>)          ; bail out silently if this fails
+      FmProcessState msg;
+          msg+4  = (state==2) ? 3 : (state==4) ? 4 : (state==1)+1
+          msg+8  = p_ident(0)
+          msg+12 = t_ident(0)
+          msg+16 = process name (max 32 bytes)
+      FMailslotQueue::Write(<AppStartMaster>, msg)
+      loop { FSemaphore::RequestWithTimeout(sem, 1, 100000) } until granted
+          ; i.e. the child then BLOCKS on the per-subsystem semaphore until
+          ; AppStart::Semaphores releases it (ReleaseSemaphoresAfterCreation /
+          ; ...AfterInitialization, hwserver-independent; the emulator's
+          ; HEROSCALL_SEM_INIT=1 auto-count makes this grant immediately).
+
+On the wire the message is tag 0x40c803e0, 52 bytes, sent to the "AppStartMaster" queue
+(id 0x308 in the bar8 run).  Queue registrations to the same queue use tag 0x40c80280.
+
+
+2. RUNTIME PROOF (bar8, un-fakeable)
+------------------------------------
+Count of FmProcessState (tag 40c803e0) messages to AppStartMaster, by sender process:
+
+    2  AppStart:AppStart
+    2  winmgr:winmgr/winmgr
+    2  SkManager:SkManager/skmgr
+    2  prom:prom/prom
+    2  Event:Event/evtserver
+    2  Ed:Ed/mmi
+    1  Server:Server/hwserver     <-- ONE.  Never reaches INITIALIZED.
+
+Every healthy process reports twice (CREATED then INITIALIZED).  hwserver reports once.
+Therefore Monitor never emits FmAppStartAction(0) for the Server subsystem, Procedures never
+dispatches the next script message, and the Nc subsystem is never loaded.  t106's forever-wait
+is the symptom, not the cause.
+
+This also re-explains bar6 (bar5 + a separate Nc subsystem): there the 6th subsystem NcS
+(startup.elf + ChannelManager) is the one that never reported INITIALIZED.  Nothing to do with
+subsystem count or ordering.
+
+
+3. WHY hwserver NEVER REACHES INITIALIZED
+-----------------------------------------
+hwserver writes its own log to SYS:\runtime\_HWSERVER.TXT.  From the bar8 run:
+
+    |TRNS|HWSMain|State Init entered.
+    |ACTN|HWSMain|Start server interface.
+    |ACTN|HWSMain|Start IOC server.
+    |TRNS|HWSMain|State SyncBreakpointMain entered.
+    |TRNS|HWSMain|State DetectMainboard entered.
+    |ACTN|DetectMainboard|detection procedure started.
+    |ERRO|DetectMainboard|Could not access configuration data.
+    |ERRO|HWSMain|Mainboard detection procedure reported error.
+    |ACTN|PlInitThread|Initialize internal PL.
+    |ACTN|PlInitThread|Initialization complete.
+    |TRNS|HWSMain|State RunUpFailed entered.        <-- terminal
+
+RunUpFailed => the process never completes FStartable initialization => no second
+SynchronizeTransition => no FmProcessState(3).
+
+The failing call is the FIRST statement of DetectMainboard::procedure @0x14fb00 (hwserver.elf):
+
+    HWSsmtInitMode mode(-1);
+    if ( !HwsMailslot::GetDataSys("initMode", "(value)", srvValue) )   ; 0x14fca2
+    {                                                                  ; jz 0x14FE20
+        FVerbosePrint(..., LogType 2 /*ERRO*/, "Could not access configuration data.");  // 36 chars
+        result.error = 1; AcknowledgeTerminate(); return;
+    }
+    HwsSrvValue::GetGeneric(mode, 0);
+    if ( mode == 2 )                                                   ; 0x14fcc1
+    {                                                                  ; jz 0x150EF8
+        FVerbosePrint(..., LogType 0, "Hardware simulation mode requested by configuration."); // 52
+        -> HWSProgrammingStation  -> detection SUCCEEDS
+    }
+    ... FSystemPathname marker check -> HWSProgrammingStation (success)
+    ... if ( !SearchForPCIDevice(...) ) -> HWSProgrammingStation (success)
+
+NOTE the shape: THREE of the branches end in HWSProgrammingStation and succeed — including the
+"no mainboard PCI device found" fallback, which is the natural PGM-Platz outcome.  The ONLY
+non-recoverable exit is the very first one: GetDataSys returning false.
+
+Strings resolved from the GOT-relative operands (GOT = 0x575ff4):
+    0x433df0  "Could not access configuration data."                  (36)
+    0x433db8  "Hardware simulation mode requested by configuration."  (52)
+    0x427e09  "initMode"     0x427e01 "(value)"
+
+libhwsinterface.so, the client stack under GetDataSys:
+    HwsMailslot::GetDataSys(char const*, char const*, HWS_SRV_VALUE&)   @0xcc20
+      -> HwsMailslot::GetDataSys(astring const&, astring const&, ...)   @0xcb30
+           ticket = HEUTicketFromStore(2)                               ; 0xcb41
+      -> HwsMailslot::GetData(ticket, item, field, out)                 @0xcaa0
+           HwsMailslotQueue::Create(0, "GetData", ticket)  ; fails -> return false
+           HwsMailslotQueue::GetData(item, field, out)     ; fails -> return false
+
+In the bar8 trace both steps DID complete on the wire — hwserver's own server thread t112
+answered its DetectMainboard thread t115:
+
+    QC  "HwsM00000115N000" id=347 owner=t115
+    QS  [30c]"QHWServer" tag=008400c0 sndr=t115   ...Server/hwserver:GetData      (create)
+    QS  [347] tag=00840100 sndr=t112 size=20                                      (create reply)
+    QS  [30c]"QHWServer" tag=00840240 sndr=t115   ...initMode........(value)      (read)
+    QS  [347] tag=008404c1 sndr=t112 size=72                                      (read reply)
+    QS  [30c]"QHWServer" tag=008400e0 sndr=t115                                   (close)
+    QS  [343]"QHWServer_int" tag=40830920 sndr=t115  ...DetectMainboard...|ERRO   (the log line)
+
+so the failure is a NEGATIVE REPLY from hwserver's own server interface, not a lost message and
+not an emulator misroute.  (Contrast PlInitThread/t116, which read "mainboard\ident\type" the same
+way and succeeded.)
+
+Why the negative reply: "initMode" is the exposed state of a SECOND state machine,
+StateMachine<HWSMain, HWSsmtInitMode, HWSMain, HWSDummy>, mapped into the server interface by
+HWSMain::EnterInit @0x1d6480 ("Could not map init mode to server interface." is its failure
+message, and it did NOT appear, so the mapping succeeded).  But _HWSERVER.TXT contains TRNS lines
+only for HWSMain and FwUpdIndicator — there is NO TRNS line for the init-mode state machine, i.e.
+it never entered a state, so its exposed value is still the HWSsmtInitMode(-1) "invalid" default
+and the read of "(value)" is refused.  _HWSTREE.TXT's `initMode:=FullOperation` is the GEnum's
+default rendering, not a set value.
+
+Its transition callback is:
+
+  HWSMain::CheckInitMode(HWSDummy*)   @0x1d5de0
+      if ( HWSMain+0x235 != 0 )            -> other path (0x1D6228)
+      if ( byte[0x578AAE] == 0 )           -> 0x1D61E7
+      SimMode  m = <global SimMode @0x578AC0, value at 0x578AC8>
+      CfgSystemInfo cfg;
+      if ( m.value == 0 && HWSMain::ReadConfig(cfg) )  m.value = cfg+48;
+      map: 0->0, 1->1, 2|3->3, 4->2                       <-- 4 gives the value DetectMainboard wants
+
+  HWSMain::ReadConfig(GMessage&)      @0x1cb130
+      linear search of a local std::list `config`; returns FALSE when the list is EMPTY.
+      The list is filled ONLY by HWSMain::ReadConfigFile, called from EnterInit under
+      `if (configFileGiven)` — i.e. only when hwserver is given -f=<file>.  The genuine batch
+      (work/control/sysroot/batch/TNC640heros.txt:89) passes only "-U", so configFileGiven == 0,
+      ReadConfig returns false, and m.value stays whatever the command line set.
+
+
+4. hwserver COMMAND-LINE OPTIONS (HWServerProcess::ReadCommandLineOptions @0xda250)
+----------------------------------------------------------------------------------
+Accepted letters: "hvcCfrmoUALXHBNTsq".  Help text, verbatim:
+
+    -h          - This help text
+    -v          - Verbose            (-vt thread ids, -vs server requests)
+    -c          - Command line interpreter
+    -C          - HardwareServer is driven by external control
+    -B          - Activate HardwareServer's main breakpoint
+    -f          - Name of configuration data file          -> configFilename/configFileGiven
+    -r          - Reread configuration file on reset
+    -m [=mask]  - Perform only partial initialization      -> initMask
+    -o          - Perform only mainboard detection         -> onlyMainboard
+    -U          - Perform critical firmware updates        -> doCriticalFwUpdates   (the genuine batch's only option)
+    -A [=state] - Set security state (1=normal, 2=safe, 3=detect)
+    -L [=path]  - Path for logfiles and detection results  (default "%SYS%/runtime")
+    -X          - Do not write detection results to file
+    -H          - Run 'old' initialization sequence for HSCI master.
+    -N [=size]  - Default queue size.
+    -T [=value] - Extend hard coded timeouts to value.
+    -s          - Simulate hardware                        -> global SimMode value = (arg=="1") ? 2 : 4
+    -q          - Queue name for simulation                (default "QPciSimu")
+
+`-s` with no argument sets the global SimMode to 4, which is exactly the CheckInitMode input that
+maps to init mode 2 — the "Hardware simulation mode requested by configuration." branch of
+DetectMainboard.  This is the real binary's own documented option, not an emulator inject.
+It is a DEVIATION from the genuine batch line (`-U` only) and is recorded as such.
+
+Other strings worth keeping:
+    "Init mode %s invalid for programming station. Switching to full simulation."   @0x43c684
+    run-up states: Init, SyncBreakpointMain, DetectMainboard, GetConfigData, DetectSik,
+                   InitDevs, Operate, RunUpFailed, RunUpAborted, Terminate
+    note GetConfigData comes AFTER DetectMainboard, so it cannot be the source of initMode.
+
+
+4b. EXPERIMENT: hwserver "-U -s"  -> DISCONFIRMED
+------------------------------------------------
+emulator/TNC640heros_bar10.txt = bar8 with commandLineOptions:="-U -s".  Run with
+APPSTART_TIMEOUT=620.  Result: NO change at all.
+
+    FmProcessState per process:  Server:Server/hwserver = 1   (all others 2)
+    _HWSERVER.TXT: Init -> SyncBreakpointMain -> DetectMainboard
+                   ERRO|DetectMainboard|Could not access configuration data.
+                   ERRO|HWSMain|Mainboard detection procedure reported error.
+                   TRNS|HWSMain|State RunUpFailed entered.
+    crash = 0, PciHardware throws = 0, Nc/IPO:GetIoRange = 0 (Nc still never loads).
+
+So the global SimMode value is NOT the lever: HWSMain::CheckInitMode never runs at all
+(it is registered by HWSMain::Init @0x1ce010 via
+StateMachine<HWSMain,HWSsmtInitMode,...>::AddExtStateTransition @0x1df600, called at 0x1d0b6c —
+an EXTERNALLY triggered transition), so the init-mode state machine never transitions regardless
+of what SimMode says.  Consistent with _HWSERVER.TXT having TRNS lines only for HWSMain and
+FwUpdIndicator.
+
+
+4c. THE READ FAILS ON A SERVER ERROR CODE, NOT A LOST MESSAGE
+-------------------------------------------------------------
+libhwsinterface.so HwsMailslotQueue::GetData(astring const&, astring const&, HWS_SRV_VALUE&) @0x21670:
+
+    if ( transferOk )
+    {
+        HWSSrvReply* r = ...;
+        if ( r->56 == 0 ) { *out = r->88; }      // success: copy the value out
+        // else fall through -> false
+    }
+    else GMessage::Initialise(out, 0);
+
+=> GetDataSys returned false because hwserver's own server interface replied with
+   HWSSrvReply.errorCode (+56) != 0.
+
+The reply is genuinely hwserver's, NOT the emulator's HWS stub: hws_autoreply()
+(emulator/heros_rtos.c:2519) returns immediately once ctl->hwserver_alive is set (logged at
+"[rtos] REAL hwserver.elf init ... -> HWS stub now DEFERS QHWServer to it", bar8 log line 1965,
+BEFORE t115's request at ~line 2010), and in any case the stub only ECHOES the request, so its
+reply would be 51/87 bytes — the observed replies are 72.
+
+Byte-indexing the three 008404c1 replies in the bar8 log shows them IDENTICAL except for the job
+id at payload +8 (0x00 for t115/initMode, 0x27 and 0x34 for t116) and carrying no value payload.
+That means DevPlcSim's read of "mainboard\ident\type" (which also checks the return and branches
+to 0x3427D4 on failure, silently) most likely failed too — i.e. EVERY HWS GetData in this
+environment is answered with an error.  Only DetectMainboard treats it as fatal.
+
+OPEN QUESTION (the next frontier, one level below this session's task):
+why does hwserver's own server interface error every GetData at DetectMainboard time?
+Leading candidates, in order:
+  (i)  the HEU ticket.  GetDataSys uniquely obtains its ticket via HEUTicketFromStore(2)
+       (libhwsinterface 0xcb41) and passes it to HwsMailslotQueue::Create.  hwserver DOES connect
+       to heuserver (strace: connect(9, 127.0.0.1:19093) = 0) but the store may be empty in this
+       harness, giving a null ticket that the server rejects.  Testable with a HEUTicketFromStore
+       return-value tracer.
+  (ii) the server-side data tree is not yet readable in run-up state DetectMainboard
+       (_HWSTREE.TXT shows ioc:=HWSIoc(state:=NotLoaded); the GetConfigData run-up state that
+       loads it comes AFTER DetectMainboard).
+  (iii) the init-mode state machine has no state to report (see 4b).
+Deciding between them needs the raw reply bytes (HWSSrvReply.errorCode) — i.e. a hex dump of the
+008404c1 payload, which the current HSTRACE msascii() view cannot show.
+
+
+5. FILES
+--------
+  scratchpad/bar8_appstart.log        full HSTRACE of the bar8 run analysed above
+  scratchpad/gate_pacing.txt          DecrementPendingProcesses(If), DispatchMessageFromProcedure,
+                                      Procedures::OnMessage(FmSubsystemAction)
+  scratchpad/gate_monitor.txt         Monitor::OnMessage(FmAppStartAction), ScanChildStat, OnEvent
+  scratchpad/gate_appstartaction.txt  Procedures/EndOfChain OnMessage(FmAppStartAction)
+  scratchpad/fprocess_transition.txt  FProcess::SignalTransition / SynchronizeTransition
+  scratchpad/detectmainboard.txt      DetectMainboard::procedure
+  scratchpad/hws_enterinit.txt        HWSMain::EnterInit
+  scratchpad/hws_readopts.txt         HWServerProcess::ReadCommandLineOptions
+  emulator/TNC640heros_bar10.txt      bar8 with hwserver "-U -s"
