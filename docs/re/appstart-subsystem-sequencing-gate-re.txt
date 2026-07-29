@@ -422,6 +422,63 @@ HWSsmtInitMode(2), callback=NULL, check=NULL) — an EXTERNALLY triggered transi
 carries TRNS lines only for HWSMain and FwUpdIndicator, never for the init-mode machine.
 
 
+4g. ★ CORRECTION + THE ACTUAL CHAIN: the request is HWSSrvInspect, not HWSSrvReadConfig
+---------------------------------------------------------------------------------------
+Section 4f attributed the failure to HWSServer_::HWSServer::ReadConfig.  THAT IS WRONG, and the bar12
+result is what exposed it (config fully loaded, failure unchanged).  Disassembling the client-side
+request builder settles it — HwsMailslotQueue::GetData(astring,astring,HWS_SRV_VALUE&)@libhwsinterface
++0x21670 constructs an **HWSSrvInspect**, not an HWSSrvReadConfig:
+
+    HWSSrvInspect req; HWSSrvReply reply;
+    req->+0x24 = item;      // "initMode"
+    req->+0x34 = field;     // "(value)"
+    req->+0x0C = this->handle;
+    req->+0x18 = 0;
+    ... transfer ...
+    if (transferOk && reply->+56 == 0) *out = reply->+88;
+
+which also matches the observed 51-byte wire exactly (tag, handle, handle, "initMode", "(value)" —
+4+8+8+16+15 = 51, no container).  ReadConfig/"No config data found"/"No primary data" belong to a
+DIFFERENT request type and were never on this path.
+
+NCK_SRV_RESULT literal order is now pinned by two independent uses:
+    0 = <ok>, 1 = FAILED, 2 = BAD_IDENT, 3 = BAD_HANDLE, 4 = TOO_COMPLEX
+("Reply has too many elements" -> 4 = TOO_COMPLEX; "Error in meta ident list." -> 2 = BAD_IDENT.)
+The observed reply carried **1 = FAILED**.
+
+Server side of an HWSSrvInspect, HWSServer_::HWSServer::Inspect@0x1fac40:
+
+    GMsgString ident = req->msg+36;                       // "initMode"
+    Job = TemporaryJob::CreateJob(job, req->handle, 27);  // 27 = JhUserRights::UserRight
+    Job::Init(...); Job::SetQueueName(...);
+    if ( !HWSServer_::HWSServer::HandleIdent(a1, job, ident) )       return;   // <- FAILS HERE
+    metaIdent = IsValid(req+52) ? req+52 : <default>;     // "(value)"
+    if ( !HandleMetaIdent(a1, job, metaIdent) )                      return;
+    ... TemporaryJob::GetMeta / walk the parse tree / build the reply ...
+
+    HandleIdent@0x1f5650            -> TemporaryJob::AccessIdent@0x20c540
+    TemporaryJob::AccessIdent       -> Job::AccessIdent@0x200660
+    Job::AccessIdent                -> ParseIdentString(ident, hwsMain+536, ..., job+96, ...)
+                                       then walks job+96 (the ParseTreeNode vector, this+24/this+25)
+                                       and requires ParseTreeNode::Info(node) != 0.
+
+** FINAL PINNED BLOCKER: ParseIdentString("initMode") against hwserver's exposed server-interface
+   tree rooted at hwsMain+536 yields no usable node, so HandleIdent fails, Inspect answers
+   NCK_SRV_RESULT=FAILED(1) with an ABSENT value, HwsMailslotQueue::GetData returns false,
+   DetectMainboard logs "Could not access configuration data." and HWSMain enters RunUpFailed —
+   so hwserver never sends FmProcessState(INITIALIZED) and AppStart never dispatches the Nc
+   subsystem. **
+
+Relevant asymmetry to chase next: HWSMain::AddStateMachine@0x1cad70 pushes {GMessage*,
+StateMachineBase*} onto a list at hwsMain+620 (counter at +628), while Job::AccessIdent parses against
+hwsMain+536.  HWSMain::EnterInit@0x1d6480 calls AddStateMachine three times (run-up SM, init-mode SM at
+HWSMain+200, smLog) and their failure messages ("Could not map run up state machine to server
+interface." / "Could not map init mode to server interface." / "Could not map smLog to server
+interface.") do NOT appear in _HWSERVER.TXT, so the registrations returned success.  So the next
+question is what populates the +536 parse-tree root from the +620 registry, and whether that step is
+skipped or empty in this environment.
+
+
 5. FILES
 --------
   scratchpad/bar8_appstart.log        full HSTRACE of the bar8 run analysed above

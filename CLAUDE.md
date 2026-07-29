@@ -116,14 +116,22 @@ empty `config` list is fine now:** `HWSMain::ReadConfig` searches a static list 
 file it REFERENCES (`SYS:\TABLE\DevTable.hwd`); **run_appstart_fex.sh now stages the image's `table/` to
 /mnt/sys/TABLE + /mnt/plc/TABLE + /mnt/plc/CONFIG + $SYSW/TABLE** (uppercase — case matters) ⇒ **Hardware.cfg
 + DevTable.hwd both load cleanly, the "Could not read configuration data" ERROR is GONE — and DetectMainboard
-fails IDENTICALLY.** A real staging gap fixed, hypothesis disconfirmed. **⇒ By elimination the branch is
-"No primary data": `initMode` resolves but has no primary data.** It is in no `.atr` schema — it is the exposed
-state of the HWSsmtInitMode machine registered by `AddStateMachine@0x1cad70` onto a list at **HWSMain+620**, a
-DIFFERENT collection from the `config` list. **NEXT: RE the HEAD of `HWSServer_::HWSServer::ReadConfig@0x1f8ea0`**
-(before the shown branches) — how a requested item name resolves against the HWSMain+620 registry, and why the
-initMode entry yields no primary data. Registration: `HWSMain::Init@0x1ce010` at 0x1d0b6c calls
-`AddExtStateTransition(sm@HWSMain+0xC8, id=0, from=0, to=2, 2, cb=NULL, chk=NULL)` — EXTERNALLY triggered, and
-`_HWSERVER.TXT` never shows a TRNS line for that machine. Full RE + hwserver's complete option map + evidence:
+fails IDENTICALLY.** A real staging gap fixed, hypothesis disconfirmed — **and that null result exposed a WRONG attribution:
+the request is `HWSSrvInspect`, NOT `HWSSrvReadConfig`.** The client builder
+`HwsMailslotQueue::GetData@libhwsinterface+0x21670` constructs an **HWSSrvInspect** (`+0x24`=item,
+`+0x34`=field, `+0x0C`=handle), matching the observed 51-byte wire exactly (4+8+8+16+15, no container); the
+ReadConfig branches were never on this path. `NCK_SRV_RESULT` is now pinned by two independent uses —
+**0=ok, 1=FAILED, 2=BAD_IDENT, 3=BAD_HANDLE, 4=TOO_COMPLEX** — and the reply carried **1=FAILED**.
+**★ FINAL PINNED CHAIN:** `HWSServer_::HWSServer::Inspect@0x1fac40` → `HandleIdent@0x1f5650` →
+`TemporaryJob::AccessIdent@0x20c540` → `Job::AccessIdent@0x200660` →
+**`ParseIdentString("initMode", hwsMain+536, …, job+96)`**, which then requires a walked `ParseTreeNode`
+with non-null `Info()`. That lookup yields nothing ⇒ HandleIdent fails ⇒ Inspect answers FAILED with an
+ABSENT value ⇒ GetDataSys false ⇒ "Could not access configuration data." ⇒ RunUpFailed ⇒ no
+FmProcessState(INITIALIZED) ⇒ Nc never dispatched. **NEXT:** the asymmetry to chase is that
+`AddStateMachine@0x1cad70` registers onto a list at **hwsMain+620** (counter +628) while `Job::AccessIdent`
+parses against **hwsMain+536**; `EnterInit@0x1d6480`'s three AddStateMachine calls all succeeded (none of
+their "Could not map … to server interface." messages appear), so find what populates the +536 parse-tree
+root from the +620 registry and why it is empty here. Full RE + hwserver's complete option map + evidence:
 **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
