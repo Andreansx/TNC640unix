@@ -37,6 +37,7 @@ for s in herosapi_shim renamefix fexunmask heros_rtos; do $CC -shared -fPIC -O2 
 $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s/^/  openlog: /"
 $CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
 $CC -shared -fPIC -O2 -o "$R/lib/cfg461probe.so" "$EMU/cfg461probe.c" 2>&1 | sed "s/^/  cfg461probe: /"  # Gate-1 OnWriteNew(0x170461) fork tracer (no -ldl: maps-base+offset)
+$CC -shared -fPIC -O2 -o "$R/lib/cxathrow.so" "$EMU/cxathrow.c" -ldl 2>&1 | sed "s/^/  cxathrow: /"   # CXATHROW=1: __cxa_throw interceptor (throw type + site). Was preloaded but never REBUILT here.
 $CC -shared -fPIC -O2 -o "$R/lib/fredfree.so" "$EMU/fredfree.c" 2>&1 | sed "s/^/  fredfree: /"  # Gate-2 Fred UAF diagnostic (FREDFREE=1: process-scoped no-op free in Ed/mmi only)
 $CC -shared -fPIC -O2 -o "$R/lib/fmdel.so" "$EMU/fmdel.c" 2>&1 | sed "s/^/  fmdel: /"  # Gate-2 UAF free-site capture (FMDEL=1: log FrameModule-size sized-deletes in Ed/mmi)
 $CC -shared -fPIC -O2 -o "$R/lib/fkeepvec.so" "$EMU/fkeepvec.c" 2>&1 | sed "s/^/  fkeepvec: /"  # Gate-2 Fred UAF FIX (FKEEPVEC=1: reproduce reference lazy-reuse for the ~FThread module-vector delete)

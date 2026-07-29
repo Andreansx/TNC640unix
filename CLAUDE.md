@@ -141,11 +141,25 @@ provably in the server-side ident-resolution/permission path, not a missing node
 empty config list, ticket transport, emulator stub, or AppStart. This also settles the genuine boot: the
 read returns FullOperation(0) ⇒ `mode != 2` ⇒ fall through to `SearchForPCIDevice` ⇒ fails on a
 programming station ⇒ the fallback reaches HWSProgrammingStation and SUCCEEDS. Making this ONE read work
-clears hwserver's run-up. **NEXT:** the read is rights-gated —
-`TemporaryJob::CreateJob(job, handle, 27)` passes a `JhUserRights::UserRight` and `ParseIdentString` takes
-a `ParsePermission*`. bar14 (`-A=1`, security state normal) is accepted and changes nothing (6th
-elimination), so RE `ParsePermission`/`JhUserRights` and what the ticket `0x7fffffff00000001` resolves to
-inside hwserver. Full RE + hwserver's complete option map + evidence:
+clears hwserver's run-up. **★★★ NAMED ROOT CAUSE — PREDICTED, MEASURED, THEN NAMED (end of session):** Inspect's error reply is
+emitted from its **.cold `__cxa_begin_catch` handler**, which computes `code = exc->field0 + 0x0B` — so the
+observed wire code 14 PREDICTED a thrown exception with code 3. Re-running with the project's existing
+`__cxa_throw` interceptor (`CXATHROW=1`; note it was preloaded but never BUILT by run_appstart_fex.sh — a
+build line is now added) MEASURED exactly that: **`THROW type='15ServerException' code=3`**, ×3 pairs, at
+`hwserver.elf +0x835f5 / +0x83650` = **`HWSServer_::TemporaryJob::CreateJob(uint, JhUserRights::UserRight)
+[.cold]`** — i.e. the throw is in **JOB CREATION, before HandleIdent/ParseIdentString ever runs** (4f/4g were
+one level too deep). `CreateJob@0x20c7d0` in full: `FindConnection(handle); if (right != 37 &&
+!JhUserRights::Test(conn+156, conn+160, right)) throw ServerException(3)`. And
+`JhUserRights::Test@libOptions+0x176a0` = `HEUTestRights(ticketLo, ticketHi, lookupTable[2*r+1]) == 1` — the
+**HEU user-administration** layer, against the wire-measured ticket `HEUTicketFromStore(2)` =
+`0x7fffffff00000001`. The `JhUserRights::UserRight` name table (libOptions.so, `HEROS.FileOEM`=0 …
+`Sentinel`=37) gives **27 = `NC.DataAccessServiceRead`** (Inspect) and **32 = `NC.DataAccessSYS`**
+(ReadConfig); indexing confirmed 3 ways (`r>36` asserts; `right!=37` bypasses; 27/32 land on exactly the
+service-read / system-access rights those two operations need). **⇒ PROVEN: the read is denied for lack of
+user right `NC.DataAccessServiceRead`.** NOT a wall — this is the documented "reproduce the demo
+user-administration state" task, and **heuserver already runs in this harness** (hwserver connects to
+127.0.0.1:19093 and probes the absent `/tmp/__use_network_useradmin`). **NEXT: make the HEU ticket store
+grant the shipped image's default rights so `HEUTestRights(ticket, NC.DataAccessServiceRead)` returns 1.** Full RE + hwserver's complete option map + evidence:
 **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,

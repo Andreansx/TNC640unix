@@ -525,13 +525,85 @@ HWSServer_::TemporaryJob::CreateJob(job, handle, 27) for Inspect (and 32 for Rea
 JhUserRights::UserRight, and ParseIdentString takes a ParsePermission* — so the read is
 rights-gated. The ticket carried by the session is HEUTicketFromStore(2) = 0x7fffffff00000001
 (4d). Note 4d disconfirmed the ticket only as the DIFFERENTIATOR between two failing reads; it
-remains viable as their COMMON cause. Tested: bar14 (TNC640heros_bar14.txt = bar13 + hwserver's own
-`-A=1`, security state "normal" -> the `securityState` global). The option is accepted
-("Option 4: -A=1") and the run is IDENTICAL — 77 entities read, DetectMainboard -> "Could not access
-configuration data." -> RunUpFailed, 1 FmProcessState, GetIoRange 0. Sixth hypothesis eliminated.
-Remaining lever: RE ParsePermission / JhUserRights::UserRight directly (Inspect's job is created with
-right 27, ReadConfig's with 32) and find what grants them — i.e. what the HEU ticket
-0x7fffffff00000001 actually resolves to inside hwserver.
+remains viable as their COMMON cause. Tested and eliminated: bar14 (TNC640heros_bar14.txt = bar13 +
+hwserver's own `-A=1`, security state "normal"). Accepted ("Option 4: -A=1"), run IDENTICAL.
+
+
+4i. ★★★ THE NAMED ROOT CAUSE — user right 27 = NC.DataAccessServiceRead is DENIED
+---------------------------------------------------------------------------------
+Predicted, then measured, then named. Three independent steps:
+
+(A) PREDICTION from the reply bytes.  Inspect's error reply is emitted from its .cold block, which is
+    an EXCEPTION HANDLER (disassembly at 0x80560..0x8063f):
+
+        __cxa_begin_catch(exc)
+        text = BasicString(exc + 4)          ; the exception's message
+        esi  = *(exc); esi += 0x0B           ; code = exc->field0 + 11
+        NCK_SRV_RESULT(result, 1)            ; FAILED
+        SendErrReply<HWSSrvInspect>(this, req, result, code, text)      ; 0x8060f
+
+    The observed wire code was 14, so the thrown exception's first field must be 14 - 11 = 3.
+
+(B) MEASUREMENT.  Re-ran bar13 with the project's existing __cxa_throw interceptor
+    (emulator/cxathrow.c, CXATHROW=1 — note it was preloaded by run_appstart_fex.sh but never BUILT
+    there; a build line has been added).  Output:
+
+        [cxathrow] THROW type='15ServerException' code=3 obj=...
+        [cxathrow]   site=/var/tmp/lr/heros5/bin/hwserver.elf +0x835f5
+        [cxathrow] THROW type='15ServerException' code=3
+        [cxathrow]   site=/var/tmp/lr/heros5/bin/hwserver.elf +0x83650
+        (three such pairs — one per failed Inspect)
+
+    code=3 EXACTLY as predicted from 14 - 0x0B.  Both sites resolve to
+        HWSServer_::TemporaryJob::CreateJob(uint, JhUserRights::UserRight) [clone .cold] @0x835ba
+
+    So the throw is in JOB CREATION — BEFORE HandleIdent/ParseIdentString ever runs.  Sections 4f/4g's
+    focus on ident resolution was one level too deep.
+
+(C) THE CHECK.  HWSServer_::TemporaryJob::CreateJob@0x20c7d0 is, in full:
+
+        EnterSema();
+        Connection = Server::Base::FindConnection(server, handle);
+        if ( right != 37 && !JhUserRights::Test(Connection+156, Connection+160, right) )
+            throw ServerException(3);                       // the .cold branch
+        JobCollection<Job>::NewJob(...);
+        LeaveSema();
+
+    and JhUserRights::Test(int64 ticket, UserRight r)@libOptions.so+0x176a0:
+
+        if (r > 36) assert("userRight < NumberOfUserRights");
+        if (lookupTable[2*r] == r)
+            return HEUTestRights(ticketLo, ticketHi, lookupTable[2*r+1]) == 1;
+
+    => the decision is made by HEUTestRights, i.e. the HEU (Heidenhain user-administration) layer,
+       against the 64-bit ticket the mailslot connection presented — which section 4d measured on the
+       wire as HEUTicketFromStore(2) = 0x7fffffff00000001.
+
+    The JhUserRights::UserRight enum (name table in libOptions.so, HEROS.FileOEM=0 .. Sentinel=37):
+
+        27 = NC.DataAccessServiceRead        <- Inspect's required right (CreateJob(..., 27))
+        32 = NC.DataAccessSYS                <- ReadConfig's required right (CreateJob(..., 32))
+        37 = Sentinel.NumberOfUserRights     <- the `right != 37` bypass
+
+    The indexing is confirmed THREE ways: `r > 36` asserts (max valid 36 = HEROS.MountUSBDevices);
+    `right != 37` bypasses (37 = Sentinel); and right 27 lands on NC.DataAccessServiceRead, exactly
+    the right a service-level data READ would require, with ReadConfig's 32 landing on the
+    system-level NC.DataAccessSYS.
+
+** ROOT CAUSE (proven end to end, each hop measured rather than inferred):
+   hwserver's DetectMainboard asks its own server interface for "initMode". Serving that read needs
+   user right 27 = NC.DataAccessServiceRead on the mailslot connection. JhUserRights::Test ->
+   HEUTestRights denies it for the ticket HEUTicketFromStore(2) = 0x7fffffff00000001, so
+   TemporaryJob::CreateJob throws ServerException(3); Inspect's catch replies NCK_SRV_RESULT=FAILED(1)
+   with code 3+0x0B=14 and an ABSENT value; GetDataSys returns false; DetectMainboard logs "Could not
+   access configuration data."; HWSMain enters RunUpFailed; hwserver never sends
+   FmProcessState(INITIALIZED); and AppStart therefore never dispatches the Nc subsystem. **
+
+This is NOT a wall.  It is the project's documented "reproduce the demo user-administration state"
+task (see the GROUND TRUTH note in CLAUDE.md), and heuserver already runs in this harness — hwserver
+connects to it (strace: connect(9, 127.0.0.1:19093) = 0) and probes /tmp/__use_network_useradmin
+(absent).  The faithful fix is to make the HEU ticket store grant the control's default rights, i.e.
+make HEUTestRights(ticket, NC.DataAccessServiceRead) return 1 the way it does on the shipped image.
 
 
 5. FILES
