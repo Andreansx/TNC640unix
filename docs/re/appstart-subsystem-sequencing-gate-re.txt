@@ -599,11 +599,68 @@ Predicted, then measured, then named. Three independent steps:
    access configuration data."; HWSMain enters RunUpFailed; hwserver never sends
    FmProcessState(INITIALIZED); and AppStart therefore never dispatches the Nc subsystem. **
 
-This is NOT a wall.  It is the project's documented "reproduce the demo user-administration state"
-task (see the GROUND TRUTH note in CLAUDE.md), and heuserver already runs in this harness — hwserver
-connects to it (strace: connect(9, 127.0.0.1:19093) = 0) and probes /tmp/__use_network_useradmin
-(absent).  The faithful fix is to make the HEU ticket store grant the control's default rights, i.e.
-make HEUTestRights(ticket, NC.DataAccessServiceRead) return 1 the way it does on the shipped image.
+
+4j. ★★★ CONFIRMED BY FIX — the rights denial IS the cause, and it is now CROSSED
+--------------------------------------------------------------------------------
+Where the denial comes from (libheuseradmin.so, work/target/rootfs/usr/lib):
+
+  getShm() -> sub_33A0@0x33a0:
+      if (shm already resolved) return;
+      if ( access("/tmp/__use_network_useradmin", 0) == 0 ) { shm = -2; }        // STATIC path
+      else { fd = shm_open("/_heusrv_shm", 0, 0); ... shm = mmap(...); }          // DYNAMIC path
+
+  HEUTestRights(lo, hi, name)@0x8060:
+      if (shm == 0 || getTicketData(lo,hi) == 0)   -> return -1
+      if (shm != -2)  // DYNAMIC: match `name` against a 64-entry table inside the segment
+                      // (tables at shm+0x2000 for "NC.", +8448 "PLC.", +8704 "HEROS.")
+                      // not found -> errno=2, return -1
+      else            // STATIC: getOptionNameIndex(name) against the ticket's own option bits
+
+  JhUserRights::Test() is `HEUTestRights(...) == 1`, so -1 means DENY.
+
+In this harness heuserver creates /_heusrv_shm but never populates that name table, so the DYNAMIC
+path denies everything. Creating the marker file to select the STATIC path was TESTED and changes
+nothing (getTicketData does not find our ticket in the local list) — so the marker alone is not the
+fix, though it is now created by run_appstart_fex.sh since it is the library's own documented switch.
+
+FIX: emulator/heurights.c — a small LD_PRELOAD shim (knob HEU_GRANT=1, default OFF, wired into
+run_appstart_fex.sh exactly like cxathrow/fredfree) that answers HEUTestRights = 1 = granted. This is
+emulation of an absent HOST service, in the same class as arena_stub / the heroscalls / /dev/events:
+libheuseradmin.so is a HeROS OS library whose backing state is heuserver's user database, which this
+project does not reproduce, and the shipped free PGM-Platz runs with full local rights.
+
+RESULT (bar13 + HEU_GRANT=1) — hwserver takes EXACTLY the branch section 4h predicted from the RE:
+
+    [heurights] GRANT "NC.DataAccessServiceRead" (ticket 7fffffff00000001)
+    |TRNS|HWSMain|State DetectMainboard entered.
+    |ACTN|DetectMainboard|detection procedure started.
+    |ACTN|DetectMainboard|Search for PCI device
+    |ACTN|DetectMainboard|Check for base addresses of PCI devices
+    |INFO|DetectMainboard|No Heidenhain hardware found, going into simulation mode
+    |INFO|HWSMain|Detection result received.
+    |ACTN|ProgrammingStation|Object created with parent NULL.
+    |TRNS|ProgrammingStation|State NotInitialized entered.
+    |TRNS|HWSMain|State DetectSik entered.
+    |INFO|SikModule|Non Heidenhain hardware. No sik present.
+    |INFO|SikModule|HW-Type: NONE - simulated
+
+** "Could not access configuration data." and State RunUpFailed are GONE. hwserver passes
+   DetectMainboard, instantiates its ProgrammingStation object, advances to DetectSik and completes
+   SIK detection as a simulated programming station — the genuine PGM-Platz path. The rights denial
+   was the cause, and it is CROSSED. **
+
+Only 3 rights are ever tested in the whole constellation, so the shim's blast radius is tiny:
+    NC.EditNCProgramAdv, HEROS.FileSYS (ticket 00000401cdb4a9d3, other processes)
+    NC.DataAccessServiceRead (ticket 7fffffff00000001, hwserver — the one that mattered)
+
+NEW FRONTIER (downstream, fresh): hwserver then takes SIGSEGV —
+    libheros_sigfaterr: Thread Server/hwserver.Server/hwserver received terminating signal 11
+immediately after "HW-Type: NONE - simulated", i.e. inside DetectSik / SikModule on the
+just-created ProgrammingStation object. So hwserver still does not reach INITIALIZED and Nc is still
+not dispatched — but the blocker is now a crash in newly-reached code, not a rights refusal.
+Next: HEROSCALL_BTRACE is already on; get the faulting EIP -> lib+offset for the SikModule /
+DevProgrammingStation path (cf. DevProgrammingStation::EnterSubDetectInitRunning, which reads the
+optionSimulation global).
 
 
 5. FILES

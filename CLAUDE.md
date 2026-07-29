@@ -156,10 +156,26 @@ one level too deep). `CreateJob@0x20c7d0` in full: `FindConnection(handle); if (
 `Sentinel`=37) gives **27 = `NC.DataAccessServiceRead`** (Inspect) and **32 = `NC.DataAccessSYS`**
 (ReadConfig); indexing confirmed 3 ways (`r>36` asserts; `right!=37` bypasses; 27/32 land on exactly the
 service-read / system-access rights those two operations need). **⇒ PROVEN: the read is denied for lack of
-user right `NC.DataAccessServiceRead`.** NOT a wall — this is the documented "reproduce the demo
-user-administration state" task, and **heuserver already runs in this harness** (hwserver connects to
-127.0.0.1:19093 and probes the absent `/tmp/__use_network_useradmin`). **NEXT: make the HEU ticket store
-grant the shipped image's default rights so `HEUTestRights(ticket, NC.DataAccessServiceRead)` returns 1.** Full RE + hwserver's complete option map + evidence:
+user right `NC.DataAccessServiceRead`.** **★★★ CONFIRMED BY FIX — CROSSED.** The denial lives in
+`libheuseradmin.so`: `getShm()@0x33a0` picks the STATIC path if `/tmp/__use_network_useradmin` exists,
+else `shm_open("/_heusrv_shm")` and the DYNAMIC path, which matches the right NAME against a 64-entry table
+inside that segment — a table our heuserver creates but never populates, so `HEUTestRights` falls through to
+`errno=2; return -1` = DENY (Test compares `== 1`). The marker file alone was TESTED and changes nothing
+(`getTicketData` doesn't find our ticket), though run_appstart_fex.sh now creates it since it's the library's
+own switch. **FIX = `emulator/heurights.c`** (knob **`HEU_GRANT=1`**, default OFF, wired like cxathrow/fredfree):
+answer `HEUTestRights = 1`. This emulates an absent HOST service — libheuseradmin is a HeROS OS library backed
+by heuserver's user DB, which we don't reproduce, and the shipped free PGM-Platz runs with full local rights.
+Blast radius is 3 rights total across the whole constellation. **RESULT — hwserver takes EXACTLY the branch the
+RE predicted:** `GRANT "NC.DataAccessServiceRead"` → `Search for PCI device` → `Check for base addresses` →
+**`No Heidenhain hardware found, going into simulation mode`** → `ProgrammingStation|Object created` →
+`State DetectSik` → `SikModule|Non Heidenhain hardware. No sik present.` → `HW-Type: NONE - simulated`.
+**"Could not access configuration data." and RunUpFailed are GONE.** **NEW FRONTIER (fresh, downstream):**
+hwserver then takes **SIGSEGV** (`libheros_sigfaterr: Thread Server/hwserver … signal 11`) right after
+`HW-Type: NONE - simulated`, i.e. inside DetectSik/SikModule on the just-created ProgrammingStation object —
+so it still never reports INITIALIZED and Nc is still not dispatched, but the blocker is now a crash in
+NEWLY-REACHED code. Next: `HEROSCALL_BTRACE` is already on — get the faulting EIP → lib+offset for the
+SikModule / DevProgrammingStation path (cf. `DevProgrammingStation::EnterSubDetectInitRunning`, which reads
+the `optionSimulation` global). Full RE + hwserver's complete option map + evidence:
 **`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
