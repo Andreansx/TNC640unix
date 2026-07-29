@@ -207,7 +207,26 @@ static struct { int32_t tid; uint32_t id; } tcache[128];
  * on its MAIN task's pname so peers' P_ident(name) can resolve it. HEROSCALL_PNAME. */
 static char self_pname[NAMELEN]={0};
 static int  pname_reg=0;
+/* ---- crash-handler stack safety (sigaltstack) --------------------------------------------------
+ * crash_locate() runs on the FAULTING thread's stack. The guest creates its threads with modest
+ * stacks (hwserver: clone3 stack_size=0x2dfc0 = 188 KB), so when the fault is itself a stack
+ * overflow there is no room left and the handler RE-FAULTS inside its own EBP walk / hex dump —
+ * measured on the bar13 HEU_GRANT run: "FAULT eip=0xffce6418 addr=0xd79ffffc, esp=0xd7a00000",
+ * where both EIPs resolve to heros_rtos.so crash_locate()/hx() and addr is esp-4 at a page
+ * boundary. That destroys the evidence for the ORIGINAL fault, which is never printed.
+ * Give every thread its own small alternate signal stack and ask the kernel to switch to it
+ * (SA_ONSTACK below), so the handler always has room to report the true fault. Armed lazily from
+ * task_self(), which every thread calls on its first heroscall. */
+static __thread char *altstk_p = 0;
+static void altstack_arm(void){
+    if(altstk_p) return;
+    altstk_p = (char*)malloc(64*1024);
+    if(!altstk_p){ altstk_p = (char*)1; return; }   /* mark as tried; never retry */
+    stack_t ss; ss.ss_sp = altstk_p; ss.ss_size = 64*1024; ss.ss_flags = 0;
+    sigaltstack(&ss, 0);
+}
 static uint32_t task_self(void){
+    altstack_arm();
     int32_t tid =(int32_t)raw5(SYS_gettid,0,0,0,0,0);
     unsigned h=((unsigned)tid)&127;
     if(tcache[h].id && tcache[h].tid==tid) return tcache[h].id;
@@ -3206,7 +3225,7 @@ static int is_fatal(int s){ return s==SIGSEGV||s==SIGABRT||s==SIGBUS||s==SIGILL|
 __attribute__((naked)) static void rtos_restorer(void){ __asm__("movl $173,%eax; int $0x80"); }
 /* kernel rt_sigaction(sig, kact, koldact, 8). kernel act = {handler,flags,restorer,mask[2]} */
 static int kern_sigaction(int sig,void*h,unsigned long flags,unsigned long m0,unsigned long m1,int wrap){
-    unsigned long ka[5]={ (unsigned long)h, flags|0x04000000/*SA_RESTORER*/|(wrap?0x00000004/*SA_SIGINFO*/:0),
+    unsigned long ka[5]={ (unsigned long)h, flags|0x04000000/*SA_RESTORER*/|(wrap?(0x00000004/*SA_SIGINFO*/|0x08000000/*SA_ONSTACK: run crash_locate on the per-thread altstack so a stack-overflow fault can still be reported*/):0),
                           (unsigned long)rtos_restorer, m0, m1 };
     return (int)raw5(SYS_rt_sigaction,sig,(long)ka,0,8,0);
 }

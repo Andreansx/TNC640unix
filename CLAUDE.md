@@ -60,130 +60,63 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-29) — the "Monitor 0x01019007 sequencing gate" is DISPROVEN; the real per-subsystem gate is FmProcessState(INITIALIZED), and hwserver never sends it because it ends in HWSMain State RunUpFailed
-**★★★★★★★★★★★★★ THE 0x01019007 GATE IS NOT A GATE — the AppStart pacing rule RE'd + PROVEN, and the
-Server-subsystem blocker pinned three levels down to hwserver's DetectMainboard (2026-07-29).**
-`Ev_receive(want=0x01019007, c=2, to=inf)` on t106 is just AppStartMaster's **idle FThread dispatcher wait**
-(the OR of its armed waitable bits); the bar8 trace shows t106 entering/leaving it dozens of times per boot.
-Nothing ever "satisfies" it, there is **no 6-subsystem limit**, and nothing about AppStart is Server-specific —
-the prior framing was wrong. **The REAL rule (idalib over AppStartMP.elf + libbackend.so):** the batch is fed
-**one script message at a time**. `Monitor::OnMessage(FmProcessState)@0x3c400` emits **`FmAppStartAction(0)`**
-when the LAST process of the current subsystem reports **state 3 = INITIALIZED**, and
-`Procedures::OnMessage(FmAppStartAction)@0x4b420` turns action==0 into
-`Procedures::DispatchMessageFromProcedure@0x48c90` = **dispatch the NEXT `FmLoadSubsystem`**. Client side,
-`FProcess::SynchronizeTransition@libbackend+0x25880` writes the `FmProcessState` (wire **tag 0x40c803e0**,
-52B, name at +16) to the **AppStartMaster** queue, then blocks on the per-subsystem semaphore.
-**UN-FAKEABLE PROOF (bar8, `scratchpad/bar8_appstart.log`):** every healthy process sends **2** such messages
-(CREATED+INITIALIZED) — AppStart, winmgr, skmgr, prom, evtserver, Fred — and **`Server:Server/hwserver` sends
-exactly 1**. So Nc is never dispatched. (Same explanation retro-fits bar6: its 6th subsystem NcS never
-reported INITIALIZED either.) **WHY hwserver stops:** its own log `SYS:\runtime\_HWSERVER.TXT` says
-`State DetectMainboard entered` → **`ERRO|DetectMainboard|Could not access configuration data.`** →
-`ERRO|HWSMain|Mainboard detection procedure reported error.` → **`TRNS|HWSMain|State RunUpFailed entered`**
-(terminal ⇒ never INITIALIZED). The failing call is the **first statement** of
-`DetectMainboard::procedure@hwserver+0x14fb00`: **`HwsMailslot::GetDataSys("initMode","(value)")`** returns
-false (`jz 0x14FE20`). Note the shape: **three** later branches all end in `HWSProgrammingStation` and SUCCEED —
-including the `!SearchForPCIDevice` "no mainboard PCI device" fallback, the natural PGM-Platz outcome — so this
-first read is the ONLY fatal exit. **DISCONFIRMED (bar10, `TNC640heros_bar10.txt`, hwserver `-U -s`):** hwserver's
-own documented `-s` "Simulate hardware" sets the global SimMode to 4, which `HWSMain::CheckInitMode@0x1d5de0`
-maps to init mode 2 = the `"Hardware simulation mode requested by configuration."` branch — but the run is
-**byte-for-byte the same failure** (1 FmProcessState, RunUpFailed, GetIoRange=0, crash=0), because CheckInitMode
-is an **externally-triggered** transition (`AddExtStateTransition`, registered in `HWSMain::Init@0x1ce010` at
-0x1d0b6c) that never fires. **The read fails on a SERVER ERROR CODE, not a lost message:**
-`HwsMailslotQueue::GetData@libhwsinterface+0x21670` returns the value only when `HWSSrvReply+56 == 0`; the reply
-came from the REAL hwserver (the emulator stub defers once `hwserver_alive`, and only echoes — 51/87B, not the
-observed 72B). Byte-indexing shows all three 0x008404c1 replies identical but for the job id and carrying no
-value ⇒ **every HWS GetData is being answered with an error**, DevPlcSim's `mainboard\ident\type` included (it
-just fails silently). **RAW WIRE (new knob `HEROSCALL_HSTHEX=1`, `mshex()` in heros_rtos.c, default OFF —
-`msascii()` collapsed exactly the deciding bytes):** the two `Create` requests carry the **IDENTICAL** HEU
-ticket `0x7fffffff00000001` (attr 0x1ef) — a maximal-rights-looking value, so **the ticket is DISCONFIRMED as
-the differentiator**; and the two 0x008404c1 replies are **byte-identical but for the session handle**, both
-ending `84000000 0e000000 / e7000080` = status **14** plus an **ABSENT value attribute**. **NEXT (re-ranked):
-(a)** the server data tree not readable in run-up state DetectMainboard (`_HWSTREE.TXT:
-ioc:=HWSIoc(state:=NotLoaded)`; the GetConfigData state that loads it runs AFTER DetectMainboard) — best fit
-for "every GetData errors"; **(b)** the exposed-item namespace not matching the requested names; **(c)** the
-init-mode SM having no state. **SERVER SIDE RE'd + THREE MORE HYPOTHESES KILLED:** the handler is
-`HWSServer_::HWSServer::ReadConfig@0x1f8ea0`; it succeeds only via `HWSMain::ReadConfig@0x1cb130` and its
-value-1 failure branches are **"No config data found"** and **"No primary data"** (`NCK_SRV_RESULT` literals in
-libGMessageHardware: FAILED/BAD_IDENT/BAD_HANDLE/TOO_COMPLEX) — the observed reply is NCK_SRV_RESULT=1.
-**(1) `optionSimulation` is fine:** `CheckInitMode` short-circuits on it, and it is set by
-`ConfigOptions@0x26e370` iff `IsExtControlPresent@0x26e2d0` — which is literally
-`FMailslotQueue::Open("AppStartMaster")` = `q_ident(name)!=-1`. New HST **`QI`** line (Q_ident logging,
-heros_rtos case 0x0b) proves `QI "AppStartMaster" -> 0x308 (t112)` ×5 from hwserver itself ⇒ set. **(2) the
-empty `config` list is fine now:** `HWSMain::ReadConfig` searches a static list filled only by
-`ReadConfigFile` under `if (configFileGiven)`, so `-U`-only leaves it empty. **bar11** (`-f=SYS:\config\Hardware.cfg`)
-⇒ the option IS accepted but hwserver converts `\`→`/` WITHOUT resolving the `SYS:` volume; **bar12**
-(`-f=/tmp/s/config/Hardware.cfg`, absolute, as ConfigServer is already passed) ⇒ reads it, then dies on the
-file it REFERENCES (`SYS:\TABLE\DevTable.hwd`); **run_appstart_fex.sh now stages the image's `table/` to
-/mnt/sys/TABLE + /mnt/plc/TABLE + /mnt/plc/CONFIG + $SYSW/TABLE** (uppercase — case matters) ⇒ **Hardware.cfg
-+ DevTable.hwd both load cleanly, the "Could not read configuration data" ERROR is GONE — and DetectMainboard
-fails IDENTICALLY.** A real staging gap fixed, hypothesis disconfirmed — **and that null result exposed a WRONG attribution:
-the request is `HWSSrvInspect`, NOT `HWSSrvReadConfig`.** The client builder
-`HwsMailslotQueue::GetData@libhwsinterface+0x21670` constructs an **HWSSrvInspect** (`+0x24`=item,
-`+0x34`=field, `+0x0C`=handle), matching the observed 51-byte wire exactly (4+8+8+16+15, no container); the
-ReadConfig branches were never on this path. `NCK_SRV_RESULT` is now pinned by two independent uses —
-**0=ok, 1=FAILED, 2=BAD_IDENT, 3=BAD_HANDLE, 4=TOO_COMPLEX** — and the reply carried **1=FAILED**.
-**★ FINAL PINNED CHAIN:** `HWSServer_::HWSServer::Inspect@0x1fac40` → `HandleIdent@0x1f5650` →
-`TemporaryJob::AccessIdent@0x20c540` → `Job::AccessIdent@0x200660` →
-**`ParseIdentString("initMode", hwsMain+536, …, job+96)`**, which then requires a walked `ParseTreeNode`
-with non-null `Info()`. That lookup yields nothing ⇒ HandleIdent fails ⇒ Inspect answers FAILED with an
-ABSENT value ⇒ GetDataSys false ⇒ "Could not access configuration data." ⇒ RunUpFailed ⇒ no
-FmProcessState(INITIALIZED) ⇒ Nc never dispatched. **★★ PROVEN, not inferred (bar13, hwserver's own `-vs`):** the doubt was whether `initMode` is simply
-absent/uninitialised — in which case FAILED would be CORRECT and the bug elsewhere. Three facts from
-hwserver's OWN log/dump kill that: **(a)** `77 configuration entities read.` — the config layer is fully
-healthy; **(b)** `HWSsmtInitMode` literals are **FullOperation=0, Delivery=1, SimDrives=2**, independently
-confirming the 4e mapping (SimMode 4 → 2 = SimDrives = DetectMainboard's success branch); **(c)**
-`_HWSTREE.TXT`, hwserver's own dump of the exposed root, written DURING DetectMainboard, reads
-`HWSRootNode( state:=DetectMainboard, …, initMode:=FullOperation, … )` — and `state:=DetectMainboard` is the
-run-up SM's LIVE value matching the TRNS sequence at that instant, so the dump reflects live valid
-attributes. **⇒ `initMode` is a PRESENT, VALID attribute with value FullOperation(0) at the moment
-DetectMainboard reads it, and the server still answers FAILED with an ABSENT value.** The failure is
-provably in the server-side ident-resolution/permission path, not a missing node, unset state machine,
-empty config list, ticket transport, emulator stub, or AppStart. This also settles the genuine boot: the
-read returns FullOperation(0) ⇒ `mode != 2` ⇒ fall through to `SearchForPCIDevice` ⇒ fails on a
-programming station ⇒ the fallback reaches HWSProgrammingStation and SUCCEEDS. Making this ONE read work
-clears hwserver's run-up. **★★★ NAMED ROOT CAUSE — PREDICTED, MEASURED, THEN NAMED (end of session):** Inspect's error reply is
-emitted from its **.cold `__cxa_begin_catch` handler**, which computes `code = exc->field0 + 0x0B` — so the
-observed wire code 14 PREDICTED a thrown exception with code 3. Re-running with the project's existing
-`__cxa_throw` interceptor (`CXATHROW=1`; note it was preloaded but never BUILT by run_appstart_fex.sh — a
-build line is now added) MEASURED exactly that: **`THROW type='15ServerException' code=3`**, ×3 pairs, at
-`hwserver.elf +0x835f5 / +0x83650` = **`HWSServer_::TemporaryJob::CreateJob(uint, JhUserRights::UserRight)
-[.cold]`** — i.e. the throw is in **JOB CREATION, before HandleIdent/ParseIdentString ever runs** (4f/4g were
-one level too deep). `CreateJob@0x20c7d0` in full: `FindConnection(handle); if (right != 37 &&
-!JhUserRights::Test(conn+156, conn+160, right)) throw ServerException(3)`. And
-`JhUserRights::Test@libOptions+0x176a0` = `HEUTestRights(ticketLo, ticketHi, lookupTable[2*r+1]) == 1` — the
-**HEU user-administration** layer, against the wire-measured ticket `HEUTicketFromStore(2)` =
-`0x7fffffff00000001`. The `JhUserRights::UserRight` name table (libOptions.so, `HEROS.FileOEM`=0 …
-`Sentinel`=37) gives **27 = `NC.DataAccessServiceRead`** (Inspect) and **32 = `NC.DataAccessSYS`**
-(ReadConfig); indexing confirmed 3 ways (`r>36` asserts; `right!=37` bypasses; 27/32 land on exactly the
-service-read / system-access rights those two operations need). **⇒ PROVEN: the read is denied for lack of
-user right `NC.DataAccessServiceRead`.** **★★★ CONFIRMED BY FIX — CROSSED.** The denial lives in
-`libheuseradmin.so`: `getShm()@0x33a0` picks the STATIC path if `/tmp/__use_network_useradmin` exists,
-else `shm_open("/_heusrv_shm")` and the DYNAMIC path, which matches the right NAME against a 64-entry table
-inside that segment — a table our heuserver creates but never populates, so `HEUTestRights` falls through to
-`errno=2; return -1` = DENY (Test compares `== 1`). The marker file alone was TESTED and changes nothing
-(`getTicketData` doesn't find our ticket), though run_appstart_fex.sh now creates it since it's the library's
-own switch. **FIX = `emulator/heurights.c`** (knob **`HEU_GRANT=1`**, default OFF, wired like cxathrow/fredfree):
-answer `HEUTestRights = 1`. This emulates an absent HOST service — libheuseradmin is a HeROS OS library backed
-by heuserver's user DB, which we don't reproduce, and the shipped free PGM-Platz runs with full local rights.
-Blast radius is 3 rights total across the whole constellation. **RESULT — hwserver takes EXACTLY the branch the
-RE predicted:** `GRANT "NC.DataAccessServiceRead"` → `Search for PCI device` → `Check for base addresses` →
-**`No Heidenhain hardware found, going into simulation mode`** → `ProgrammingStation|Object created` →
-`State DetectSik` → `SikModule|Non Heidenhain hardware. No sik present.` → `HW-Type: NONE - simulated`.
-**"Could not access configuration data." and RunUpFailed are GONE.** **NEW FRONTIER (fresh, downstream):**
-hwserver then takes **SIGSEGV** (`libheros_sigfaterr: Thread Server/hwserver … signal 11`) right after
-`HW-Type: NONE - simulated`, i.e. inside DetectSik/SikModule on the just-created ProgrammingStation object —
-so it still never reports INITIALIZED and Nc is still not dispatched, but the blocker is now a crash in
-NEWLY-REACHED code. **The fault dump (BTRACE, already on) makes it a THREAD STACK OVERFLOW, not a bad
-pointer:** `FAULT sig=0x0b eip=0xffce6418 addr=0xd79ffffc` with **`esp=0xd7a00000`** — esp is exactly
-page-aligned and the fault address is **esp-4**, the guard-page signature; and both faulting EIPs land inside
-**`/var/tmp/lr/lib/heros_rtos.so`** (`ffce6000-ffcf7000 r-xp`) at +0x1418 / +0x1956. heros_rtos.so is an i386
-LD_PRELOAD running on the GUEST thread's stack (heros_rtos.c:414); the guest creates its threads with
-`clone3 stack_size=0x2dfc0` = **188 KB**, and heros_rtos has several 16 KB-class stack objects
-(`QMSGCAP`/`EVTMSGCAP`=16384), so a few nested calls exhaust it. Only reachable now that DetectMainboard
-succeeds. **NEXT (well-scoped emulator fix): stop spending guest stack in heros_rtos** — move the large
-per-call buffers off the stack (static/TLS/heap) rather than enlarging the guest's stack, which is the
-guest's own choice and not ours to change faithfully. Full RE + hwserver's complete option map + evidence:
-**`docs/re/appstart-subsystem-sequencing-gate-re.txt`**; see [[project-appstart-gate-is-fmprocessstate-initialized]].
+## Current frontier (2026-07-29) — ★ GATE CROSSED: Nc loads AFTER Server, ipo_progstation spawns, and hwserver SERVES GetIoRange. Next = the NC startup cycle (StUpStartupCycleAck → EnterPowerInterrupt → HideStartupPicture)
+**★★★★★★★★★★★★★★ THE CROSSING (2026-07-29). 13 procs, crash=0, PciHardware throw=0.** A bar13 run
+(`TNC640heros_bar13.txt` + `HEU_GRANT=1`) reaches the session's un-fakeable exit: **every process of the
+Server subsystem reports INITIALIZED** (`Server:Server/hwserver` = **2** FmProcessState), so AppStart
+dispatches the NEXT batch message and the **Nc subsystem loads AFTER Server** — the faithful genuine
+ordering. `[rtos] SELF … self_pname="Nc/IPO"` = **ipo_progstation SPAWNS**, and on the **public
+QHWServer (30c)**: `QS sndr=t123 [Nc/IPO:GetIoRange]` → `QR (rdr=t112)` (hwserver's own main task) →
+**`QS [38a]"HwsM00000123N002" size=152 tag=008404c1 sndr=t112` = a POPULATED data reply** (vs the old
+72-byte FAILED). **ipo then ADVANCES**, walking the HW tree (node/spi, profinet, cameraFlash, ports,
+byPrjWriter) with hwserver answering each. 13 processes up: AppStart, winmgr, skmgr, prom, evtserver,
+Ed/mmi, Server/hwserver, Nc/{IPO,plc,PlcDaemon,MON,CM,startup}.
+
+**How it was cracked — three findings, in order.**
+**(1) The "0x01019007 Monitor gate" was a phantom.** That `Ev_receive` on t106 is AppStartMaster's **idle
+FThread dispatcher wait**; the trace shows it entered/left dozens of times per healthy boot. No subsystem
+"satisfies" it; there is no 6-subsystem limit; nothing about AppStart is Server-specific. **The REAL rule
+(idalib over AppStartMP.elf + libbackend.so):** the batch is fed **one message at a time** —
+`Monitor::OnMessage(FmProcessState)@0x3c400` emits `FmAppStartAction(0)` when the LAST process of the
+current subsystem reports **state 3 = INITIALIZED**, and `Procedures::OnMessage(FmAppStartAction)@0x4b420`
+→ `DispatchMessageFromProcedure@0x48c90` dispatches the next `FmLoadSubsystem`. Children report via
+`FProcess::SynchronizeTransition@libbackend+0x25880` (wire **tag 0x40c803e0** → the AppStartMaster queue).
+Diagnostic: **count `tag=40c803e0` per process — 2 = healthy, 1 = stuck.**
+**(2) hwserver was stuck at `RunUpFailed`** because `DetectMainboard`'s first call,
+`GetDataSys("initMode","(value)")`, was DENIED. Chain, each hop measured: the reply's code 14 predicted a
+thrown exception with code 3 (`Inspect`'s `.cold` catch computes `code = exc->field0 + 0x0B`); `CXATHROW=1`
+measured exactly `ServerException code=3` at `TemporaryJob::CreateJob`; `CreateJob@0x20c7d0` is
+`if (right != 37 && !JhUserRights::Test(...)) throw`; `JhUserRights::Test@libOptions+0x176a0` =
+`HEUTestRights(ticket, …) == 1`; and right **27 = `NC.DataAccessServiceRead`**. The denial itself is in
+`libheuseradmin.so`: `getShm()@0x33a0` takes the DYNAMIC path (`/_heusrv_shm`) and matches the right NAME
+against a 64-entry table our heuserver never populates → `errno=2; return -1` = DENY. **FIX =
+`emulator/heurights.c` (`HEU_GRANT=1`, default OFF)** — supplies the shipped full-local-rights state; only
+3 rights are tested constellation-wide and each is logged. hwserver then does exactly what the RE
+predicted: *No Heidenhain hardware found, going into simulation mode* → ProgrammingStation → DetectSik →
+*HW-Type: NONE - simulated* → GetConfigData → … → DetectMainboard again with *Hardware simulation mode
+requested by configuration.* (initMode 2 = SimDrives).
+**(3) The remaining SIGSEGV was the emulator's OWN crash handler.** Both faulting EIPs resolve (nm on the
+built .so) into **`crash_locate`/`hx`** — the handler ran on the faulting thread's exhausted stack
+(`esp` page-aligned, fault addr = `esp-4` = guard page) and re-faulted, destroying the evidence and turning
+a survivable condition fatal. **FIX = `sigaltstack`**: `altstack_arm()` lazily mallocs a 64 KB per-thread
+alt stack (armed from `task_self()`) and `kern_sigaction` now ORs **`SA_ONSTACK`** for the wrapped fatal
+handler. crash count 0 → hwserver completes its run-up.
+
+**Also fixed en route:** hwserver's own config now loads — it needs `-f=` (its documented "configuration
+data file" option) with an **absolute** path (it converts `\`→`/` but does NOT resolve the `SYS:` volume),
+plus staging of the files `Hardware.cfg` REFERENCES (`SYS:\TABLE\DevTable.hwd` → `/mnt/sys/TABLE`,
+uppercase); run_appstart_fex.sh now stages `table/` and creates `/tmp/__use_network_useradmin`, and it now
+actually BUILDS `cxathrow.so` (previously preloaded but never compiled, so silently ignored).
+New diagnostics: **`HEROSCALL_HSTHEX=1`** (raw wire hex — `msascii()` collapses the deciding bytes) and the
+HST **`QI`** line (Q_ident resolution, since some clients treat it as a decision:
+`IsExtControlPresent()` is literally `q_ident("AppStartMaster") != -1`).
+
+**★ NEXT FRONTIER (measured on the crossing run):** the NC startup cycle has not yet completed —
+`StUpStartupCycleAck`/`0xB700E0` = 0, `FipsUI::EnterPowerInterrupt` = 0, `HideStartupPicture(0x404705C0)` = 0,
+`PromActivateNotifyMsg(0x404703E0)` = 0, `SkMgrActivate(0x028a0200)` = 0, `startupPicVisible` = 1 (prom still
+correctly waiting). That is exactly the downstream checkpoint list, and it is now reachable for the first
+time. Full RE + evidence: **`docs/re/appstart-subsystem-sequencing-gate-re.txt`** (§4k = the crossing);
+see [[project-appstart-gate-is-fmprocessstate-initialized]].
 
 **★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
 no inject (2026-07-15 cont., commit 0edd4dd).** The prior "extend the HWS stub to answer GetIoRange" plan is

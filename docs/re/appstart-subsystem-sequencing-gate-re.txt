@@ -658,7 +658,72 @@ NEW FRONTIER (downstream, fresh): hwserver then takes SIGSEGV —
 immediately after "HW-Type: NONE - simulated", i.e. inside DetectSik / SikModule on the
 just-created ProgrammingStation object. So hwserver still does not reach INITIALIZED and Nc is still
 not dispatched — but the blocker is now a crash in newly-reached code, not a rights refusal.
-The fault dump (HEROSCALL_BTRACE, already on) identifies it as a
+★★★ 4k. THE CROSSING — Nc loads after Server, ipo spawns, hwserver SERVES GetIoRange
+====================================================================================
+The post-crossing SIGSEGV was NOT what section 4j first said. Resolving the two faulting EIPs against
+the built .so (nm on /var/tmp/lr/lib/heros_rtos.so) shows:
+
+    0x1410-0x14e0  hx            <- 0xffce6418 = +0x1418 lands here
+    0x14e0-0x1c70  crash_locate  <- 0xffce6956 = +0x1956 lands here
+
+i.e. BOTH faults are inside the emulator's own CRASH HANDLER. crash_locate ran on the faulting
+thread's already-exhausted stack (esp=0xd7a00000 page-aligned, fault addr = esp-4 = guard page) and
+re-faulted inside its own EBP walk / hex dump, which destroyed the evidence for the original fault and
+turned a survivable condition into libheros_sigfaterr "terminating signal 11". The earlier reading —
+that heros_rtos's normal 16 KB stack locals overflowed the guest's 188 KB stack during ordinary
+operation — was WRONG.
+
+FIX (emulator/heros_rtos.c): give the crash handler its own stack.
+  - altstack_arm(): lazily malloc()s a 64 KB per-thread alternate signal stack and sigaltstack()s it;
+    armed from task_self(), which every thread calls on its first heroscall.
+  - kern_sigaction() now ORs SA_ONSTACK (0x08000000) into the flags for the wrapped fatal handler, so
+    the kernel switches to that stack before entering crash_locate.
+
+RESULT (bar13 + HEU_GRANT=1 + stack-safe handler) — measured, un-fakeable:
+
+  crashes ("terminating signal")            0
+  PciHardware throws                        0
+  FmProcessState per process (2 = INITIALIZED):
+      2 AppStart:AppStart        2 winmgr:winmgr/winmgr    2 SkManager:SkManager/skmgr
+      2 prom:prom/prom           2 Event:Event/evtserver   2 Ed:Ed/mmi
+      2 Server:Server/hwserver   <-- hwserver REACHES INITIALIZED
+      1 Nc:Nc/IPO   1 Nc:Nc/plc   2 Nc:Nc/PlcDaemon   1 Nc:Nc/MON   1 Nc:Nc/CM   1 Nc:Nc/startup
+  processes spawned (13): AppStart, winmgr, skmgr, prom, evtserver, Ed/mmi, Server/hwserver,
+      Nc/IPO, Nc/plc, Nc/PlcDaemon, Nc/MON, Nc/CM, Nc/startup
+
+  ** Nc LOADS AFTER Server (the faithful genuine ordering), and ipo_progstation SPAWNS:
+     [rtos] SELF pid=69357 pname_reg=1 self_pname="Nc/IPO" (HEROS_PROC_NAME="Nc:Nc/IPO") **
+
+  ** hwserver SERVES GetIoRange on the PUBLIC QHWServer (30c): **
+     QS [30c]"QHWServer" size=72 tag=008400c0 sndr=t123 [... Nc/IPO . Nc/IPO:GetIoRange]
+     QR [30c]"QHWServer" size=72 tag=008400c0 (rdr=t112)        <- hwserver's own main task reads it
+     QS [38a]"HwsM00000123N002" size=152 tag=008404c1 sndr=t112 -> t123    <- POPULATED data reply
+                                                                             (vs the old 72-byte FAILED)
+  ** and ipo ADVANCES — it goes on to walk the HW tree (node/spi, node/profinet, node/cameraFlash,
+     node/ports, node/byPrjWriter), with hwserver answering each; the "Ident parsing: uninitialized
+     optional node/..." replies are for OPTIONAL nodes and ipo continues past them. **
+
+hwserver's own run-up also completes the genuine two-pass sequence:
+    DetectMainboard -> "No Heidenhain hardware found, going into simulation mode" -> ProgrammingStation
+    -> DetectSik -> "HW-Type: NONE - simulated" -> GetConfigData -> CfgSrvMgr ReadCfgData ->
+    ConfigNotification -> Idle -> Terminate -> DetectMainboard again, this time
+    "Hardware simulation mode requested by configuration."  (= initMode 2 = SimDrives, exactly the
+    branch section 4h predicted) -> ProgrammingStation -> GetConfigData.
+
+DOWNSTREAM STATE (the goal's next checkpoints), measured on this run:
+    StUpStartupCycleAck / 0xB700E0      0
+    FipsUI::EnterPowerInterrupt         0
+    HideStartupPicture 0x404705C0       0
+    PromActivateNotifyMsg 0x404703E0    0
+    SkMgrActivate 0x028a0200            0
+    startupPicVisible                   1   (prom still correctly waiting)
+=> the NC startup cycle has not yet run to completion; that is the next frontier, exactly where the
+   session goal said to look if the gate was crossed.
+
+
+4j. (superseded diagnosis, kept for the record)
+------------------------------------------------
+The fault dump (HEROSCALL_BTRACE, already on) identified it as a
 THREAD STACK OVERFLOW, not a bad pointer:
 
     === [rtos] FAULT sig=0x0000000b eip=0xffce6418 addr=0xd79ffffc
