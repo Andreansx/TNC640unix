@@ -111,8 +111,17 @@ static const char* mshex(const void*p,uint32_t n){
 #define MAXQ    2048       /* ConfigServer registers a ~1000-entry HwsM<task>N<ctr> mailslot pool
                             * at startup; 96 overflowed → "table full" → a retry spin (1.4GB log). */
 #define MAXREG  256
-#define QSLOTS  12         /* messages buffered per queue                        */
-#define QMSGCAP 16384      /* max bytes per message (kernel caps Q_send @ 0x8000) */
+#define QSLOTS  8          /* messages buffered per queue                        */
+#define QMSGCAP 32768      /* max bytes per message. THE REAL KERNEL CAPS Q_send AT 0x8000 = 32768, so
+                            * anything smaller silently CORRUPTS traffic: MEASURED (bar25) ConfigServer
+                            * answering Server/SQL's config query with
+                            *   *** Q_send size 18160 > QMSGCAP 16384 — TRUNCATING (queue "0-0000113CfgM")
+                            * SqlServer then read a 16384-byte fragment of an 18160-byte GMessage, parsed
+                            * past its end and died on glibc's "free(): invalid pointer" — which is why
+                            * it created Q_SQL, served exactly ONE request and never answered again.
+                            * QSLOTS drops 12 -> 8 so the per-queue footprint only grows ~33%
+                            * (8*32784 = 262 KB vs 12*16400 = 197 KB; x MAXQ 2048 = 537 MB of a SPARSE
+                            * /dev/shm mapping, of which only touched pages are resident). */
 #define NAMELEN 32
 
 struct task { int used; uint32_t id; int32_t tgid, tid; char name[NAMELEN];
