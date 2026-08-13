@@ -91,14 +91,27 @@ plc's requests reach the server (`notify=01000000->t113`). Remaining, in priorit
   read the 16384-byte fragment, parsed past the end of the GMessage and died. With `QMSGCAP` at
   32768: truncation warnings **0**, bad frees **0**, and `Q_SQL` reads go 1 → 6 — **the SQL server
   serves.** (`QSLOTS` 12 → 8 pays for it; a full-queue drop now warns too.)
-* **★ The one remaining crash is named:** `Nc/IPO` SIGSEGVs at `libgmsglib.so+0x2403a` =
-  `GMessage::IsValid` `+0x1a` — `mov 0x4(%eax),%eax` with `this` = **0x40** (fault addr 0x44),
-  identical EIP and address across bar23/bar24/bar26, so it is a deterministic bad pointer, not
-  random corruption. Resolving the stack against ipo's own maps names the caller:
-  **`IpoKonfig::ConvertOldMotorTab(Db::MailslotCached&, astring const&, astring const&)` +0x6c9**.
-  That is the motor-table conversion reading through a **cached database mailslot** — i.e. the path
-  that talks to the SQL server, which only started answering in bar26. Next: RE that reply path and
-  see what `Db::MailslotCached` hands back when the query finds nothing.
+* **★ The last crash traced to its true cause — an EXHAUSTED QUEUE TABLE.** `Nc/IPO` SIGSEGVs at
+  `libgmsglib.so+0x2403a` = `GMessage::IsValid+0x1a` (`mov 0x4(%eax),%eax`, `this` = **0x40**),
+  identical across bar23/24/26, from
+  **`IpoKonfig::ConvertOldMotorTab(Db::MailslotCached&, …)+0x6c9`** — and the disassembly shows that
+  is the *error path*: `ReadFirstTableRow` failed, so it calls `Db::Mailslot::ErrorCode()` on a
+  mailslot that never received a reply. The chain behind it, on the wire:
+  ```
+  QI "DB0000013eN35b" -> 0x0 (t13e)      Nc/plc probes a temp reply-mailslot name: free
+  QS [348]"Q_SQL" ... [DB0000013eN35b]   plc sends its request naming that queue as reply-to
+  QR [348] (rdr=t113)                    SqlServer reads it
+  QI "DB0000013eN35b" -> 0x0 (t113)      ...and cannot resolve the reply queue
+  ```
+  plc never created it because **`Q_create` had begun returning 0**: 2136 successful creates (max
+  queue id 0xb57) against `MAXQ` 2048, with only 84 `Q_delete`s — and "table full" was a
+  VERBOSE-only line, so the client sailed on with queue id 0. `MAXQ` is now **3072** and a full table
+  announces itself (769 MB sparse segment, verified to map inside a 32-bit guest: `T_ident -> 329`,
+  `c70cc000-f7200000 rw-s /dev/shm/heros_rtos_ctl`). bar27 tests it.
+* **The rule this session earned:** *anything that silently changes the bytes a guest sees must print
+  once and name the queue.* Truncation, full-queue drops, a full queue table, and unimplemented
+  heroscalls all now announce their first occurrence — and every one of those warnings found a real
+  bug within a single run.
 * `tm_check` (heroscall **0x31**) is unimplemented — the new first-use reporter caught it in ipo.
 
 **★ THE TWO bar23 BLOCKERS (both concrete):**
