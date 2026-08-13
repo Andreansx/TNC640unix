@@ -132,6 +132,11 @@ struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count;
  * (from Q_send's message-node fields: source queue id, sender task, mode|size) */
 struct qmsg { uint32_t len; uint32_t hdr[3]; uint8_t data[QMSGCAP]; };
 struct queue{ int used; uint32_t id; char name[NAMELEN];
+              uint32_t synth;                         /* 1 = the emulator AUTO-CREATED this as a
+                                                       * black-hole sink for an absent peer, not a
+                                                       * queue the guest ever Q_create'd. Compound
+                                                       * "<proc>.<queue>" resolution must not prefer
+                                                       * such a stand-in over the real queue. */
               uint32_t depth, flags;                  /* from Q_create (advisory)         */
               uint32_t owner, notify_bits;            /* Q_send Ev_sends notify_bits->owner (kernel +0xb8/+0xe8) */
               volatile uint32_t head, tail;           /* tail-head = count; futex on tail */
@@ -1251,11 +1256,16 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
             C->queues[s].owner=owner; C->queues[s].notify_bits=nbits;
             LOG("Q_create UPGRADE \"%s\" placeholder -> owner 0x%x notify %08x\n",base,owner,nbits);
         }
+        /* A real Q_create also clears the SYNTHETIC mark: whatever this slot started as, the guest now
+         * owns the name, so compound "<proc>.<queue>" lookups may prefer it again. */
+        if(C->queues[s].synth){ C->queues[s].synth=0;
+            LOG("Q_create \"%s\": synthetic sink adopted by a real Q_create (owner 0x%x)\n",base,owner); }
         uint32_t id=C->queues[s].id; unlock(); return id;
     }
     s=-1; for(int i=0;i<MAXQ;i++) if(!C->queues[i].used){ s=i; break; }
     if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
     C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
+    C->queues[s].synth=0;                                           /* a real Q_create, not a stand-in */
     C->queues[s].wm_tick_offset=0; C->queues[s].wm_last_serial=0;   /* WM_SERIAL_FIX: fresh serial state */
     C->queues[s].depth=depth; C->queues[s].flags=flags;
     C->queues[s].owner=owner; C->queues[s].notify_bits=nbits;
@@ -1313,7 +1323,8 @@ static int q_is_probe_name(const char*base){
 }
 static uint32_t q_ident(const char*nm){
     char base[NAMELEN]; q_basename(base,nm);
-    lock(); int s=q_find_slot(base); uint32_t id=(s>=0)?C->queues[s].id:0; unlock();
+    lock(); int s=q_find_slot(base); uint32_t id=(s>=0)?C->queues[s].id:0;
+    int base_synth=(s>=0)?(int)C->queues[s].synth:0; unlock();
     /* LEADING-DOT notify target ".X" (empty mailslot BEFORE the dot): X is the actual kernel queue the
      * peer created + reads, e.g. ConfigServer addresses its own EditThread's connect-ack + config-notify
      * to ".EditThreadNotify" / ".EditThreadQue". q_basename strips the leading dot -> "" -> q_find_slot
@@ -1355,16 +1366,30 @@ static uint32_t q_ident(const char*nm){
      * Only fires for dotted names whose before-dot part is unbacked AND whose after-dot part is
      * a genuinely Q_create'd queue, so non-reply-to names and real before-dot queues are
      * unaffected (q_find_slot(base) already matched those above). */
-    if(!id && qident_notify && nm && base[0]){    /* base[0]: only "<mailslot>.<notifyq>", NOT leading-dot ".X" (that is CFG_REPLY_ROUTE's empty-queue path) */
+    /* ...and the SAME redirect must fire when the before-dot base resolves only to a SYNTHETIC
+     * black hole this emulator invented earlier. MEASURED (bar22): startup.elf itself q_idents
+     * "Nc/startup.QSelfTest"; the before-dot "Nc/startup" did not exist, so the auto-create below
+     * minted it as a sink (QC "Nc/startup" flags=0 notify=0). From then on EVERY peer address
+     * "Nc/startup.QStartUp" resolved to that sink instead of startup.elf's real QStartUp queue
+     * (created with notify 0x08000000) — so evtserver's EvtClientIsConnected and its follow-ups
+     * were delivered into the hole with notify=0, nothing woke startup.elf, and FipsMain sat in
+     * ConnectServer forever. A synthetic stand-in must never win over a queue the guest really
+     * created. */
+    if((!id || base_synth) && qident_notify && nm && base[0]){    /* base[0]: only "<mailslot>.<notifyq>", NOT leading-dot ".X" (that is CFG_REPLY_ROUTE's empty-queue path) */
         const char*dot=strrchr(nm,'.');
         if(dot && dot>nm && dot[1]){
-            lock(); int ns=q_find_slot(dot+1); uint32_t nid=(ns>=0)?C->queues[ns].id:0; unlock();
-            if(nid){ LOG("Q_ident \"%s\" -> 0x%x (compound notify-queue \"%s\", mailslot \"%s\" unbacked)\n",
-                         nm,nid,dot+1,base); return nid; }
+            lock(); int ns=q_find_slot(dot+1);
+            uint32_t nid=(ns>=0 && !C->queues[ns].synth)?C->queues[ns].id:0; unlock();
+            if(nid){ LOG("Q_ident \"%s\" -> 0x%x (compound notify-queue \"%s\", mailslot \"%s\" %s)\n",
+                         nm,nid,dot+1,base, base_synth?"is a synthetic sink":"unbacked");
+                     HST(task_self(),0,"QI \"%s\" -> 0x%x (compound -> real queue \"%s\")\n",nm,nid,dot+1);
+                     return nid; }
         }
     }
     if(!id && q_autocreate && !q_is_probe_name(base)){    /* black-hole sink for absent peers */
-        id=q_create(base,2,0); LOG("Q_ident \"%s\" -> auto 0x%x\n",base,id); return id;
+        id=q_create(base,2,0);
+        lock(); int as=q_slot(id); if(as>=0) C->queues[as].synth=1; unlock();   /* mark it a stand-in */
+        LOG("Q_ident \"%s\" -> auto 0x%x (synthetic sink)\n",base,id); return id;
     }
     LOG("Q_ident \"%s\" -> 0x%x\n",base,id);
     return id;                                            /* 0 => not found */
