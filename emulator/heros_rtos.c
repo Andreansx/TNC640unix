@@ -611,6 +611,69 @@ static void ev_trace(uint32_t self,uint32_t want,uint32_t cond,uint32_t timeout)
     fflush(stderr);
 }
 
+/* ---- GUEST BACKTRACE on a watched Q_ident NAME (HEROSCALL_QI_TRACE_NAME) --------------------
+ * The Ev_receive tracer above answers "who is BLOCKED on this bit". Its twin question — "who is
+ * SPINNING on this call" — needs the same walk hung off Q_ident, because a busy guest loop shows up
+ * in the trace as an endless stream of QI lines with nothing else between them.
+ * MEASURED (bar28) on Nc/plc's task t13e:
+ *     distinct DB0000013eN* names   1000   (a fixed pool, created once)
+ *     QC "DB0000013e…"              1000
+ *     QI "DB0000013e…"          6,046,691
+ *     QS naming one as a reply-to        0
+ * i.e. the pool is built and then re-resolved six million times without ever being used, while
+ * Nc/MON and Nc/PlcDaemon wait on the NcI barrier for that process to finish initialising.
+ * Usage:  HEROSCALL_QI_TRACE_NAME=DB0000013e  [HEROSCALL_QI_TRACE_TASK=13e]
+ *         [HEROSCALL_QI_TRACE_BUDGET=8]
+ * Reuses gmap/frame helpers above; dedups by callstack so a hot loop prints once. Default OFF. */
+static const char *qit_name=(const char*)-1;   /* -1 = env not read yet, 0 = off */
+static uint32_t    qit_task=0;
+static int         qit_budget=0;
+static uint32_t    qit_seen[64]; static int qit_nseen=0;
+static void qi_trace(const char*qname){
+    if(qit_name==(const char*)-1){
+        qit_name=getenv("HEROSCALL_QI_TRACE_NAME");
+        const char*t=getenv("HEROSCALL_QI_TRACE_TASK"); qit_task=t?(uint32_t)strtoul(t,0,16):0;
+        const char*n=getenv("HEROSCALL_QI_TRACE_BUDGET"); qit_budget=n?atoi(n):8;
+    }
+    if(!qit_name||!qit_name[0]||!qname||qit_budget<=0) return;
+    if(!strstr(qname,qit_name)) return;
+    uint32_t self=task_self();
+    if(qit_task && self!=qit_task) return;
+    if(g_nmaps<0) gmap_load();
+    uintptr_t sp; __asm__ volatile("mov %%esp,%0":"=r"(sp));
+    struct gmap*sm=gmap_find(sp); uintptr_t top=sp+0x20000;
+    if(sm && sm->hi<top) top=sm->hi;
+    uintptr_t walk[24]; int nw=0, bestlen=0; uintptr_t startbp=0;
+    for(uintptr_t p=sp; p<sp+2048 && p+8<=top; p+=4){
+        uintptr_t b=*(volatile uintptr_t*)p;
+        if(b<=p || b>=top) continue;
+        int L=evt_chain_len(b,sp,top);
+        if(L>bestlen){ bestlen=L; startbp=b; if(L>=16) break; }
+    }
+    uint32_t h=2166136261u ^ self;
+    if(startbp && bestlen>=2){
+        uintptr_t bp=startbp;
+        for(int i=0;i<24 && nw<24;i++){
+            if(!evt_frame_ok(bp,sp,top)) break;
+            uintptr_t ret=*(volatile uintptr_t*)(bp+4);
+            walk[nw++]=ret; h=(h ^ (uint32_t)ret)*16777619u;
+            uintptr_t nb=*(volatile uintptr_t*)bp;
+            if(nb<=bp || nb>=top || nb-bp>0x8000) break;
+            bp=nb;
+        }
+    }
+    for(int i=0;i<qit_nseen;i++) if(qit_seen[i]==h) return;      /* this callstack already logged */
+    if(qit_nseen<64) qit_seen[qit_nseen++]=h;
+    qit_budget--;
+    fprintf(stderr,"[qitrace] t0x%x Q_ident(\"%s\") : %d frames (chainlen %d):\n",self,qname,nw,bestlen);
+    for(int i=0;i<nw;i++){
+        struct gmap*m=gmap_find(walk[i]); uintptr_t base=m?gmap_base(m->name):0;
+        fprintf(stderr,"[qitrace]   F%d %#010lx  %s+0x%lx\n",
+            i,(unsigned long)walk[i], m?m->name:"?", (unsigned long)(walk[i]-base));
+    }
+    fflush(stderr);
+}
+
 /* INJECT_WMGR_TIMER state — declared here (before ev_receive) because ev_receive delivers the timer tick
  * event-driven. Full RE writeup at the second reference near `timers_fire`. */
 static void put32(unsigned char*b,uint32_t v);   /* fwd (defined later) */
@@ -3663,6 +3726,7 @@ long syscall(long n,...){
                 * so strict FMailslotQueue::Write succeeds, but reports presence-probed names
                 * (QueueHeLogger, HwsM* temp slots) as not-found. */
         if(p&&p[0]){ const char*qn=(const char*)(uintptr_t)p[0]; uint32_t id=q_ident(qn);
+                     qi_trace(qn);           /* HEROSCALL_QI_TRACE_NAME: name the guest code that spins here */
                      /* HSTRACE: Q_ident is a DECISION for some clients, not just addressing —
                       * hwserver's HWServerModule::IsExtControlPresent() is literally
                       * `FMailslotQueue::Open("AppStartMaster")` = `q_ident(name)!=-1`, and its result
