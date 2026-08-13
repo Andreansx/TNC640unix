@@ -3712,8 +3712,17 @@ long syscall(long n,...){
         }
         return 0;
     }
-    default:
-        return 0;   /* T_create,T_start,As,P_childstat,P_signal,Tm etc — success stub for now */
+    default: {
+        /* Unimplemented heroscall -> report success. That is deliberately forgiving, but a SILENT
+         * forgiving stub is how Q_delete (0x0c) went unnoticed while it leaked every temporary
+         * mailslot name in the constellation. Count each unknown opcode and announce the FIRST
+         * occurrence of each on stderr, so a missing primitive is visible without a VERBOSE run. */
+        static unsigned char seen[64];
+        if(lo<64 && !seen[lo]){ seen[lo]=1;
+            fprintf(stderr,"[rtos] UNIMPLEMENTED heroscall 0x%02x (%s) -> returning success "
+                           "(first occurrence; further ones are silent)\n", lo, hcname(lo)); }
+        return 0;
+    }
     }
 }
 
