@@ -47,6 +47,17 @@ long syscall(long n, ...);
  * our interposed syscall(), since glibc uses inline syscalls internally). */
 static long raw5(long n,long a,long b,long c,long d,long e){ long r;
     __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a),"c"(b),"d"(c),"S"(d),"D"(e):"memory"); return r; }
+/* raw 6-arg syscall (i386 puts arg6 in EBP). Needed by the syscall() PASSTHROUGH below: the
+ * guest's own libraries issue 6-arg syscalls through libc's syscall() — notably abseil
+ * (libabsl_synchronization, waiter.cc) which calls
+ *   syscall(SYS_futex, v, FUTEX_WAIT_BITSET|FUTEX_PRIVATE_FLAG|FUTEX_CLOCK_REALTIME,
+ *           val, &abs_timeout, nullptr, FUTEX_BITSET_MATCH_ANY)
+ * — dropping arg6 (val3) makes the kernel see val3=garbage and reject the WAIT.
+ * Sequence is musl's __syscall6: push arg6 BEFORE touching esp for ebp, so an esp-relative
+ * operand is still addressed correctly. */
+static long raw6(long n,long a,long b,long c,long d,long e,long f){ long r;
+    __asm__ volatile("pushl %[a6]\n\tpush %%ebp\n\tmov 4(%%esp),%%ebp\n\tint $0x80\n\tpop %%ebp\n\taddl $4,%%esp"
+        :"=a"(r):"a"(n),"b"(a),"c"(b),"d"(c),"S"(d),"D"(e),[a6]"g"(f):"memory"); return r; }
 
 static int vrb=0, btrace_on=0, pname_dbg=0;
 #define LOG(...) do{ if(vrb) fprintf(stderr,"[rtos] " __VA_ARGS__); }while(0)
@@ -3230,8 +3241,28 @@ static int kern_sigaction(int sig,void*h,unsigned long flags,unsigned long m0,un
     return (int)raw5(SYS_rt_sigaction,sig,(long)ka,0,8,0);
 }
 static void hx(unsigned long v){ char b[11]="0x00000000"; for(int i=0;i<8;i++){ int d=(v>>((7-i)*4))&0xf; b[2+i]=d<10?'0'+d:'a'+d-10; } raw5(SYS_write,2,(long)b,10,0,0); }
+/* SAFE-READ probe for the crash dump. A plain range check is NOT enough: an unmapped-but-plausible
+ * pointer (e.g. a garbage EBP of 0x0003f833) passes it and the deref faults INSIDE the handler.
+ * write(/dev/null, p, 4) is the async-signal-safe way to ask the kernel "is this readable?" — it
+ * returns 4 for readable memory and -EFAULT otherwise, with no side effects. */
+static int crash_nullfd=-2;
+static int rd_ok(unsigned long p){
+    if(p<0x1000||p>0xfffff000) return 0;
+    if(crash_nullfd==-2) crash_nullfd=(int)raw5(SYS_openat,AT_FDCWD,(long)"/dev/null",O_WRONLY,0,0);
+    if(crash_nullfd<0) return 1;                       /* cannot probe -> fall back to the range check */
+    return raw5(SYS_write,crash_nullfd,(long)p,4,0,0)==4;
+}
 static void crash_locate(int sig,siginfo_t*si,void*ucv){
     ucontext_t*uc=(ucontext_t*)ucv;
+    /* REENTRANCY GUARD. The guest installs its fatal handlers with SA_NODEFER, so a fault raised by
+     * this dump code re-enters crash_locate instead of terminating — MEASURED as a 3541-entry fault
+     * storm (hwserver, EBP walk over a garbage frame pointer) that buried the ORIGINAL fault and
+     * pinned a CPU for the rest of the run. One level of dump, then die. */
+    static volatile int crash_depth=0;
+    if(__atomic_fetch_add(&crash_depth,1,__ATOMIC_ACQ_REL)!=0){
+        dbg("\n=== [rtos] NESTED fault inside the crash handler - dump aborted ===\n");
+        raw5(SYS_exit_group,128+sig,0,0,0,0);
+    }
     raw5(SYS_write,2,(long)"\n=== [rtos] FAULT sig=",22,0,0); hx(sig);
     raw5(SYS_write,2,(long)" eip=",5,0,0); hx(uc?(unsigned long)uc->uc_mcontext.gregs[REG_EIP]:0);
     raw5(SYS_write,2,(long)" addr=",6,0,0); hx(si?(unsigned long)si->si_addr:0);
@@ -3249,12 +3280,13 @@ static void crash_locate(int sig,siginfo_t*si,void*ucv){
      * when glibc's abort path omits frame pointers — correlate addrs with maps). */
     raw5(SYS_write,2,(long)"\n frames:",9,0,0);
     if(uc){ unsigned long bp=(unsigned long)uc->uc_mcontext.gregs[REG_EBP];
-        for(int i=0;i<10&&bp>0x1000&&bp<0xfffff000;i++){
+        for(int i=0;i<10&&rd_ok(bp)&&rd_ok(bp+4);i++){
             raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(bp+4));
             unsigned long nb=*(unsigned long*)bp; if(nb<=bp) break; bp=nb; } }
     raw5(SYS_write,2,(long)"\n stack:",8,0,0);
     if(uc){ unsigned long sp=(unsigned long)uc->uc_mcontext.gregs[REG_ESP];
-        for(int i=0;i<96&&sp;i++){ raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(sp+4*i)); } }
+        for(int i=0;i<96&&sp;i++){ if(!rd_ok(sp+4*i)) break;
+            raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(sp+4*i)); } }
     raw5(SYS_write,2,(long)"\n--- /proc/self/maps ---\n",25,0,0);
     int fd=(int)raw5(SYS_openat,AT_FDCWD,(long)"/proc/self/maps",0,0,0);
     if(fd>=0){ char buf[1024]; long r; while((r=raw5(SYS_read,fd,(long)buf,sizeof buf,0,0))>0) raw5(SYS_write,2,(long)buf,r,0,0); raw5(SYS_close,fd,0,0,0,0); }
@@ -3265,19 +3297,20 @@ static void crash_locate(int sig,siginfo_t*si,void*ucv){
      * known EvalContextModule call sites (edx-relative call) — otherwise esi is unrelated. */
     if(uc){ unsigned long esi=(unsigned long)uc->uc_mcontext.gregs[REG_ESI];
         raw5(SYS_write,2,(long)"\n--- FThread(esi) walk ---\n this=",32,0,0); hx(esi);
-        if(esi>0x1000&&esi<0xfffff000){
+        if(rd_ok(esi+0x4c)&&rd_ok(esi+0x60)){
             unsigned long R=*(unsigned long*)(esi+0x4c), arr=*(unsigned long*)(esi+0x60);
             raw5(SYS_write,2,(long)" m4c(R)=",8,0,0); hx(R);
             raw5(SYS_write,2,(long)" m60(arr)=",10,0,0); hx(arr);
-            if(R>0x1000&&R<0xfffff000){
+            if(rd_ok(R+0x1c)&&rd_ok(R+0x20)){
                 unsigned long cnt=*(unsigned long*)(R+0x20), idx=*(unsigned long*)(R+0x1c);
                 raw5(SYS_write,2,(long)"\n R.count=",10,0,0); hx(cnt);
                 raw5(SYS_write,2,(long)" R.idx=",7,0,0); hx(idx);
-                if(arr>0x1000&&arr<0xfffff000&&idx<0x1000){
+                if(idx<0x1000&&rd_ok(arr+idx*4)){
                     raw5(SYS_write,2,(long)" arr[idx]=P=",11,0,0);
                     hx(*(unsigned long*)(arr+idx*4));
                     raw5(SYS_write,2,(long)" arr[0..3]=",11,0,0);
-                    for(unsigned k=0;k<4&&k<=idx+1;k++){ raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(arr+4*k)); }
+                    for(unsigned k=0;k<4&&k<=idx+1;k++){ if(!rd_ok(arr+4*k)) break;
+                        raw5(SYS_write,2,(long)" ",1,0,0); hx(*(unsigned long*)(arr+4*k)); }
                 }
             }
         }
@@ -3317,9 +3350,23 @@ void (*signal(int sig,void(*h)(int)))(int){
 
 long syscall(long n,...){
     va_list ap; va_start(ap,n);
-    long a=va_arg(ap,long),b=va_arg(ap,long),c=va_arg(ap,long),d=va_arg(ap,long),e=va_arg(ap,long);
+    long a=va_arg(ap,long),b=va_arg(ap,long),c=va_arg(ap,long),d=va_arg(ap,long),e=va_arg(ap,long),
+         f=va_arg(ap,long);
     va_end(ap);
-    if(n!=222) return raw5(n,a,b,c,d,e);
+    /* PASSTHROUGH for every non-heroscall number. This MUST reproduce glibc's syscall() ABI, not the
+     * raw kernel one: glibc returns -1 and sets errno, the kernel returns -errno. Returning the raw
+     * value (and leaving errno stale) broke every guest library that uses libc's syscall() directly.
+     * MEASURED (2026-08-13, hwserver during DetectSik): abseil's Futex::WaitUntil does
+     *     err = syscall(SYS_futex, ...); if (err != 0) return -errno;
+     * and Waiter::Wait treats anything but -EINTR/-EWOULDBLOCK/-ETIMEDOUT as
+     *     ABSL_RAW_LOG(FATAL, "Futex operation failed with error %d")  -> abort().
+     * With the old passthrough a perfectly ordinary EAGAIN came back as a non-zero return with a
+     * STALE errno (observed: 17 = EEXIST, from an unrelated earlier openat) -> SIGABRT in hwserver,
+     * i.e. a coin-flip abort in ANY guest thread that contends an absl mutex/condvar. Six args are
+     * forwarded because absl's timed wait passes FUTEX_BITSET_MATCH_ANY as val3 (arg6). */
+    if(n!=222){ long r=raw6(n,a,b,c,d,e,f);
+        if(r<0&&r>=-4095){ errno=(int)(-r); return -1; }
+        return r; }
 
     ensure_init();
     uint32_t cmd=(uint32_t)a; int lo=cmd&0xff; uint32_t *p=(uint32_t*)b;
