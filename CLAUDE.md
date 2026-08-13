@@ -112,6 +112,26 @@ plc's requests reach the server (`notify=01000000->t113`). Remaining, in priorit
   once and name the queue.* Truncation, full-queue drops, a full queue table, and unimplemented
   heroscalls all now announce their first occurrence — and every one of those warnings found a real
   bug within a single run.
+
+**★ STATE AT HANDOFF (bar28: `QSLOTS` 12 / `QMSGCAP` 20480 / `MAXQ` 3072 — 720 MB sparse segment):**
+`crash = 0, FAULT = 0`, no truncation, no table-full. 16 processes spawn and **13 of 15 report
+INITIALIZED** (`winmgr skmgr prom evtserver Ed/mmi` + `Server/{hwserver,SQL,DNC,DlgServer,smserver}`
++ `NcS/{startup,CM}` + `Nc/{MON,PlcDaemon}`); only `Nc/IPO` and `Nc/plc` are still at one report, and
+startup.elf sits at `FipsNc StartSubsysNc` / `FipsUI WaitNcSubsysInterrupt` waiting for them.
+
+**★ THE TWO THINGS TO DO NEXT, in order:**
+1. **`SqlServer` still never replies** — `QS` to a `DB…` mailslot: **0**. It is alive, INITIALIZED,
+   reads its Q_SQL requests, and answers nothing. That is what keeps `Nc/plc` and `Nc/IPO` from
+   finishing (`IpoKonfig::ConvertOldMotorTab` fails its `ReadFirstTableRow`), and therefore what
+   keeps the `NcI` barrier shut and the NC startup cycle from running. Start with `SqlServer`'s own
+   `-h`/`-g`/`-d`/`-i`/`-T` options and whether its database is "linked to a file"
+   (`DbDatabaseEngine`, `config/SqlCfg.atr`); it now gets its full 18160-byte config, so the old
+   truncation excuse is gone.
+2. **The queue ring is genuinely too shallow for three queues** — `QIpoKonfig`, `QEvtServer` and
+   `DncCntxt3` still overflow at **12** slots and drop their oldest message. This is NOT new; it has
+   been happening silently in every run and only became visible today. The principled fix is to stop
+   ignoring `Q_create`'s own `depth` argument and allocate the ring from it (which needs message
+   storage out of the fixed-size `struct queue` — a shared pool — rather than a bigger constant).
 * `tm_check` (heroscall **0x31**) is unimplemented — the new first-use reporter caught it in ipo.
 
 **★ THE TWO bar23 BLOCKERS (both concrete):**
