@@ -60,7 +60,37 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-08-13) — ★★ startup.elf was in **FailInit** all along ("No HwViewer instance specified on command line"); plus four real emulator bugs fixed. Next = does FipsMain now drive the NC startup cycle?
+## Current frontier (2026-08-13) — ★★★ THE WHOLE BOOT SEQUENCE NOW RUNS: startup.elf drives FipsMain Init→ConnectServer→WaitHwInit→CheckHwSetup→PreInitNc and its own CallProcedure("StartNc") makes AppStart load the NC channel. Next = Nc/IPO's SIGSEGV in GMessage::IsValid + the servers nobody is running (Q_SQL, DNC, DlgServer)
+**★★★★★★ bar23 RESULT (measured, crash-free except where noted).** startup.elf's own log:
+```
+FipsMain  Init → ConnectServer → WaitHwInit → CheckHwSetup → PreInitNc
+FipsUI    IdleUI → HwInitRunning → IdleUI → IdleUInc → WaitNcSubsys → WaitNcSubsysInterrupt
+FipsNc    Init → StartSubsysNc
+FipsEvtServer  ConnectEvtServer → EvtReset
+```
+* **`WaitHwInit` → `CheckHwSetup` means the HW-server run-up trigger FIRED** — hwserver reached
+  `HWSRunUpState Idle(7)` (`GetConfigData → InitDevs → Operate → Release control → Idle`) and
+  `FipsIfHws::AddTriggerRunUp`'s trigger came back, exactly as the RE predicted.
+* **`FipsNc::StartSubsysNc` calls `FipsIfAppStart::CallProcedure("StartNc")` and AppStart REALLY LOADS
+  STAGE TWO**: `ipo_progstation.elf`, `plc.elf`, `PlcDaemon.elf`, `monitoring.elf` spawn only after
+  startup.elf asks — the genuine, control-driven boot order, for the first time.
+* Barriers behave: `SV "NcSI" released 2` (startup+CM) then `SV "NcC" released 4` (the stage-2 four).
+  `Nc/startup`, `Nc/CM`, `Nc/MON`, `Nc/PlcDaemon` all reach INITIALIZED.
+
+**★ THE TWO NEW BLOCKERS (both concrete):**
+1. **`Nc/IPO` SIGSEGVs in `GMessage::IsValid(GmIsValid_)`** — `libgmsglib.so+0x24020`, fault at `+0x1a`
+   reading `[reg+0x44]` of a null/garbage object (`libheros_sigfaterr: Thread Nc/IPO.Nc/IPO received
+   terminating signal 11`).
+2. **Nobody serves `Q_SQL`.** The traffic immediately before that fault is `Nc/plc` firing temp
+   mailslot names (`DB00000133N371`, `N372`, …) at `Q_SQL` — a queue the emulator auto-created as a
+   sink. That is also the origin of the earlier 1.7M-`Q_ident` treadmill: an unanswered request loop
+   that mints a fresh temp mailslot per attempt. The shipped `Server` subsystem is **not just
+   hwserver** — it is observer, hwserver, cfgserver, **DNC**, **SQL**, flserver, HPServer, SIFCOM1/2,
+   HlpSrv, **DlgServer**, cast, **smserver**, tasksrv, workset, and startup.elf's own context declares
+   `DncInQueue`, `Q_DLGSERVER` and `QOsciCtrl` as out-queues. `emulator/TNC640heros_bar24.txt` adds
+   SqlServer, dnc, DialogServer and SharedMemServer to the Server subsystem.
+
+## Prior frontier (2026-08-13, earlier) — startup.elf was in **FailInit** all along ("No HwViewer instance specified on command line"); plus five real emulator bugs fixed
 **★★★★★ THE HEADLINE.** Once startup.elf was given `-L=<path>` (without it `EvtMgr::WriteVerbosePrint`
 @0x4a810 writes nothing — it needs `evtMgr+52`, which only `SwitchToCustomLogger`/`-L` sets, AND a
 non-NULL `FILE*`; `-v` alone only sets the level), its own log answered in 40 ms what weeks of runs
