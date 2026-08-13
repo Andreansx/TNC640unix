@@ -120,13 +120,20 @@ INITIALIZED** (`winmgr skmgr prom evtserver Ed/mmi` + `Server/{hwserver,SQL,DNC,
 startup.elf sits at `FipsNc StartSubsysNc` / `FipsUI WaitNcSubsysInterrupt` waiting for them.
 
 **★ THE TWO THINGS TO DO NEXT, in order:**
-1. **`SqlServer` still never replies** — `QS` to a `DB…` mailslot: **0**. It is alive, INITIALIZED,
-   reads its Q_SQL requests, and answers nothing. That is what keeps `Nc/plc` and `Nc/IPO` from
-   finishing (`IpoKonfig::ConvertOldMotorTab` fails its `ReadFirstTableRow`), and therefore what
-   keeps the `NcI` barrier shut and the NC startup cycle from running. Start with `SqlServer`'s own
-   `-h`/`-g`/`-d`/`-i`/`-T` options and whether its database is "linked to a file"
-   (`DbDatabaseEngine`, `config/SqlCfg.atr`); it now gets its full 18160-byte config, so the old
-   truncation excuse is gone.
+1. **`Nc/IPO` and `Nc/plc` never finish initialising — but NOT because SqlServer is mute.**
+   (Correcting an earlier reading of this run: "replies to `DB…` queues = 0" measured the wrong
+   thing. SqlServer answers on the client's OWN named queues, and it does:
+   `t113 sends = 656` (8 in bar24), including
+   `QS [3fe]"PLCIF_Q00"`, `QS [3d5]"QIpoKonfig2"`, `QS [3c1]"QAfc"` with tag `00dc0201` — and the
+   compound-name fix is visibly carrying them: `QI "Nc/plc.PLCIF_Q00" -> 0x3fe (compound -> real
+   queue "PLCIF_Q00")`.)
+   What the two stragglers actually do is **walk their `Db::MailslotCached` temp-mailslot pools**:
+   `t13e` 1168 sends and climbing through `QI "DB0000013eN2b9" -> 0xab7`, `t130` likewise. Every new
+   temp mailslot costs an O(n) scan over all the names already taken, and nothing is ever
+   `Q_delete`d (`Db::MailslotCached::ClearCache` — visible in `ConvertOldMotorTab` — is the release
+   path and is never reached). Meanwhile `Nc/MON` and `Nc/PlcDaemon` sit parked on the `NcI` barrier
+   waiting for them. Next: find out whether that scan is converging or unbounded (it wrapped at
+   N999 in bar20), and why the cache never releases.
 2. **The queue ring is genuinely too shallow for three queues** — `QIpoKonfig`, `QEvtServer` and
    `DncCntxt3` still overflow at **12** slots and drop their oldest message. This is NOT new; it has
    been happening silently in every run and only became visible today. The principled fix is to stop
