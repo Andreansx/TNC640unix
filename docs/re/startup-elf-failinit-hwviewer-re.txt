@@ -1,0 +1,120 @@
+TNC640 — startup.elf never left FipsMain::Init, and why nobody could see it  (2026-08-13)
+
+Binaries: work/control/sysroot/heros5/bin/startup.elf
+Method:   the binary's OWN verbose logger (-v -L), after idalib/Hex-Rays explained why -v alone
+          produced nothing; cross-checked against work/control/sysroot/batch/TNC640heros.txt.
+
+
+1. THE SYMPTOM, ACROSS MANY SESSIONS
+------------------------------------
+Every constellation run that included Nc/startup — bar5, bar7, bar9, bar13, bar16, bar17, bar19,
+bar20 — showed the same thing: startup.elf spawns, creates QFipsIntern + QStartUp, registers with
+prom (QProMRequest "Nc/startup.QStartUp"), opens a HW-server mailslot, reads a little config, sends
+its one FmProcessState to AppStartMaster, and then goes silent forever on
+    EV< t11e WAIT want=07011002 c=2 to=inf
+It was read as "waiting for a peer" / "waiting for the NC channel" / "waiting for hardware", and the
+NC startup cycle (ChM StUpStartupCycleAck -> FipsUI::EnterPowerInterrupt -> HideStartupPicture ->
+the softkey bar) was pursued as if it were downstream of some missing message.
+
+
+2. WHY THE OBVIOUS DIAGNOSTIC WAS SILENT
+----------------------------------------
+startup.elf documents its own switches (FipsProcess::ReadCommandLineOptions @0x44bc0):
+    -v   Verbose
+    -V   Verbose, Trace all messages
+    -L   (Only for Unittests zatopek) use custom logger instead of HeLogger with the given path
+and its FipsMain/FipsNc/FipsUI state machines announce every transition through
+EvtMgr::FVerbosePrint(..., 6, "State <X> entered."). Passing -v (verified present in the child's
+argv) produced NOT ONE line. Two independent reasons, both measured:
+
+  (a) STDOUT BUFFERING. Every spawned child's stdout is a FILE, so glibc gives it a 4 KB fully
+      buffered stream, and the run's timeout SIGKILLs it — a process that prints a few hundred bytes
+      loses all of them. (hwserver's identical prints were visible only because it emits tens of KB.)
+      Fixed generally by emulator/linebuf.c (knob LINEBUF, default ON).
+
+  (b) -v DOES NOT OPEN A LOG. EvtMgr::WriteVerbosePrint (0x4a810) is
+          if ( *((_BYTE *)this + 52) != 0 && (FILE**)*(this + 9) != nullptr ) { ...write... }
+      -v only sets the LEVEL byte at evtMgr+33 (and clears the mask word at +34). The flag at +52 is
+      set exclusively by EvtMgr::SwitchToCustomLogger (0x4a7e0) —
+          *(_BYTE *)(a1 + 52) = 1;  BasicString<char>::assign(a1 + 40, path);
+      — i.e. by the -L option. So startup.elf's entire state trace had nowhere to go.
+
+  => the working incantation is  -v -L=<path>  (bar21/bar22 use /tmp/s/runtime/_StartUpVerbose.txt).
+
+
+3. WHAT IT SAID, 40 ms IN
+-------------------------
+    |INFO|EventMgr|Log started (Local Time)
+    |ACTN|FipsModule|Initializing Fips....
+    |INFO||Message FipsStateTransition received.
+    |TRNS|FipsMain|State Init entered.
+    |INFO|FipsMain|Fips was started with the following options:
+    |INFO|FipsMain|Option 0: /var/tmp/lr/heros5/bin/startup.elf
+    |INFO|FipsMain|Option 1: NcS:Nc/startup
+    |INFO|FipsMain|Option 2: -s=StartNc
+    |INFO|FipsMain|Option 3: -v
+    |INFO|FipsMain|Option 4: -L=/tmp/s/runtime/_StartUpVerbose.txt
+    |INFO|FipsMain|FIPS is running in standard mode.
+    |TRNS|FipsUI|State IdleUI entered.
+    |TRNS|FipsCcAdjust|State IdleCcAdjust entered.
+    |ACTN|FipsMain|Read configuration data.
+    |INFO|FipsMain|StartupView ( ... systemInfo:=CfgSystemInfo ( systemType:=WinSimulation,
+                                   simMode:=FullSimul, dongleType:=noSIK, ... ),
+                                 machineSimul:=CfgMachineSimul ( simMode:=FullSimul,
+                                   skipReferencing:=TRUE, simHardwareType:=Gen2 ),
+                                 startupData:=CfgStartupData ( powerInterruptMsg:=TRUE ),
+                                 hwViewerRef:=CfgViewKey ( key:="HwViewer" ), ... )
+    |INFO|FipsMain|Config data 'simMode'         = FullSimul
+    |INFO|FipsMain|Config data 'simHardwareType' = Gen2
+    |ERRO|FipsMain|No HwViewer instance specified on command line.
+    |TRNS|FipsMain|State FailInit entered.
+
+** startup.elf was never blocked. It read its configuration, saw a HwViewer view configured
+   (hwViewerRef.key = "HwViewer"), had no procedure name to launch it with, and entered FailInit.
+   The wait at Ev_receive(0x07011002) is simply its idle dispatcher in the FAILED state. **
+
+Everything the bar work has been chasing — the ChM StartupCycle handshake, FipsNc::StartNcSubsys's
+CallProcedure("StartNc"), FipsUI::EnterPowerInterrupt, HideStartupPicture(0x404705C0), prom's
+activation, SkMgrActivate — is gated behind a state machine that never left Init.
+
+
+4. THE FIX IS THE SHIPPED COMMAND LINE
+--------------------------------------
+work/control/sysroot/batch/TNC640heros.txt:411 (subsystem NcS, procedure ConfigReady):
+    commandLineOptions:="-S=functional_safety -s=StartNc -H=LoadPython -I=LoadPython3 -M=%DIAGNOSIS%"
+and the binary's own -h text:
+    -c  Procedure for start of commissioning dialog
+    -d  Hide dialog for commissioning functions
+    -e  Name of the event viewer (for activation)
+    -s  Procedure for start of NC subsystem (without functional safety)
+    -S  Procedure for start of NC subsystem (with functional safety)
+    -H  Procedure for start of HwViewer and Python atSystemStart script with Python 2   <-- the one
+    -I  Procedure for start of Python atSystemStart script with Python 3
+    -t  Display title as prompt
+    -M  Mount point for diagnosis data
+    -v / -V / -Q / -L
+
+%DIAGNOSIS% is exported by the genuine launcher (work/control/sysroot/application:119,
+"export DIAGNOSIS=/mnt/diagnosis"); run_appstart_fex.sh now exports it (and FIELDBUS) and creates the
+directories, otherwise AppStartMaster expands the macro to an empty string.
+
+emulator/TNC640heros_bar22.txt = the genuine line + the -v -L diagnostics.
+
+
+5. THE OTHER HALF: THE NC SUBSYSTEM IS LOADED IN TWO STAGES
+-----------------------------------------------------------
+The shipped batch does NOT load the NC channel up front:
+    subsystem "NcS" (localNamespace Nc), procedure "ConfigReady" : startup.elf + ChannelManager
+    subsystem "Nc"  (localNamespace Nc), procedure "StartNc"     : ifsFieldbus, machoper(~/mmi), bpm,
+                                                                   hrmmi, IPO, plc, ...
+and it is startup.elf that asks for stage two: FipsNc::StartNcSubsys (0x50500)
+    if ( procedureToStartAlways is empty ) -> state 11
+    else FipsIfAppStart::CallProcedure(appstart, procedureToStartAlways /* = "StartNc" */, "")
+with procedureToStartAlways = the -s value (and featureKeyWithFs = the -S value, used when the config
+has functional safety: FipsIfAppStart::SetFeature).
+
+Every bar batch until bar21 collapsed both stages into one subsystem, which inverts the dependency —
+the NC channel came up before the coordinator meant to sequence it, and it also put six processes
+into one AppStart barrier (see docs/re/appstart-subsystem-semaphore-barrier-re.txt).
+bar21 verified the split works: exactly the 8 stage-1 processes spawn (winmgr, skmgr, prom,
+evtserver, Ed/mmi, Server/hwserver, Nc/startup, Nc/CM) and IPO/plc/PlcDaemon/MON are held back.
