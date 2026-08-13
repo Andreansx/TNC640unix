@@ -488,6 +488,37 @@ address with `rd_ok()` (`write(/dev/null, p, 4)`) before dereferencing. The gues
 fatal handlers with `SA_NODEFER`, so a garbage `EBP` in the frame walk produced a 3541-entry
 fault storm that buried the original fault and pinned a CPU.
 
+## Two more primitives the emulator got wrong, both found by comparing against libheros (2026-08-13)
+
+**`Sm_request` / `Sm_release` ignored the UNITS argument.** `p[1]` is a unit COUNT, not a flag word
+(`sm_release@0xc940`, `sm_request@0xca30` in `libheros.so.1.8.6.2`). AppStart uses the count as a
+per-subsystem barrier — it releases as many units as the subsystem has processes, because all of
+them park on one named semaphore in `FProcess::SynchronizeTransition`. Releasing a hard-coded 1 let
+exactly ONE process of a multi-process subsystem through. Full write-up:
+`docs/re/appstart-subsystem-semaphore-barrier-re.txt`.
+
+**`Q_delete` (0x0c) was not implemented at all** and fell through to the "unknown heroscall →
+success" default, so temporary mailslot names were never released.
+`FMailslotQueue::TemporaryQueuename` mints a name by scanning `<prefix><task>N<ctr>` upward until
+`Q_ident` reports it free — with deletion ignored, every name ever used stayed taken. Measured:
+1,713,387 `Q_ident`s from `Nc/plc` over its `DB…` pool in one run, 1232 of 2048 queue slots consumed,
+a 65 MB trace. The default case now announces the first use of each unimplemented opcode, so the
+next missing primitive is visible instead of silent. Still stubbed: `T_delete` 0x03, `Sm_delete`
+0x17, `M_detach` 0x24, `M_delete` 0x25.
+
+## Reading a guest's own verbose trace
+
+Two traps, both measured:
+
+* **stdout is fully buffered** for every spawned child (its stdout is a file), and the run's timeout
+  SIGKILLs it — so a process that prints only a few hundred bytes loses all of them. `linebuf.so`
+  (knob `LINEBUF`, default ON) line-buffers stdout and unbuffers stderr.
+* **`-v` alone is not enough for startup.elf.** `EvtMgr::WriteVerbosePrint` (startup.elf 0x4a810)
+  writes only when `evtMgr+52 != 0` *and* the `FILE*` at `evtMgr+36` is non-NULL; `-v` sets the
+  level at `evtMgr+33`, while `EvtMgr::SwitchToCustomLogger` (0x4a7e0) — the `-L=<path>` option —
+  is what sets `+52` and the path. hwserver's equivalent (`-vs`) does open a file, which is why its
+  `|TRNS|HWSMain|State … entered.` lines were visible all along.
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`
