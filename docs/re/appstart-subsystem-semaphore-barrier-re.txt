@@ -101,6 +101,71 @@ plus semaphore HANDSHAKE TRACING, so the barrier is visible in the hst log at la
 (Only BLOCKING requests are traced, so hot uncontended semaphores stay quiet.)
 
 
-6. RESULT
----------
-[filled in from the bar17 run]
+6. RESULT (bar17, measured)
+---------------------------
+    [hst] SC "NcC" id=0x222 count=0                       <- AppStart creates the barrier
+    [hst] SW t119 sem=0x222 "NcC" BLOCKS (want=1 have=0)  <- Nc/PlcDaemon parks
+    [hst] SW t11b ... SW t118 ... SW t11a ... SW t11c ... <- startup, CM, MON, IPO park too
+    [hst] SV t106 sem=0x222 "NcC" released 6 -> count=6   <- ★ AppStart releases SIX units
+    [hst] SO t11b ... SO t11c ... SO t118 ... SO t119 ... <- ALL of them proceed
+    [hst] SW t119 sem=0x22d "NcI" BLOCKS ...              <- and park on the next barrier
+
+FmProcessState per process (2 reports = INITIALIZED):
+    before: 2 PlcDaemon | 1 IPO 1 plc 1 MON 1 CM 1 startup
+    after:  2 PlcDaemon 2 MON 2 CM | 1 IPO 1 plc 1 startup  — and the three still at 1 are WORKING,
+            not blocked (Nc/plc was mid-way through reading CH_NC/CH_SIM, the KERNEL/PRODUCT versions
+            and the axis table from ConfigServer when the 700 s cap hit).
+crash=0, rtos FAULT=0, absl FATAL=0.
+
+The semaphore names also tell us the barrier alphabet: "<subsystem>C" (Created), "<subsystem>I"
+(Initialized), "<subsystem>T" (Terminated), plus "AppStartC"/"AppStartI" for the master itself.
+
+
+7. THE SECOND HALF OF THE SAME STALL: a client may CONNECT TWICE
+----------------------------------------------------------------
+With the barrier open, the next thing in the way was the config connect-ACK.
+
+hwserver's run-up runs TWICE — DetectMainboard -> DetectSik -> SyncFramework -> GetConfigData ->
+(reads initMode = 2 = SimDrives) -> Terminate -> DetectMainboard again ("Hardware simulation mode
+requested by configuration") -> GetConfigData — and its CfgSrvMgr therefore does
+Connect -> ReadCfgData -> ConfigNotification -> Idle -> Disconnect -> Connect.
+
+The emulator's INJECT_ACK synthesises CfgClientIsConnected (0x170100) for a CfgConnectClient
+(0x1700c0) and de-duplicates per reply queue, so the SECOND connect was silently dropped. Measured
+in bar17: hwserver sent it at t+0.7 s and then sat in "CfgSrvMgr|State Connect entered." for the
+remaining 700 s. Its HWSMain never left GetConfigData, so it never reached HWSRunUpState Idle(7).
+
+The disconnect is right there on the wire, one line after the Disconnect state:
+
+    CfgSrvMgr: State Disconnect entered.
+    QS [303]"CfgServerQueue" size=29 tag=00170120 sndr=t112 [ ...........QHWServerc.......]
+    ...
+    CfgSrvMgr: State Connect entered.
+    QS [303]"CfgServerQueue" size=69 tag=001700c0 sndr=t112 [............QHWServerc.....!...]
+
+=> CfgDisconnectClient = wire tag 0x00170120, same leading GMsgString client id as the connect.
+FIX: inject_forget_ack() clears the dedup entry on 0x170120 (trace lines CA / CD).
+
+RESULT (bar19): hwserver's second pass connects, and its run-up COMPLETES for the first time:
+
+    |TRNS|HWSMain|State GetConfigData entered.
+    |TRNS|CfgSrvMgr|State ReadCfgData entered.
+    |TRNS|CfgSrvMgr|State ConfigNotification entered.
+    |TRNS|CfgSrvMgr|State Idle entered.
+    |TRNS|HWSMain|State InitDevs entered.
+    |TRNS|HWSMain|State Operate entered.
+    |TRNS|HWSMain|Release control.
+    |TRNS|HWSMain|State Idle entered.          <- ★ HWSRunUpState Idle(7)
+
+Idle(7) is exactly the state startup.elf's FipsIfHws::AddTriggerRunUp (startup.elf 0x8a3c0) asks the
+HW server to trigger on — see FipsMain::EnterWaitHwInit (0x37090). The enum, pinned from
+HWSMain::Init (hwserver.elf 0x1ce010):
+
+    1 Init            2 DetectMainboard   3 DetectSik      4 GetConfigData   5 InitDevs
+    6 Operate         7 Idle              8 CritFwUpdateRequested            9 CritFwUpdateRunning
+   10 CritFwUpdateComplete              11 CritFwUpdateCompleteReboot       12 Terminate
+   13 TerminationComplete               14 RunUpFailed     15 RunUpAborted
+   16 SyncBreakpointMain                17 SyncFramework
+
+and AddTriggerRunUp registers triggers for 7, 14, 8, 10, 11 (trigger ids 11, 12, 13, 14, 17) via
+HwsMailslotQueue::AddTrigger(ident "state", HWSRunUpState N), then FipsMain waits.

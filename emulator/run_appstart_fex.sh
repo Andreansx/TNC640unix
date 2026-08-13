@@ -38,6 +38,7 @@ $CC -shared -fPIC -O2 -o "$R/lib/openlog.so" "$EMU/openlog.c" -ldl 2>&1 | sed "s
 $CC -shared -fPIC -O2 -o "$R/lib/cfgfix.so" "$EMU/cfgfix.c" 2>&1 | sed "s/^/  cfgfix: /"   # config-#6 fix (no -ldl: dlsym broke the FEX preload)
 $CC -shared -fPIC -O2 -o "$R/lib/cfg461probe.so" "$EMU/cfg461probe.c" 2>&1 | sed "s/^/  cfg461probe: /"  # Gate-1 OnWriteNew(0x170461) fork tracer (no -ldl: maps-base+offset)
 $CC -shared -fPIC -O2 -o "$R/lib/heurights.so" "$EMU/heurights.c" 2>&1 | sed "s/^/  heurights: /"   # HEU_GRANT=1: supply the shipped full-local-rights user-administration state (HEUTestRights -> granted)
+$CC -shared -fPIC -O2 -o "$R/lib/linebuf.so" "$EMU/linebuf.c" 2>&1 | sed "s/^/  linebuf: /"   # LINEBUF (default ON): line-buffer stdout so a SIGKILLed child's few hundred bytes of log are not lost
 $CC -shared -fPIC -O2 -o "$R/lib/cxathrow.so" "$EMU/cxathrow.c" -ldl 2>&1 | sed "s/^/  cxathrow: /"   # CXATHROW=1: __cxa_throw interceptor (throw type + site). Was preloaded but never REBUILT here.
 $CC -shared -fPIC -O2 -o "$R/lib/fredfree.so" "$EMU/fredfree.c" 2>&1 | sed "s/^/  fredfree: /"  # Gate-2 Fred UAF diagnostic (FREDFREE=1: process-scoped no-op free in Ed/mmi only)
 $CC -shared -fPIC -O2 -o "$R/lib/fmdel.so" "$EMU/fmdel.c" 2>&1 | sed "s/^/  fmdel: /"  # Gate-2 UAF free-site capture (FMDEL=1: log FrameModule-size sized-deletes in Ed/mmi)
@@ -355,7 +356,8 @@ timeout -s KILL $APPSTART_TIMEOUT /usr/bin/strace -f -qq -e trace=execve,connect
   ${HEROSCALL_INJECT_FMLOAD_MAX:+HEROSCALL_INJECT_FMLOAD_MAX=$HEROSCALL_INJECT_FMLOAD_MAX} \
   ${HEROSCALL_INJECT_FMLOAD_IMG:+HEROSCALL_INJECT_FMLOAD_IMG=$HEROSCALL_INJECT_FMLOAD_IMG} \
   ${HEROSCALL_INJECT_FMLOAD_PROC:+HEROSCALL_INJECT_FMLOAD_PROC=$HEROSCALL_INJECT_FMLOAD_PROC} \
-  LD_PRELOAD=$([ "${HEU_GRANT:-0}" = 1 ] && printf '/lib/heurights.so:')$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')$([ "${FREDFREE:-0}" = 1 ] && printf '/lib/fredfree.so:')$([ "${FMDEL:-0}" = 1 ] && printf '/lib/fmdel.so:')$([ "${FKEEPVEC:-0}" = 1 ] && printf '/lib/fkeepvec.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
+  LINEBUF=${LINEBUF:-1} \
+  LD_PRELOAD=$([ "${LINEBUF:-1}" != 0 ] && printf '/lib/linebuf.so:')$([ "${HEU_GRANT:-0}" = 1 ] && printf '/lib/heurights.so:')$([ "${CXATHROW:-0}" = 1 ] && printf '/lib/cxathrow.so:')$([ "${FREDFREE:-0}" = 1 ] && printf '/lib/fredfree.so:')$([ "${FMDEL:-0}" = 1 ] && printf '/lib/fmdel.so:')$([ "${FKEEPVEC:-0}" = 1 ] && printf '/lib/fkeepvec.so:')/lib/arena_stub.so:/lib/herosapi_shim.so:/lib/heros_rtos.so \
   ${HEROS_PIN_CPU:+taskset -c $HEROS_PIN_CPU} FEXInterpreter $R/heros5/bin/AppStartMP.elf -p=AppStart.AppStart AppStart -f=/tmp/s/batch/$BATCH_NAME >/tmp/a_appstart.log 2>&1
 pkill -KILL -x strace 2>/dev/null; pkill -KILL -x FEXInterpreter 2>/dev/null; sleep 1
 echo "### AppStartMP exited (rc \$?) ###"
