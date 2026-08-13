@@ -127,13 +127,22 @@ startup.elf sits at `FipsNc StartSubsysNc` / `FipsUI WaitNcSubsysInterrupt` wait
    `QS [3fe]"PLCIF_Q00"`, `QS [3d5]"QIpoKonfig2"`, `QS [3c1]"QAfc"` with tag `00dc0201` — and the
    compound-name fix is visibly carrying them: `QI "Nc/plc.PLCIF_Q00" -> 0x3fe (compound -> real
    queue "PLCIF_Q00")`.)
-   What the two stragglers actually do is **walk their `Db::MailslotCached` temp-mailslot pools**:
-   `t13e` 1168 sends and climbing through `QI "DB0000013eN2b9" -> 0xab7`, `t130` likewise. Every new
-   temp mailslot costs an O(n) scan over all the names already taken, and nothing is ever
-   `Q_delete`d (`Db::MailslotCached::ClearCache` — visible in `ConvertOldMotorTab` — is the release
-   path and is never reached). Meanwhile `Nc/MON` and `Nc/PlcDaemon` sit parked on the `NcI` barrier
-   waiting for them. Next: find out whether that scan is converging or unbounded (it wrapped at
-   N999 in bar20), and why the cache never releases.
+   What the two stragglers actually do is **spin re-resolving their own `Db::MailslotCached` pool**.
+   Measured on `Nc/plc`'s task t13e:
+   ```
+   distinct DB0000013eN* names   1000     (a FIXED pool: N000..N3e7)
+   QC "DB0000013e…"              1000     (all created once, at init)
+   QI "DB0000013e…"          6,046,691    (!)
+   QS lines naming one as a reply-to     0
+   ```
+   So this is **not** a free-name scan and **not** an unanswered-request leak: the pool is built once
+   and then its owner resolves those names six million times without ever sending on them. `t13e`
+   has received 1085 replies, so it is not starved of input either — it is looping, and `Q_ident` is
+   just the visible part of the loop. Meanwhile `Nc/MON` and `Nc/PlcDaemon` sit parked on the `NcI`
+   barrier waiting for it. **Next: find what the loop is actually waiting for** — the emulator
+   already has `HEROSCALL_EV_TRACE_BIT` (dumps the guest caller chain at an `Ev_receive`), which is
+   the tool for this; a caller-chain probe on `Q_ident` for that one task would name the code
+   directly.
 2. **The queue ring is genuinely too shallow for three queues** — `QIpoKonfig`, `QEvtServer` and
    `DncCntxt3` still overflow at **12** slots and drop their oldest message. This is NOT new; it has
    been happening silently in every run and only became visible today. The principled fix is to stop
