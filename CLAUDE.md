@@ -77,7 +77,22 @@ FipsEvtServer  ConnectEvtServer → EvtReset
 * Barriers behave: `SV "NcSI" released 2` (startup+CM) then `SV "NcC" released 4` (the stage-2 four).
   `Nc/startup`, `Nc/CM`, `Nc/MON`, `Nc/PlcDaemon` all reach INITIALIZED.
 
-**★ THE TWO NEW BLOCKERS (both concrete):**
+**★ bar24 (Server subsystem filled in: + SqlServer `-g`, dnc `-i=Nc -s=Sim`, DialogServer,
+SharedMemServer — all shipped options): 16 processes spawn, and `Server/{SQL,DNC,smserver,hwserver}`
++ `NcS/{startup,CM}` + `Nc/{MON,PlcDaemon}` all reach INITIALIZED.** `Q_SQL` is now a REAL queue
+(`QC "Q_SQL" id=348 owner=t113 flags=1000003 notify=01000000`) instead of an auto-created sink, and
+plc's requests reach the server (`notify=01000000->t113`). Remaining, in priority order:
+* **`Nc/IPO` still dies — now with `free(): invalid pointer`** (glibc abort, SIGABRT) instead of the
+  bar23 SIGSEGV. Memory corruption during its init; needs a free-site probe (the `fmdel.c` /
+  `guardfree.c` pattern) or `MALLOC_CHECK_`/`MALLOC_PERTURB_` on that process.
+* **The SQL server receives but never answers.** t113 sends only 8 messages, all config; nothing ever
+  goes back to a `DB…` mailslot. So plc keeps one live temp mailslot per outstanding request — 1851
+  and climbing, with **zero** `Q_delete`s — which will exhaust `MAXQ` (2048) and is the origin of the
+  `QI "DB…"` treadmill. Find why SqlServer answers nothing (its own `-h` options / a missing database
+  file are the first places to look).
+* `tm_check` (heroscall **0x31**) is unimplemented — the new first-use reporter caught it in ipo.
+
+**★ THE TWO bar23 BLOCKERS (both concrete):**
 1. **`Nc/IPO` SIGSEGVs in `GMessage::IsValid(GmIsValid_)`** — `libgmsglib.so+0x24020`, fault at `+0x1a`
    reading `[reg+0x44]` of a null/garbage object (`libheros_sigfaterr: Thread Nc/IPO.Nc/IPO received
    terminating signal 11`).
