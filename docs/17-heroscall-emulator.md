@@ -506,6 +506,26 @@ a 65 MB trace. The default case now announces the first use of each unimplemente
 next missing primitive is visible instead of silent. Still stubbed: `T_delete` 0x03, `Sm_delete`
 0x17, `M_detach` 0x24, `M_delete` 0x25.
 
+## Silent data loss is the emulator's most dangerous failure mode (2026-08-13)
+
+Two paths quietly damaged traffic instead of failing loudly, and both produced crashes that looked
+like guest bugs:
+
+* **`QMSGCAP` was 16384 while the real kernel caps `Q_send` at 0x8000 = 32768**, so every message in
+  the 16–32 KB band was truncated. Measured: ConfigServer answering `Server/SQL`'s config query with
+  `Q_send size 18160 > QMSGCAP 16384 — TRUNCATING (queue "0-0000113CfgM")`. SqlServer read the
+  16384-byte fragment, parsed past the end of the GMessage and died on glibc's
+  `free(): invalid pointer` — which is why it created `Q_SQL`, served exactly one request and never
+  answered `plc` again. Raised to 32768 (with `QSLOTS` 12 → 8 to hold the footprint at ~512 MB of a
+  sparse mapping).
+* **`Q_read` skipped its too-big check when `maxsize == 0`** and memcpy'd a whole message into a
+  zero-capacity buffer.
+
+Both now announce themselves on stderr, as does a **full-queue drop** (`q_send` discards the oldest
+message when the ring is full). The rule the session arrived at: *anything that silently changes the
+bytes a guest sees must print once and name the queue.* The same reasoning applies to the
+"unknown heroscall → success" default, which is why it now reports each opcode's first use.
+
 ## Reading a guest's own verbose trace
 
 Two traps, both measured:
