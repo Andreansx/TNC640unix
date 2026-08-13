@@ -1216,6 +1216,23 @@ static int q_find_slot(const char*base){
     return -1;
 }
 static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode);  /* fwd (q_create flush) */
+/* Q_delete: free the slot so the NAME becomes available again. See the case 0x0c note for why the
+ * missing implementation cost 1.7M Q_idents in one run. Pending messages are dropped, which is what
+ * deleting a queue means; any task blocked reading it is woken so it re-checks and does not hang. */
+static int q_delete(uint32_t id){
+    lock();
+    int s=q_slot(id);
+    if(s<0){ unlock(); LOG("Q_delete unknown queue 0x%x\n",id); return -9; }
+    char nm[NAMELEN]; memcpy(nm,C->queues[s].name,NAMELEN); nm[NAMELEN-1]=0;
+    C->queues[s].used=0; C->queues[s].name[0]=0;
+    C->queues[s].head=C->queues[s].tail=0;
+    C->queues[s].notify_bits=0; C->queues[s].owner=0;
+    unlock();
+    futex((void*)&C->queues[s].tail,FUTEX_WAKE,0x7fffffff,0);   /* release any blocked reader */
+    LOG("Q_delete 0x%x \"%s\" -> slot freed\n",id,nm);
+    HST(task_self(),0,"QD [%x]\"%s\" deleted\n",id,nm);
+    return 0;
+}
 static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     char base[NAMELEN]; q_basename(base,nm);
     uint32_t owner=task_self();                          /* creator owns the queue (kernel +0xb8) */
@@ -3574,6 +3591,18 @@ long syscall(long n,...){
                      return id?(long)id:-1; }
         LOG("Q_ident EMPTY/NULL name (p0=%08x) -> -1 (reply will black-hole)\n", p?p[0]:0);
         return -1;
+    case 0x0c: /* Q_delete(qid@p[0]) — libheros q_delete@0xbcf0 marshals its single arg at p[0].
+                * WAS MISSING ENTIRELY, so it fell through to the "unknown heroscall -> success" default
+                * and the queue stayed registered FOREVER. That is a slow-motion disaster for the
+                * TEMPORARY-mailslot pools: FMailslotQueue::TemporaryQueuename mints a name by scanning
+                * "<prefix><task>N<ctr>" upward until Q_ident reports it FREE, uses it, then DELETES it.
+                * With deletion ignored, every name ever used stays taken, so each new temp mailslot
+                * scans past all of them — MEASURED in bar19: Nc/plc issued 1,713,387 Q_idents over the
+                * "DB00000120N***" pool (a 65 MB trace in 10 minutes, the scan reaching N090+ and
+                * climbing), 1232 of the 2048 queue slots consumed, and the process still not
+                * INITIALIZED. Freeing the slot restores O(1) name reuse. */
+        if(p) return q_delete(p[0]);
+        return -9;
     case 0x0d:{ /* Q_send(msg@p[0], size@p[2], qid@p[4], mode@p[6]) */
         if(!p) return -9;
         int r=q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
