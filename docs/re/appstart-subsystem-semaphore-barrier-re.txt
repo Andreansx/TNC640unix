@@ -1,0 +1,106 @@
+TNC640 — AppStart's per-subsystem SEMAPHORE BARRIER, and why only one process of a multi-process
+subsystem ever came up  (2026-08-13)
+
+Binaries: work/control/sysroot/heros5/bin/AppStartMP.elf, work/target/rootfs/heros5/bin/libbackend.so,
+          work/target/rootfs/usr/lib/libheros.so.1.8.6.2
+Method:   idalib/Hex-Rays over AppStartMP + libbackend, i686 objdump over libheros (ABI), and the
+          emulator's new semaphore handshake trace (hst "SC/SI/SW/SO/SV" lines).
+
+
+1. THE SYMPTOM THAT WOULD NOT GO AWAY
+-------------------------------------
+Every run since the combined-Nc batches (bar7/bar9/bar13/bar16) showed the same shape:
+
+    FmProcessState reports per process   (2 reports = INITIALIZED, 1 = stuck)
+        2  winmgr  2 skmgr  2 prom  2 evtserver  2 Ed/mmi  2 Server/hwserver
+        2  Nc/PlcDaemon
+        1  Nc/IPO   1 Nc/plc   1 Nc/MON   1 Nc/CM   1 Nc/startup
+
+EXACTLY ONE process of the six-process Nc subsystem got through; every single-process subsystem got
+through. The five stragglers were not crashed and not spinning: all their threads sat in futex waits
+with no pending heroscall visible in the trace, because the thing they were waiting on — a HeROS
+SEMAPHORE — was the one primitive the emulator never traced.
+
+
+2. WHAT THE CHILD DOES: FProcess::SynchronizeTransition (libbackend+0x25880)
+---------------------------------------------------------------------------
+    FSemaphore sem;
+    name = <this->FObjectName> + FStartable::StateCaption(state);   // e.g. "Nc" + <state char>
+    if (!sem.Open(name)) return;                                    // no semaphore -> no report at all
+    FMailslotQueue q; q.Open("AppStartMaster", 1);
+    FmProcessState m;  m.state = (state==2 ? 3 : state==4 ? 4 : (state==1)+1);
+    m.name = SyncName();  m.pid = p_ident(0);  m.tid = t_ident(0);
+    q.Write(m);                                                     // <- the tag 0x40c803e0 wire msg
+    for (ok = written; ok; ok = sem.Open(name)) {                   // then BLOCK
+        if (sem.RequestWithTimeout(1, 100000)) break;               // 100 s per attempt, forever
+        sem.Close();
+    }
+
+So a child REPORTS its transition and then PARKS on a named semaphore until the master opens it.
+That is the invisible wait: one FmProcessState message, then silence.
+
+
+3. WHAT THE MASTER DOES: AppStartSemaphores.cpp
+-----------------------------------------------
+AppStartMP.elf does NOT use the FSemaphore C++ class; it calls the raw heroscall wrappers
+(sm_create / sm_release / sm_request / sm_delete), in an anonymous namespace:
+
+    AppStart::Semaphores::OnMessage(FmSubsystemAction&) @0x595d0   switch (action):
+        0 -> CreateSemaphores(subsystem)                 @0x58dd0
+        1 -> ReleaseSemaphoresAfterCreation(subsystem)   @0x59010
+        2 -> ReleaseSemaphoresAfterInitialization(sub)   @0x59190
+        4 -> ReleaseSemaphoresAfterTermination(sub)      @0x59310
+        5 -> DeleteSemaphores(SubsystemSemaphores&)      @0x58c60
+        6 -> ReleaseSemaphoresAtCancel(subsystem)        @0x59450
+
+and the actions are produced by Monitor::OnMessage(FmProcessState) @0x3c400, which emits
+FmSubsystemAction(1) when the last process of the subsystem reports state 2, and FmSubsystemAction(2)
+(+ FmAppStartAction(0), the next-subsystem dispatch) when the last one reports state 3 = INITIALIZED.
+
+The per-subsystem record is a 0x2c-byte SubsystemSemaphores { astring name; sem1@+0x1c; sem2@+0x20;
+sem3@+0x24; UNITS@+0x28 }, keyed by subsystem name in a std::map. ReleaseSemaphoresAfterCreation is,
+verbatim (0x5905f..0x59093):
+
+    FStartable::StateCaption(&cap, 2);
+    node->sem2 = CreateSemaphore(subsystem, cap);      // the semaphore for the NEXT state
+    edx = node->UNITS;                                 // mov 0x28(%edi),%edx
+    eax = node->sem1;                                  // mov 0x1c(%edi),%eax
+    ReleaseSemaphore(eax, edx);                        // sm_release(id, UNITS)
+
+** The barrier is opened by releasing N UNITS AT ONCE, N = the number of processes in the subsystem,
+   because all N of them are parked on that one named semaphore. **
+
+
+4. THE HEROSCALL ABI (recovered from libheros.so.1.8.6.2, not guessed)
+---------------------------------------------------------------------
+    sm_release@0xc940 : arg0 -> param[0], arg1 -> param[1]                 ; syscall(222, 0x12340019, param)
+    sm_request@0xca30 : arg0 -> param[0], arg1 -> param[1], arg2 -> param[2]; syscall(222, 0x12340018, param)
+    sm_create @0xc660 : name -> param[0], param[1]=0, count -> param[2], flags -> param[3]
+
+    => Sm_request  p[0]=sem id, p[1]=UNITS, p[2]=timeout
+       Sm_release  p[0]=sem id, p[1]=UNITS
+
+The emulator had `Sm_request p[1]=flags` (it ignored p[1]) and `Sm_release p[0]=id` only — releasing a
+hard-coded ONE unit and waking ONE waiter. On a single-process subsystem that is indistinguishable
+from correct. On the six-process Nc subsystem it frees exactly one process and strands five.
+
+
+5. THE FIX (emulator/heros_rtos.c)
+----------------------------------
+    sem_request(id, units, timeout)  waits for count >= units, then subtracts units (0 -> 1)
+    sem_release(id, units)           adds units and FUTEX_WAKEs ALL waiters (0 -> 1)
+    case 0x18/0x19 pass p[1] through
+
+plus semaphore HANDSHAKE TRACING, so the barrier is visible in the hst log at last:
+    SC "<name>" id=0x.. count=..     semaphore created (or found existing)
+    SI "<name>" -> ..                Sm_ident (incl. the auto-create fallback)
+    SW t.. sem=0x.. "<name>" BLOCKS (want=N have=M, to=..)
+    SO t.. sem=0x.. "<name>" GRANTED N after blocking
+    SV t.. sem=0x.. "<name>" released N -> count=..
+
+(Only BLOCKING requests are traced, so hot uncontended semaphores stay quiet.)
+
+
+6. RESULT
+---------
+[filled in from the bar17 run]

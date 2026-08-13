@@ -454,6 +454,40 @@ layout (RE `HwsMailslotQueue::SyncMessage`/`ReadMessageSync` + `HWSSrvConnected`
 next chunk. This is the LAST identified run-up blocker before ConfigServer reaches its steady-state
 CfgServerQueue dispatch (and can answer IPO's connect).
 
+## The `syscall()` interposer must reproduce glibc's ABI, not the kernel's (2026-08-13)
+
+`heros_rtos.c` interposes libc's `syscall()` because heroscall **is** `syscall(222, …)`.
+Everything else was passed through with a bare `int $0x80` (`raw5`), which returns the
+**kernel** convention (`-errno`) and never touches `errno` — while every caller expects the
+**glibc** convention (`-1`, `errno` set). Guest libraries that call `syscall()` directly
+therefore got a broken ABI.
+
+Measured consequence: `libabsl_synchronization` (abseil 20210324.2, loaded by `hwserver.elf`)
+does, in `Futex::WaitUntil`, `err = syscall(SYS_futex, …); if (err != 0) return -errno;` and
+then treats anything but `-EINTR/-EWOULDBLOCK/-ETIMEDOUT` as
+`ABSL_RAW_LOG(FATAL, "Futex operation failed with error %d")` → `abort()`. An entirely
+ordinary `EAGAIN` came back non-zero with a **stale** `errno` (observed 17 = `EEXIST`) →
+`SIGABRT` mid-`DetectSik`, so hwserver never reported `INITIALIZED`, AppStart never dispatched
+the `Nc` subsystem, and the whole NC channel was missing. That is a coin-flip abort in **any**
+guest thread contending an absl mutex/condvar, and it is why the earlier crossing run did not
+reproduce.
+
+Fix (both halves matter):
+
+* glibc ABI — `r = raw6(…); if (-4095 <= r < 0) { errno = -r; return -1; } return r;`
+* **six** arguments — new `raw6()` (musl's `__syscall6` sequence: arg6 in `EBP`, pushed before
+  `ESP` moves). absl's timed wait passes `FUTEX_BITSET_MATCH_ANY` as `val3` = arg6, which the
+  old 5-arg passthrough dropped.
+
+Verified against real glibc as the oracle under FEX (`scratchpad/syscall_abi_test.c`,
+`scratchpad/raw6_test.c`): glibc `-1/EAGAIN` = patched `-1/EAGAIN`; old passthrough
+`-11/errno=17` = the exact `-17` abseil printed.
+
+Same session: the fault handler (`crash_locate`) is now re-entrancy-guarded and probes every
+address with `rd_ok()` (`write(/dev/null, p, 4)`) before dereferencing. The guest installs its
+fatal handlers with `SA_NODEFER`, so a garbage `EBP` in the frame walk produced a 3541-entry
+fault storm that buried the original fault and pinned a CPU.
+
 ## Files
 
 `emulator/` — `herosapi_shim.c` (device + open-path logging), `heroscall_probe.c`

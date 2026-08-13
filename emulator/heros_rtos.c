@@ -13,10 +13,14 @@
  *   T_name  09  set current task name (p[0]=name)
  *   Ev_send 10  p[0]=target task id, p[1]=bits           -> 0/err
  *   Ev_recv 11  p[0]=wanted bits, p[1]=cond(1=ALL,2=ANY), p[2]=timeout -> event word in eax
- *   Sm_create 15  p[0]=name? p[2]=count ... -> sem id in eax
+ *   Sm_create 15  p[0]=name p[2]=count p[3]=flags        -> sem id in eax
  *   Sm_ident  16  name -> sem id
- *   Sm_request18  p[0]=sem id, p[1]=flags, p[2]=timeout   -> 0/err  (P/wait)
- *   Sm_release19  p[0]=sem id                             -> 0/err  (V/signal)
+ *   Sm_request18  p[0]=sem id, p[1]=UNITS, p[2]=timeout   -> 0/err  (P/wait)
+ *   Sm_release19  p[0]=sem id, p[1]=UNITS                 -> 0/err  (V/signal)
+ *     (p[1] is a UNIT COUNT, not a flag word — recovered from libheros.so.1.8.6.2:
+ *      sm_release@0xc940 marshals {arg0,arg1} at p[0],p[1]; sm_request@0xca30 marshals
+ *      {arg0,arg1,arg2} at p[0],p[1],p[2]. AppStart releases N units at once to open a
+ *      subsystem-wide barrier for its N processes, so ignoring p[1] frees exactly ONE of them.)
  *   Q_create  0a  -> queue id ;  Q_send 0d ;  Q_read 0e
  *   M_ident 22 / M_attach 23  named shared region (-> /dev/shm)
  *   Sys_getenv 27  p[0]=name p[2]=outbuf p[4]=size
@@ -1096,17 +1100,28 @@ static int as_read(uint32_t *reqp,uint32_t *outp){
 }
 
 /* ---------------- semaphores ---------------- */
+/* SEMAPHORES ARE PART OF THE STARTUP PROTOCOL, so they belong in the handshake trace.
+ * FProcess::SynchronizeTransition (libbackend+0x25880) writes its FmProcessState to AppStartMaster
+ * and then BLOCKS on a named semaphore ("<process name><state caption>") until the master releases
+ * it — retrying with a 100 s timeout, forever. Until now that wait was completely invisible in the
+ * hst trace (only events/queues/tasks were traced), so a process stuck in the transition handshake
+ * looked like a process that had simply gone quiet after one message. */
 static uint32_t sem_make(const char*nm,int count){
     lock();
     if(nm&&nm[0]) for(int i=0;i<MAXSEM;i++) if(C->sems[i].used&&!strncmp(C->sems[i].name,nm,NAMELEN-1)){
-        uint32_t id=C->sems[i].id; unlock(); return id; }
+        uint32_t id=C->sems[i].id; int c=C->sems[i].count; unlock();
+        HST(task_self(),0,"SC \"%s\" -> EXISTING 0x%x (count=%d)\n",nm,id,c); return id; }
     int s=-1; for(int i=0;i<MAXSEM;i++) if(!C->sems[i].used){ s=i; break; }
     if(s<0){ unlock(); return 0; }
     C->sems[s].used=1; C->sems[s].id=C->next_sem++; C->sems[s].count=count;
     C->sems[s].name[0]=0; if(nm) strncpy(C->sems[s].name,nm,NAMELEN-1);
-    uint32_t id=C->sems[s].id; unlock(); return id;
+    uint32_t id=C->sems[s].id; unlock();
+    HST(task_self(),0,"SC \"%s\" id=0x%x count=%d\n",nm?nm:"",id,count);
+    return id;
 }
 static int sem_slot(uint32_t id){ for(int i=0;i<MAXSEM;i++) if(C->sems[i].used&&C->sems[i].id==id) return i; return -1; }
+/* name of a semaphore id, for the trace (never NULL) */
+static const char* sem_name(uint32_t id){ int s=sem_slot(id); return s<0?"?":C->sems[s].name; }
 static uint32_t sem_ident(const char*nm){
     lock();
     for(int i=0;i<MAXSEM;i++) if(C->sems[i].used&&!strncmp(C->sems[i].name,nm,NAMELEN-1)){
@@ -1115,12 +1130,17 @@ static uint32_t sem_ident(const char*nm){
     if(q_autocreate&&nm&&nm[0]){            /* peer-owned sem absent standalone: provide it
                                              * AVAILABLE (count 1) so the waiter proceeds */
         uint32_t id=sem_make(nm,sem_autocount); LOG("Sm_ident auto \"%s\" -> 0x%x (count %d)\n",nm,id,sem_autocount);
+        HST(task_self(),0,"SI \"%s\" -> AUTO 0x%x (count %d)\n",nm,id,sem_autocount);
         return id;
     }
+    HST(task_self(),0,"SI \"%s\" -> NOT FOUND\n",nm?nm:"");
     return 0;
 }
-static int sem_request(uint32_t id,uint32_t timeout){      /* P / wait */
+/* P / wait for `units` units. UNITS MATTER: HeROS semaphores are counting, and AppStart uses the
+ * count as a SUBSYSTEM BARRIER — see sem_release. */
+static int sem_request(uint32_t id,uint32_t units,uint32_t timeout){
     int s=sem_slot(id); if(s<0) return -7;
+    if(units==0) units=1;                                  /* 0 would be a no-op wait */
     volatile int32_t *cnt=&C->sems[s].count;
     /* HEROSCALL_SEM_FORCE_OK=<ms>: the real HeROS Sm_request RETURNS (timeout error) after its
      * timeout; the emulator otherwise loops forever re-waiting (it never returns the timeout).
@@ -1132,11 +1152,19 @@ static int sem_request(uint32_t id,uint32_t timeout){      /* P / wait */
      * unblocking winmgr toward Initialize. Gated, default OFF (force_ms=0 -> original loop-forever). */
     static long force_ms=-1;
     if(force_ms<0){ const char*e=getenv("HEROSCALL_SEM_FORCE_OK"); force_ms=e?atol(e):0; }
-    int waited=0;
+    int waited=0, announced=0;
     for(;;){
         int32_t c=__atomic_load_n(cnt,__ATOMIC_ACQUIRE);
-        if(c>0){ if(__atomic_compare_exchange_n(cnt,&c,c-1,1,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) return 0; continue; }
+        if(c>=(int32_t)units){
+                 if(__atomic_compare_exchange_n(cnt,&c,c-(int32_t)units,1,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){
+                 if(announced) HST(task_self(),0,"SO t%x sem=0x%x \"%s\" GRANTED %u after blocking\n",
+                                   task_self(),id,sem_name(id),units);
+                 return 0; }
+                 continue; }
         if(timeout==0) return -0x3d;                       /* would block, nowait */
+        if(!announced){ announced=1;                       /* only BLOCKING requests are traced */
+            HST(task_self(),0,"SW t%x sem=0x%x \"%s\" BLOCKS (want=%u have=%d, to=%u)\n",
+                task_self(),id,sem_name(id),units,c,timeout); }
         if(force_ms>0 && waited){
             LOG("SEM_FORCE_OK: Sm_request id 0x%x still blocked after ~%ldms -> forced success (simulate AppStartMaster ack)\n", id, force_ms);
             return 0;
@@ -1149,10 +1177,23 @@ static int sem_request(uint32_t id,uint32_t timeout){      /* P / wait */
         if(force_ms>0) waited=1;
     }
 }
-static int sem_release(uint32_t id){                        /* V / signal */
+/* V / signal `units` units.
+ * ★ THE UNITS ARE THE POINT. AppStart's per-subsystem barrier (AppStartSemaphores.cpp:
+ * CreateSemaphores / ReleaseSemaphoresAfterCreation / ...AfterInitialization) opens a subsystem by
+ * releasing AS MANY UNITS AS THE SUBSYSTEM HAS PROCESSES, because every one of those processes is
+ * parked in FProcess::SynchronizeTransition (libbackend+0x25880) on the SAME named semaphore
+ * ("<subsystem><state caption>"). Releasing a hard-coded 1 unit — as this did until 2026-08-13 —
+ * lets exactly ONE process of the subsystem through and strands the rest forever. That is why the
+ * 6-process combined Nc subsystem always had exactly one member (PlcDaemon) report INITIALIZED
+ * while IPO/plc/MON/CM/startup stayed at 1 report, and why single-process subsystems never showed
+ * the bug. Wake ALL waiters, since N units can satisfy N different sleepers. */
+static int sem_release(uint32_t id,uint32_t units){
     int s=sem_slot(id); if(s<0) return -7;
-    __atomic_add_fetch(&C->sems[s].count,1,__ATOMIC_ACQ_REL);
-    futex(&C->sems[s].count,FUTEX_WAKE,1,0);
+    if(units==0) units=1;
+    int32_t c=__atomic_add_fetch(&C->sems[s].count,(int32_t)units,__ATOMIC_ACQ_REL);
+    futex(&C->sems[s].count,FUTEX_WAKE,0x7fffffff,0);
+    HST(task_self(),0,"SV t%x sem=0x%x \"%s\" released %u -> count=%d\n",
+        task_self(),id,C->sems[s].name,units,c);
     return 0;
 }
 
@@ -3475,11 +3516,11 @@ long syscall(long n,...){
     case 0x16: /* Sm_ident(name@p[0]) */
         if(p&&p[0]){ uint32_t id=sem_ident((const char*)(uintptr_t)p[0]); return id?(long)id:-2; }
         return -2;
-    case 0x18: /* Sm_request(id@p[0], flags@p[1], timeout@p[2]) */
-        if(p) return sem_request(p[0], p[2]);
+    case 0x18: /* Sm_request(id@p[0], units@p[1], timeout@p[2]) */
+        if(p) return sem_request(p[0], p[1], p[2]);
         return -7;
-    case 0x19: /* Sm_release(id@p[0]) */
-        if(p) return sem_release(p[0]);
+    case 0x19: /* Sm_release(id@p[0], units@p[1]) */
+        if(p) return sem_release(p[0], p[1]);
         return -7;
     case 0x0a: /* Q_create(name@p[0], depth@p[2], flags@p[3]) -> queue id */
         if(p&&p[0]) return (long)(int32_t)q_create((const char*)(uintptr_t)p[0], p[2], p[3]);

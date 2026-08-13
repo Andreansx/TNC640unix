@@ -185,7 +185,9 @@ mkdir -p /etc/sysconfig/heuseradmin /etc/security /etc/sysconfig/heros-auth-daem
 # getOptionNameIndex(name) against the ticket's own option bits. Otherwise it shm_open("/_heusrv_shm")
 # and takes the DYNAMIC path, which looks the right name up in a 64-entry table inside that segment —
 # a table our heuserver leaves EMPTY, so the lookup falls through to "errno=2; return -1".
-# JhUserRights::Test() is `HEUTestRights(...) == 1`, so -1 means DENY: every rights test in the whole
+# JhUserRights::Test() is "HEUTestRights(..) == 1", so -1 means DENY: every rights test in the whole
+# (NOTE: no backticks in this heredoc — it is UNQUOTED, so a backtick pair is run as a command
+#  substitution when NSCMD is read. Same landmine class as the apostrophe one.)
 # constellation fails. Concretely that denies hwserver's HWSServer_::TemporaryJob::CreateJob() the
 # right 27 = NC.DataAccessServiceRead, which makes it throw ServerException(3); Inspect's catch turns
 # that into NCK_SRV_RESULT=FAILED, so DetectMainboard's GetDataSys("initMode") fails, hwserver logs
