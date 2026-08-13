@@ -82,17 +82,23 @@ SharedMemServer — all shipped options): 16 processes spawn, and `Server/{SQL,D
 + `NcS/{startup,CM}` + `Nc/{MON,PlcDaemon}` all reach INITIALIZED.** `Q_SQL` is now a REAL queue
 (`QC "Q_SQL" id=348 owner=t113 flags=1000003 notify=01000000`) instead of an auto-created sink, and
 plc's requests reach the server (`notify=01000000->t113`). Remaining, in priority order:
-* **TWO processes fault, and they are different failures** (resolve each dump against its OWN maps —
-  the two dumps interleave in one stderr):
-  `line 4031 → SqlServer.elf sig=6` (glibc **`free(): invalid pointer`** → abort, moments after
-  `RUNUP_COMPLETE`) and `line 21398 → ipo_progstation.elf sig=11`.
-* **That abort is why the SQL server never answers**: it creates `Q_SQL`, reads exactly ONE request
-  and dies, so plc's requests go unanswered. **Prime suspect, now fixed:** `Q_read`'s too-big check
-  was `if (maxsize && full > maxsize)`, so a caller passing `maxsize=0` skipped it and the `memcpy`
-  wrote a whole message into a zero-capacity buffer — a guest heap smash that surfaces later exactly
-  as `free(): invalid pointer`. bar25 tests it (and logs the first `maxsize=0` read if one happens).
-* `Nc/IPO`'s SIGSEGV is a separate item — in bar23 it landed in `GMessage::IsValid`
-  (`libgmsglib.so+0x24020`, `+0x1a`, reading `[reg+0x44]`).
+* **★ SqlServer's death is CROSSED (bar26).** Two processes were faulting, and they were different
+  failures (resolve each dump against its OWN maps — the dumps interleave in one stderr):
+  `SqlServer.elf sig=6` (glibc **`free(): invalid pointer`**) and `ipo_progstation.elf sig=11`.
+  The SqlServer abort was **the emulator truncating a config reply**: `QMSGCAP` was 16384 while the
+  real kernel caps `Q_send` at 0x8000 = 32768, and the warning added this session caught it on its
+  first run — `*** Q_send size 18160 > QMSGCAP 16384 — TRUNCATING (queue "0-0000113CfgM")`. SqlServer
+  read the 16384-byte fragment, parsed past the end of the GMessage and died. With `QMSGCAP` at
+  32768: truncation warnings **0**, bad frees **0**, and `Q_SQL` reads go 1 → 6 — **the SQL server
+  serves.** (`QSLOTS` 12 → 8 pays for it; a full-queue drop now warns too.)
+* **★ The one remaining crash is named:** `Nc/IPO` SIGSEGVs at `libgmsglib.so+0x2403a` =
+  `GMessage::IsValid` `+0x1a` — `mov 0x4(%eax),%eax` with `this` = **0x40** (fault addr 0x44),
+  identical EIP and address across bar23/bar24/bar26, so it is a deterministic bad pointer, not
+  random corruption. Resolving the stack against ipo's own maps names the caller:
+  **`IpoKonfig::ConvertOldMotorTab(Db::MailslotCached&, astring const&, astring const&)` +0x6c9**.
+  That is the motor-table conversion reading through a **cached database mailslot** — i.e. the path
+  that talks to the SQL server, which only started answering in bar26. Next: RE that reply path and
+  see what `Db::MailslotCached` hands back when the query finds nothing.
 * `tm_check` (heroscall **0x31**) is unimplemented — the new first-use reporter caught it in ipo.
 
 **★ THE TWO bar23 BLOCKERS (both concrete):**
