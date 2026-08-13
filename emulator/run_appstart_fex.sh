@@ -119,6 +119,7 @@ ln -sfn "$SYSW" /tmp/s; ln -sfn "$CFG/default/oem" /tmp/o; ln -sfn "$R/heros5/bi
 # /mnt/sys/config + /mnt/plc/config, and cfgfix classifies IsSysFile/IsOemFile by those resolved prefixes.
 # Stage both volume targets + the productid cache (controlmark=16 = GetOptionTableTnc640).
 sudo mkdir -p /mnt/sys/config /mnt/plc/config /mnt/sys/cache/nckern/productid
+sudo mkdir -p /mnt/diagnosis /mnt/fieldbus && sudo chmod 777 /mnt/diagnosis /mnt/fieldbus   # %DIAGNOSIS% / %FIELDBUS% (see the export below)
 sudo cp -aL "$CFG/config/." /mnt/sys/config/ 2>/dev/null
 # winmgr's ReadLayout re-resolves %SYS%/resource against the PERSISTENT mount /mnt/sys/resource (NOT the
 # SYS symlink) — durable lesson: a custom %SYS%/resource layout must be present there too, else winmgr
@@ -211,6 +212,11 @@ export SYS_NAME=SYSTEM: OEM_NAME=PLC: OEME_NAME=PLCE: USR_NAME=TNC:
 # load and SIGSEGVs before registering (the "Unhandled exception"/signal-11 seen with a garbage threadname).
 # Values = the PGM-Platz demo config (1280x1024, no touch device, X11 keymap); the files are staged under
 # SYS/resource (section [2]).
+# %DIAGNOSIS% / %FIELDBUS%: the genuine launcher (work/control/sysroot/application:119) exports these
+# when ifsBackend.elf is present. startup.elf's genuine command line passes -M=%DIAGNOSIS% (mount point
+# for diagnosis data) and the Nc subsystem's ifsFieldbus takes -m=%FIELDBUS%; without the env vars
+# AppStartMaster substitutes an empty string.
+export DIAGNOSIS=/mnt/diagnosis FIELDBUS=/mnt/fieldbus
 export JH_RES=1280 JH_FULL_RES=1280x1024 WINMGR_SCREENSIZE=1280x1024
 export LAYOUT_FILE=/tmp/s/resource/tnc640layout1280.xml
 export KEYMAP_FILE=/tmp/s/resource/keymap_te530_1280_x.xml

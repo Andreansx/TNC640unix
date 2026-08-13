@@ -1,0 +1,149 @@
+(* TNC640heros_bar22.txt = bar21 with startup.elf's GENUINE command line.                             *)
+(* ★ THE FINDING THAT MAKES THIS BATCH: with -L finally giving startup.elf's EvtMgr somewhere to      *)
+(* write, its own log says, 40 ms into the run:                                                        *)
+(*     |ACTN|FipsMain|Read configuration data.                                                         *)
+(*     |ERRO|FipsMain|No HwViewer instance specified on command line.                                  *)
+(*     |TRNS|FipsMain|State FailInit entered.                                                          *)
+(* startup.elf has been sitting in FailInit in EVERY bar run since bar5 -- not blocked on a peer, not  *)
+(* waiting for hardware: it REFUSED to initialise because the batch never passed the HwViewer          *)
+(* procedure option. The shipped batch (TNC640heros.txt:411) launches it as                            *)
+(*     -S=functional_safety -s=StartNc -H=LoadPython -I=LoadPython3 -M=%DIAGNOSIS%                     *)
+(* and its own -h help text documents them:                                                            *)
+(*     -H  Procedure for start of HwViewer and Python atSystemStart script with Python 2               *)
+(*     -I  Procedure for start of Python atSystemStart script with Python 3                            *)
+(*     -M  Mount point for diagnosis data                                                              *)
+(*     -S  Procedure for start of NC subsystem (with functional safety)                                *)
+(* %DIAGNOSIS% is exported by the genuine launcher (sysroot/application:119 = /mnt/diagnosis) and is   *)
+(* now exported by run_appstart_fex.sh too. -v -L stay on as diagnostics.                               *)
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\jh.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\product.cfg")
+
+FmCommandLineOption (
+    caption:="c",
+    value:="SYS:\\config\\tnc.cfg")
+
+FmCommandLineOption (
+    caption:="e",
+    value:="SYS:\\runtime\\LogFile.log")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_PORTRAIT_MODE_TOUCH_SCREEN")
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_TOUCHSCREEN")
+
+
+FmCommandLineOption (
+    caption:="j",
+    value:="JH_SIDESCREEN_MODE")
+
+FmLoadSubsystem (
+    subsystem:="winmgr",
+    localNamespace:="winmgr",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/winmgr",
+            commandLineOptions:="-m=5 -i=%LAYOUT_FILE% -o=afk -s=%WINMGR_SCREENSIZE% -k=%KEYMAP_FILE% -c=%CHARMAP_FILE% -f=%FCTKEYMAP_FILE%",
+            imagePath:="%EXECDIRH%\\winmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="SkManager",
+    localNamespace:="SkManager",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/skmgr",
+            commandLineOptions:="-w -k",
+            imagePath:="%EXECDIRH%\\skmgr.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="prom",
+    localNamespace:="prom",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/prom",
+            imagePath:="%EXECDIRH%\\promview.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Event",
+    localNamespace:="Event",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/evtserver",
+            commandLineOptions:="-i=Nc -m=7 -n=7",
+            imagePath:="%EXECDIRH%\\evtserver.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Ed",
+    localNamespace:="Ed",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/mmi",
+            commandLineOptions:="-i=Nc -k=NC -s=Sim -p=SIM -h=60000 -d=60",
+            imagePath:="%EXECDIRH%\\Fred.elf" )
+    ])
+
+(* ★ NEW (bar8): the real hardware server. Genuine cmdline "-U", genuine "Server" namespace (yeen: PID 9068     *)
+(* "hwserver.elf Server:Server/hwserver -U"). Owns QHWServer; answers ipo_progstation's Nc/IPO:GetIoRange with  *)
+(* SIMULATED PCI addresses (progstation self-simulation). Loaded before Nc so QHWServer exists first.           *)
+FmLoadSubsystem (
+    subsystem:="Server",
+    localNamespace:="Server",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/hwserver",
+            commandLineOptions:="-U -vs -f=/tmp/s/config/Hardware.cfg",
+            imagePath:="%EXECDIRH%\\hwserver.elf" )
+    ])
+
+(* bar7's combined NC channel as ONE subsystem (sidesteps the AppStart Monitor per-subsystem sequencing gate:   *)
+(* t106 idles at Ev_receive(0x01019007) between subsystems). Now hwserver is present, so ipo_progstation's      *)
+(* GetIoRange reaches the real server -> the NC startup cycle can proceed.                                      *)
+
+FmLoadSubsystem (
+    subsystem:="NcS",
+    localNamespace:="Nc",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/startup",
+            commandLineOptions:="-S=functional_safety -s=StartNc -H=LoadPython -I=LoadPython3 -M=%DIAGNOSIS% -v -L=/tmp/s/runtime/_StartUpVerbose.txt",
+            imagePath:="%EXECDIRH%\\startup.elf" ),
+        FmLoadProcess(
+            processName:="~/CM",
+            commandLineOptions:="-k=NC",
+            imagePath:="%EXECDIRH%\\ChannelManager.elf" )
+    ])
+
+FmLoadSubsystem (
+    subsystem:="Nc",
+    localNamespace:="Nc",
+    procedure:="StartNc",
+    processes:= [
+        FmLoadProcess(
+            processName:="~/IPO",
+            commandLineOptions:="-k=NC -M",
+            imagePath:="%EXECDIRH%\\ipo_progstation.elf" ),
+        FmLoadProcess(
+            processName:="~/plc",
+            commandLineOptions:="-k=NC -m -p=LoadOEM -q=UnloadOEM -r=LoadOEMPython3",
+            imagePath:="%EXECDIRH%\\plc.elf" ),
+        FmLoadProcess(
+            processName:="~/PlcDaemon",
+            commandLineOptions:="-f=SYS:\\plc\\compiled\\SymbolDebug.txt -c=%EXECDIRH%\\plccomp.elf",
+            imagePath:="%EXECDIRH%\\PlcDaemon.elf" ),
+        FmLoadProcess(
+            processName:="~/MON",
+            commandLineOptions:="-k=NC",
+            imagePath:="%EXECDIRH%\\monitoring.elf" )
+    ])
