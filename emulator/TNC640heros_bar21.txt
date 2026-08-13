@@ -9,6 +9,12 @@
 (* (as bar7..bar20 did) is not just unfaithful, it inverts the dependency: the NC channel comes up      *)
 (* before the coordinator that is supposed to sequence it.                                              *)
 
+(* startup.elf also gets -L=<path>. RE'd reason (idalib): EvtMgr::WriteVerbosePrint (startup.elf     *)
+(* 0x4a810) writes ONLY when evtMgr+52 != 0 AND the FILE* at evtMgr+36 is non-NULL. "-v" alone just   *)
+(* sets the verbosity level (evtMgr+33); it is EvtMgr::SwitchToCustomLogger (0x4a7e0, the -L option)  *)
+(* that sets +52 = 1 and stores the path. That is why bar16/bar20 produced not one Fips line even     *)
+(* with -v: startup.elf's state machine trace has nowhere to go without -L.                            *)
+
 FmCommandLineOption (
     caption:="c",
     value:="SYS:\\config\\jh.cfg")
@@ -110,7 +116,7 @@ FmLoadSubsystem (
     processes:= [
         FmLoadProcess(
             processName:="~/startup",
-            commandLineOptions:="-s=StartNc -v",
+            commandLineOptions:="-s=StartNc -v -L=/tmp/s/runtime/_StartUpVerbose.txt",
             imagePath:="%EXECDIRH%\\startup.elf" ),
         FmLoadProcess(
             processName:="~/CM",
