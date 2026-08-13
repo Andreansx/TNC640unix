@@ -108,7 +108,10 @@ static const char* mshex(const void*p,uint32_t n){
 /* ---------------- shared control segment ---------------- */
 #define MAXTASK 512
 #define MAXSEM  512
-#define MAXQ    2048       /* ConfigServer registers a ~1000-entry HwsM<task>N<ctr> mailslot pool
+#define MAXQ    3072       /* Raised from 2048 (2026-08-13): the constellation ran the table dry —
+                            * 2136 successful creates and climbing, after which Q_create silently
+                            * returned 0 and clients used reply queues that did not exist.
+                            * ConfigServer registers a ~1000-entry HwsM<task>N<ctr> mailslot pool
                             * at startup; 96 overflowed → "table full" → a retry spin (1.4GB log). */
 #define MAXREG  256
 #define QSLOTS  8          /* messages buffered per queue                        */
@@ -1273,7 +1276,16 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
         uint32_t id=C->queues[s].id; unlock(); return id;
     }
     s=-1; for(int i=0;i<MAXQ;i++) if(!C->queues[i].used){ s=i; break; }
-    if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
+    if(s<0){ unlock();
+        /* SILENT FAILURE IS THE ENEMY (see QMSGCAP/queue-drop). A failed Q_create returns 0 and the
+         * client sails on: MEASURED (bar26) Nc/plc minted the reply-mailslot name DB0000013eN35b,
+         * failed to create it, sent its Q_SQL request naming it anyway, and SqlServer's
+         * q_ident("DB0000013eN35b") answered 0 — so the reply had nowhere to go, Db::Mailslot had no
+         * message, and IpoKonfig::ConvertOldMotorTab's error path dereferenced it. */
+        static int warned=0;
+        if(!warned){ warned=1; fprintf(stderr,"[rtos] *** Q_create(\"%s\") FAILED: queue table FULL "
+                                              "(MAXQ=%u) — raise MAXQ\n",base,(unsigned)MAXQ); }
+        LOG("Q_create: table full\n"); return 0; }
     C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
     C->queues[s].synth=0;                                           /* a real Q_create, not a stand-in */
     C->queues[s].drop_warned=0;
