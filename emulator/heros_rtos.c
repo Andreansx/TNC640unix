@@ -1565,7 +1565,13 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
             }
         }
     }
-    if(size>QMSGCAP){ LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
+    /* TRUNCATION IS DATA CORRUPTION, so say so out loud rather than only under VERBOSE: the reader
+     * gets a short message and parses garbage off the end of it. If this ever fires, raise QMSGCAP. */
+    if(size>QMSGCAP){
+        static int warned=0;
+        if(!warned){ warned=1; fprintf(stderr,"[rtos] *** Q_send size %u > QMSGCAP %u — TRUNCATING "
+                                              "(queue \"%s\"); raise QMSGCAP\n",size,QMSGCAP,C->queues[s].name); }
+        LOG("Q_send size %u > cap %u, truncating\n",size,QMSGCAP); size=QMSGCAP; }
     uint32_t sender=task_self();
     struct queue*q=&C->queues[s];
     /* RTS_FAMILY_ROUTE: record this task's request family (type-id>>16) when it sends a REQUEST to a
@@ -2455,7 +2461,17 @@ static int q_read(uint32_t id,void*buf,uint32_t maxsize,uint32_t timeout,uint32_
              * it fell through to the success path and parsed the TRUNCATED 128B buffer -> GMessage::Read
              * abort "message error 0x2100018 at offset 0x80" (a GMsgString-field fread underflow at the
              * 128-byte boundary). ConfigServer is unaffected: it reads with a 0x8000 buffer (full<=maxsize). */
-            if(maxsize && full>maxsize){
+            /* NOTE the missing `maxsize &&` guard that used to be here. With it, a caller that passed
+             * maxsize=0 skipped the too-big check entirely and the memcpy below wrote the FULL message
+             * into a buffer whose declared capacity was ZERO — a guest heap smash, and exactly the kind
+             * of thing that surfaces later as glibc's "free(): invalid pointer" (which is how Nc/IPO
+             * dies). maxsize=0 IS the too-big case for any non-empty message, so treat it as one; the
+             * first occurrence is announced so a caller that really does pass 0 is not silent. */
+            if(full>maxsize){
+                if(!maxsize){ static int warned0=0;
+                    if(!warned0){ warned0=1; fprintf(stderr,"[rtos] Q_read with maxsize=0 on queue \"%s\" "
+                                                            "(msg %u bytes) -> -12/ENOMEM, nothing copied\n",
+                                                            C->queues[s].name,full); } }
                 unlock();
                 /* The libheros.so q_read wrapper (@0xbfb0) maps the heroscall return to the value the
                  * FMailslotQueue receive checks: it ONLY treats the read as "too big, grow+re-read" when
