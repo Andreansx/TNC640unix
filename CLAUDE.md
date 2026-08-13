@@ -60,8 +60,34 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-08-13) — three REAL emulator bugs fixed; the NC channel now comes up in force. Next = hwserver's second-pass run-up → HWSRunUpState Idle(7) → startup.elf's FipsMain leaves WaitHwInit
-**★★★ THE SESSION'S THREE FIXES — each measured, each reproduced in isolation, none an inject.**
+## Current frontier (2026-08-13) — ★★ startup.elf was in **FailInit** all along ("No HwViewer instance specified on command line"); plus four real emulator bugs fixed. Next = does FipsMain now drive the NC startup cycle?
+**★★★★★ THE HEADLINE.** Once startup.elf was given `-L=<path>` (without it `EvtMgr::WriteVerbosePrint`
+@0x4a810 writes nothing — it needs `evtMgr+52`, which only `SwitchToCustomLogger`/`-L` sets, AND a
+non-NULL `FILE*`; `-v` alone only sets the level), its own log answered in 40 ms what weeks of runs
+could not:
+```
+|ACTN|FipsModule|Initializing Fips....      |TRNS|FipsMain|State Init entered.
+|ACTN|FipsMain|Read configuration data.     |INFO|FipsMain| systemType:=WinSimulation simMode:=FullSimul dongleType:=noSIK
+|ERRO|FipsMain|No HwViewer instance specified on command line.
+|TRNS|FipsMain|State FailInit entered.
+```
+**startup.elf has been sitting in FailInit in EVERY bar run since bar5** — never blocked on a peer,
+never waiting for hardware. It read its config, saw a HwViewer view configured
+(`hwViewerRef.key="HwViewer"`), had no procedure name to launch it with, and refused to initialise.
+Everything downstream (the ChM `StartupCycle` handshake, `FipsUI::EnterPowerInterrupt`,
+`HideStartupPicture`, the bar) is gated behind a state machine that never left `Init`. The shipped
+batch (`TNC640heros.txt:411`) launches it as
+`-S=functional_safety -s=StartNc -H=LoadPython -I=LoadPython3 -M=%DIAGNOSIS%` — all four documented in
+its own `-h` text. `emulator/TNC640heros_bar22.txt` uses that genuine line; `run_appstart_fex.sh` now
+exports `DIAGNOSIS=/mnt/diagnosis` + `FIELDBUS=/mnt/fieldbus` like the genuine launcher
+(`sysroot/application:119`).
+**Also now genuine (`bar21`/`bar22`): the TWO-STAGE NC load.** The shipped batch splits
+`NcS`(startup+CM, loaded up front) from `Nc`(IPO/plc/PlcDaemon/MON, `procedure:="StartNc"`), and
+`FipsNc::StartNcSubsys`@0x50500 calls `FipsIfAppStart::CallProcedure("StartNc")` to load stage two.
+Every earlier bar batch collapsed both into one subsystem, inverting the dependency. Verified: bar21
+spawns exactly the 8 stage-1 processes and holds IPO/plc/PlcDaemon/MON back.
+
+**★★★ THE SESSION'S EMULATOR FIXES — each measured, each reproduced in isolation, none an inject.**
 
 **(1) `syscall()` returned the KERNEL ABI instead of glibc's — a coin-flip abort in any guest process.**
 `heros_rtos.c` interposes libc's `syscall()` (heroscall = `syscall(222,…)`) and passed everything else
