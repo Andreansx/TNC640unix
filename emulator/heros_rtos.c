@@ -141,6 +141,7 @@ struct sem  { int used; uint32_t id; char name[NAMELEN]; volatile int32_t count;
  * (from Q_send's message-node fields: source queue id, sender task, mode|size) */
 struct qmsg { uint32_t len; uint32_t hdr[3]; uint8_t data[QMSGCAP]; };
 struct queue{ int used; uint32_t id; char name[NAMELEN];
+              uint32_t drop_warned;                   /* 1 = already announced a full-queue drop */
               uint32_t synth;                         /* 1 = the emulator AUTO-CREATED this as a
                                                        * black-hole sink for an absent peer, not a
                                                        * queue the guest ever Q_create'd. Compound
@@ -1275,6 +1276,7 @@ static uint32_t q_create(const char*nm,uint32_t depth,uint32_t flags){
     if(s<0){ unlock(); LOG("Q_create: table full\n"); return 0; }
     C->queues[s].used=1; C->queues[s].id=C->next_q++; C->queues[s].head=C->queues[s].tail=0;
     C->queues[s].synth=0;                                           /* a real Q_create, not a stand-in */
+    C->queues[s].drop_warned=0;
     C->queues[s].wm_tick_offset=0; C->queues[s].wm_last_serial=0;   /* WM_SERIAL_FIX: fresh serial state */
     C->queues[s].depth=depth; C->queues[s].flags=flags;
     C->queues[s].owner=owner; C->queues[s].notify_bits=nbits;
@@ -1597,7 +1599,15 @@ static int q_send(uint32_t id,const void*msg,uint32_t size,uint32_t mode){
     }
     lock();
     uint32_t used=q->tail-q->head;
-    if(used>=QSLOTS) q->head++;                           /* drop oldest to make room */
+    /* A FULL queue drops its OLDEST message — silent data loss, the same class of bug as the
+     * QMSGCAP truncation that killed SqlServer, so announce it (once per queue). If this fires,
+     * raise QSLOTS rather than letting a client wait forever for a message that was thrown away. */
+    if(used>=QSLOTS){
+        if(!q->drop_warned){ q->drop_warned=1;
+            fprintf(stderr,"[rtos] *** queue \"%s\" (0x%x) FULL at %u slots — DROPPING the oldest "
+                           "message; raise QSLOTS\n",q->name,id,(unsigned)QSLOTS); }
+        q->head++;                                        /* drop oldest to make room */
+    }
     uint32_t slot=q->tail%QSLOTS;
     q->msg[slot].len=size;
     q->msg[slot].hdr[0]=id;                               /* source queue id (kernel node +0x20) */
