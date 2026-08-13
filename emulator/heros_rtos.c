@@ -2856,6 +2856,36 @@ static void inject_connect_ack(uint32_t target_qid,const void*msg,uint32_t size)
     if(n_acked<32) acked_qids[n_acked++]=rqid;
     q_send(rqid,ack,p,0);
     LOG("INJECT_ACK: posted CfgClientIsConnected(success=OK) to \"%s\" (0x%x), %u bytes\n",cid,rqid,p);
+    HST(task_self(),0,"CA ack CfgClientIsConnected -> \"%s\" (0x%x)\n",cid,rqid);
+}
+/* A CLIENT MAY CONNECT MORE THAN ONCE. The ack above is deduplicated per reply queue so a re-sent
+ * connect is not double-acked — but that also silently swallowed the LEGITIMATE second connect of a
+ * client that had DISCONNECTED in between, which is exactly what hwserver does: its run-up runs
+ * twice (DetectMainboard -> ... -> Terminate -> DetectMainboard, because the config asks for
+ * simulation mode), and CfgSrvMgr does Connect -> ... -> Disconnect -> Connect. MEASURED: hwserver's
+ * second CfgConnectClient got no ack, so CfgSrvMgr sat in "State Connect entered." for the rest of
+ * the run, HWSMain never left GetConfigData, hwserver never reached HWSRunUpState Idle(7), and
+ * startup.elf's FipsIfHws run-up trigger therefore never fired.
+ * CfgDisconnectClient (wire tag 0x00170120, same leading GMsgString client id as the connect) now
+ * clears the dedup entry, so the next connect is acked again. */
+static void inject_forget_ack(uint32_t target_qid,const void*msg,uint32_t size){
+    if(!inject_ack||!msg||size<12) return;
+    int ts=q_slot(target_qid); if(ts<0||strcmp(C->queues[ts].name,"CfgServerQueue")) return;
+    const unsigned char*m=msg;
+    uint32_t hdr=m[0]|(m[1]<<8)|(m[2]<<16)|((uint32_t)m[3]<<24);
+    if((hdr&0x7fffffff)!=0x170120) return;                /* not a CfgDisconnectClient */
+    uint32_t tag=m[4]|(m[5]<<8)|(m[6]<<16)|((uint32_t)m[7]<<24);
+    if(tag!=0xe7) return;
+    uint32_t nlen=m[8]|(m[9]<<8)|(m[10]<<16)|((uint32_t)m[11]<<24);
+    if(nlen==0||nlen>64||12+nlen>size) return;
+    char name[80]; memcpy(name,m+12,nlen); name[nlen]=0;
+    int rs=q_find_slot(name); if(rs<0) return;
+    uint32_t rqid=C->queues[rs].id;
+    for(int i=0;i<n_acked;i++) if(acked_qids[i]==rqid){
+        acked_qids[i]=acked_qids[--n_acked];
+        LOG("INJECT_ACK: client \"%s\" (0x%x) DISCONNECTED -> ack dedup cleared\n",name,rqid);
+        HST(task_self(),0,"CD disconnect \"%s\" (0x%x) -> ack re-armed\n",name,rqid);
+        return; }
 }
 
 /* INJECT_EVT_ACK: HrMmi's EvtConnectClient(0x3200c0)->QEvtServer mirrors CfgConnectClient->CfgServerQueue.
@@ -3549,6 +3579,7 @@ long syscall(long n,...){
         int r=q_send(p[4], (const void*)(uintptr_t)p[0], p[2], p[6]);
         hws_autoreply(p[4], (const void*)(uintptr_t)p[0], p[2]);   /* HWS_STUB: synth QHWServer reply */
         inject_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_ACK: synth IPO connect-ACK */
+        inject_forget_ack(p[4], (const void*)(uintptr_t)p[0], p[2]);  /* ...and re-arm it on CfgDisconnectClient */
         inject_evt_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_EVT_ACK: synth QEvtServer connect-ACK */
         inject_peer_connect_ack(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_PEER_ACK: synth IPO/PLC/CM connect replies */
         inject_evt_error_reply(p[4], (const void*)(uintptr_t)p[0], p[2]); /* INJECT_EVT_ERR: answer the EvtErrorRequest poll (drain counter) */

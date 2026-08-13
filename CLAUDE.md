@@ -60,7 +60,60 @@ in `docs/PROGRESS-LOG.md`.
   recorded in `docs/PROGRESS-LOG.md`, **not here** — keep them out of the
   always-loaded file.
 
-## Current frontier (2026-07-29) — ★ GATE CROSSED: Nc loads AFTER Server, ipo_progstation spawns, and hwserver SERVES GetIoRange. Next = the NC startup cycle (StUpStartupCycleAck → EnterPowerInterrupt → HideStartupPicture)
+## Current frontier (2026-08-13) — three REAL emulator bugs fixed; the NC channel now comes up in force. Next = hwserver's second-pass run-up → HWSRunUpState Idle(7) → startup.elf's FipsMain leaves WaitHwInit
+**★★★ THE SESSION'S THREE FIXES — each measured, each reproduced in isolation, none an inject.**
+
+**(1) `syscall()` returned the KERNEL ABI instead of glibc's — a coin-flip abort in any guest process.**
+`heros_rtos.c` interposes libc's `syscall()` (heroscall = `syscall(222,…)`) and passed everything else
+through a bare `int $0x80`, returning `-errno` and never setting `errno`. abseil
+(`libabsl_synchronization`, loaded by hwserver) does `err = syscall(SYS_futex,…); if (err) return -errno;`
+and treats anything but `-EINTR/-EWOULDBLOCK/-ETIMEDOUT` as `ABSL_RAW_LOG(FATAL)`. An ordinary `EAGAIN`
+came back non-zero with a STALE errno (17 = EEXIST) → `[waiter.cc : 102] RAW: Futex operation failed with
+error -17` → **SIGABRT in hwserver mid-DetectSik**, so the Nc subsystem never loaded at all. FIX: glibc ABI
+(`-1` + `errno`) **plus** a 6-arg `raw6()` (musl's `__syscall6`; absl passes `FUTEX_BITSET_MATCH_ANY` as
+arg6). Verified against real glibc as oracle under FEX (`scratchpad/syscall_abi_test.c`, `raw6_test.c`):
+glibc `-1/EAGAIN` = patched; old passthrough `-11/errno=17` = the exact `-17` absl printed.
+**(2) The semaphore UNITS parameter was ignored — AppStart's per-subsystem barrier freed exactly ONE
+process.** `FProcess::SynchronizeTransition@libbackend+0x25880` reports a state to AppStartMaster then
+PARKS on a named semaphore `<subsystem><state caption>` (`NcC`/`NcI`/`NcT`), retrying on a 100 s timeout
+forever. AppStart opens it (`AppStartSemaphores.cpp`) by releasing **as many units as the subsystem has
+processes** (`mov 0x28(%edi),%edx` = `SubsystemSemaphores.units`). The emulator released a hard-coded 1.
+ABI from `libheros.so.1.8.6.2` (`sm_release@0xc940`, `sm_request@0xca30`): **`p[0]=id, p[1]=UNITS,
+p[2]=timeout`**. Measured after the fix: `SV t106 sem=0x222 "NcC" released 6 -> count=6` and **all six Nc
+processes proceed** (before: only `Nc/PlcDaemon`, the recurring bar7/bar9/bar13 signature). Semaphores are
+now in the hst trace (`SC/SI/SW/SO/SV`) — they were the one startup primitive it never showed, which is why
+a parked process looked like a process that had gone quiet.
+**(3) The config connect-ACK dedup swallowed a legitimate RE-connect.** `inject_connect_ack` de-duplicates
+per reply queue; hwserver's run-up runs **twice** (`DetectMainboard → … → Terminate → DetectMainboard`,
+because the config asks for simulation mode) and its `CfgSrvMgr` does `Connect → … → Disconnect → Connect`.
+The second `CfgConnectClient` was silently dropped → `CfgSrvMgr` sat in *State Connect entered.* for the
+whole run. FIX: `CfgDisconnectClient` (wire tag **0x00170120**, same leading GMsgString client id) clears
+the dedup entry. New trace lines `CA`/`CD`.
+Also fixed: the crash handler re-entered itself **3541×** (guest handlers use `SA_NODEFER`, a garbage EBP in
+the frame walk faulted inside the dump) — now re-entrancy-guarded and every address probed with `rd_ok()`
+(`write(/dev/null,p,4)`); and the backtick landmine in `run_appstart_fex.sh`'s UNQUOTED `NSCMD` heredoc.
+
+**STATE NOW (bar16/bar17, crash=0, FAULT=0, PciHardware=0):** 13 procs; `winmgr skmgr prom evtserver Ed/mmi
+Server/hwserver` + `Nc/{PlcDaemon,MON,CM}` report **INITIALIZED**; `Nc/{IPO,plc,startup}` are **working, not
+blocked** (the last wire traffic at the 700 s cap is `Nc/plc` reading `CH_NC`/`CH_SIM`, KERNEL/PRODUCT
+versions and the axis table `X1 Y1 Z1 A1 B1 C1 U1 V1 W1 C2 …` from ConfigServer).
+
+**★ THE NEXT LINK, already RE'd (idalib over startup.elf + hwserver.elf):** `FipsMain::EnterWaitHwInit`
+(startup.elf 0x37090) registers HW-server run-up triggers — `FipsIfHws::AddTriggerRunUp@0x8a3c0` →
+`HwsMailslotQueue::AddTrigger(ident "state", HWSRunUpState N)` for **N = 7 Idle / 14 RunUpFailed /
+8 CritFwUpdateRequested / 10 CritFwUpdateComplete / 11 CritFwUpdateCompleteReboot** — then WAITS. The enum
+is pinned from `HWSMain::Init@0x1ce010`: 1 Init, 2 DetectMainboard, 3 DetectSik, 4 GetConfigData, 5 InitDevs,
+6 Operate, **7 Idle**, 8..11 CritFwUpdate*, 12 Terminate, 13 TerminationComplete, 14 RunUpFailed,
+15 RunUpAborted, 16 SyncBreakpointMain, 17 SyncFramework. So **the gate is hwserver reaching Idle(7)** and
+firing that trigger; then `FipsMain::LeaveWaitHwInit` → `ConfirmHwSetup` → `FipsUI::EnterPowerInterrupt`
+(startup.elf 0x6d8c0, the ONLY caller of `FipsIfProM::HideStartupPicture`) → `HideStartupPicture 0x404705C0`
+→ prom's `OnScreenChanged` guard drops → activation → the bar. Downstream checkpoints all still 0.
+Full RE: `docs/re/appstart-subsystem-semaphore-barrier-re.txt`, `docs/re/gate2-prom-startup-picture-activation-re.txt`.
+Diagnostics: startup.elf takes its own documented **`-v`** (Verbose) / `-V` (trace all messages) — used in
+`emulator/TNC640heros_bar16.txt`; its `EvtMgr::FVerbosePrint` output is stdout-buffered, so prefer the wire
+trace or try its documented `-L=<path>` custom logger.
+
+## Prior frontier (2026-07-29) — ★ GATE CROSSED: Nc loads AFTER Server, ipo_progstation spawns, and hwserver SERVES GetIoRange
 **★★★★★★★★★★★★★★ THE CROSSING (2026-07-29). 13 procs, crash=0, PciHardware throw=0.** A bar13 run
 (`TNC640heros_bar13.txt` + `HEU_GRANT=1`) reaches the session's un-fakeable exit: **every process of the
 Server subsystem reports INITIALIZED** (`Server:Server/hwserver` = **2** FmProcessState), so AppStart
@@ -117,197 +170,6 @@ HST **`QI`** line (Q_ident resolution, since some clients treat it as a decision
 correctly waiting). That is exactly the downstream checkpoint list, and it is now reachable for the first
 time. Full RE + evidence: **`docs/re/appstart-subsystem-sequencing-gate-re.txt`** (§4k = the crossing);
 see [[project-appstart-gate-is-fmprocessstate-initialized]].
-
-**★★★★★★★★★★★★ NCK GetIoRange RESOLVED as "RUN THE REAL HW SERVER" — yeen-decided, throw CROSSED, no stub-a-reply,
-no inject (2026-07-15 cont., commit 0edd4dd).** The prior "extend the HWS stub to answer GetIoRange" plan is
-SUPERSEDED. **yeen oracle first (mandated):** on the working x86_64 boot (guest root ps, `scratchpad/yeen_proclist_evidence.txt`)
-the QHWServer server is a **REAL i386 process — `hwserver.elf Server:Server/hwserver -U` (PID 9068)** — running
-alongside `ipo_progstation.elf Nc:Nc/IPO -k=NC -M` (9515); the boot COMPLETES and DRAWS the bar (`scratchpad/yeen_bar_confirm.png`).
-hwserver self-selects **SIMULATED PCI** on a programming station (HWSSimulationModule / ProductId::IsProgStationVersion /
-PciPlCtrl::SetSimulated) and answers GetIoRange. Genuine boot launches it (`TNC640heros.txt:90`, `~/hwserver -U`, subsystem
-"Server"). **VERDICT = EMULATE-by-running-the-real-server** — hand-stubbing a PlAddresses reply is the treadmill (cascade
-map: ~8-10 client setup requests + DOZENS of hwserver Handle* dispatchers; runtime register I/O is DIRECT simulated memory
-`LE422_IO_SIMULATION`/`LE422_REMA_SIMULATION` 64MB, not per-access messages). **FIX (`emulator/heros_rtos.c`):** shared
-`hwserver_alive` flag in `struct ctl`, set by the hwserver.elf process at init (self_pname contains "hwserver");
-`hws_autoreply()` DEFERS all QHWServer traffic to the real server once alive (early boot the stub still echoes run-up GetData
-so the config foundation comes up — no per-process env split, no regression). **RESULTS (crash=0):** **bar8**
-(`TNC640heros_bar8.txt`, hwserver in its GENUINE separate "Server" subsystem): hwserver runs crash-free under FEX,
-self-simulates, **PUBLISHES the public QHWServer + runs its PCI-sim self-test (4× own GetIoRange)** — BUT the **AppStart
-Monitor per-subsystem SEQUENCING gate** (t106 `Ev_receive(want=0x01019007,c=2)`) blocks the Nc subsystem loading after
-Server → ipo never spawns. **bar9** (`TNC640heros_bar9.txt`, hwserver FOLDED into the combined Nc subsystem; **reproduced 2×,
-bar9+bar9b identical**): Nc loads → **ALL 13 procs spawn** (winmgr/skmgr/prom/evtserver/Fred + hwserver + full NC channel),
-crash=0, **PciHardware throw=0**, ipo_progstation **ISSUES `Nc/IPO:GetIoRange` (+GetBaseAddresses) to the REAL server — the
-bar7 throw is CROSSED**. But hwserver, racing 5 NC procs for CPU, reaches subsystem-ready + `QHWServer_int`(346)/`intRT`(347)
-yet does NOT publish the PUBLIC `QHWServer` (30c) nor run its self-test → **QR[30c]=0, GetIoRange DELIVERED-BUT-UNSERVED**
-(ipo blocks; startupPicVisible=1, boot NOT advanced past the HW gate). **foundation** (`HWSERVER_FOUNDATION=1`): DEAD END —
-hwserver blocks earliest (init + LE422 only, threads in Ev_receive) because it needs constellation peers not yet up.
-**NEXT (faithful, the one clean remaining blocker): crack the Monitor sequencing gate (0x01019007, c=2)** so bar8's genuine
-Server-before-Nc ordering loads Nc AFTER hwserver reaches ready (where it DOES publish the public queue + self-test) → hwserver
-serves ipo's GetIoRange. Same recurring gate bar6 hit / bar7 sidesteps by combining — but hwserver CANNOT be combined with the
-NC channel (CPU-starved before publishing). Why does a 1-process Server subsystem not satisfy `want=0x01019007 c=2` when
-bar3's winmgr/skmgr/prom/Event/Ed subsystems do? See [[project-gate2-hwserver-getiorange-run-real-server]] +
-`docs/re/gate2-prom-startup-picture-activation-re.txt`.
-
-**★★★★★★★★★★★ THE BAR-DRAW PRECONDITION DEFINITIVELY PINNED — LIVE prom does NOT self-activate; it correctly
-waits for the NC-software startup; NO inject needed to prove it (2026-07-15).** Decisive test of the "revive prom,
-don't bypass" thesis: with prom alive (d19d86b) + Fred alive (9731af9), **LIVE prom sends `PromActivateNotifyMsg
-(0x404703E0)` 0 times and Fred sends `SkMgrActivate(0x028a0200)` 0 times** on the clean no-inject bar3 constellation
-— reproduced **2× un-fakeably, crash=0**, prom alive & serving, Fred driving the full softkey login/menu/.bmx
-conversation then idling. prom is blocked at `PromFrame::OnScreenChanged: startupPicVisible=1` → "PLC is not ready
-yet: Startup picture is visible" — NOT a bug; prom correctly waits for a boot signal bar3 never produces.
-**The precondition is TWO-part (idalib-pinned over promview.elf+startup.elf; `docs/re/gate2-prom-startup-picture-activation-re.txt`):
-(A)** the picture is hidden by **`FipsUI::EnterPowerInterrupt`** (★ CORRECTS the prior memo — it is NOT
-`FipsNc::NotifyStartupComplete` that hides it) → `HideStartupPicture` (GMessage **0x404705C0** → QProMViewer),
-reached only after the NC startup cycle completes (ChM `StUpStartupCycleAck 0xB700E0` + PLC/IPO up + self-test);
-**(B)** hiding is **necessary but NOT sufficient** — `PromModule::OnHideStartupPicture` does NOT self-re-drive
-activation (xref-proven: only `UnloadStartupPicture`), so a **separate** post-hide screen-change must fire
-`ScreenChangeObserver::OnNotify`→`OnScreenChanged`→`ActivateGroup`→activation (the "persistent foreground
-arbitration", now code-confirmed). **yeen oracle** (scratchpad/yeen_{splash,mid,mmi}.png): the full x86_64 boot
-shows "The NC software is being started" (splash, NO bar) → completes (~75-90s) → the MMI with the 8-cell softkey
-bar; our bar3 is frozen at yeen's pre-completion state. **Root cause = bar3 dropped the entire NC-software startup**
-(startup.elf + ipo_progstation/plc/ChM). **Faithful revive attempt (NO inject), 3 trimmed batches:** `bar5` (=bar3+
-startup.elf+CM) — startup.elf runs crash-free but stalls w/o the NC channel; `bar6` (+separate Nc subsystem) — blocked
-by the AppStart **Monitor per-subsystem sequencing gate** (t106 idles at `Ev_receive(0x01019007)`), ipo_progstation
-never spawns; `bar7` (=bar3 + ONE combined Nc subsystem IPO+plc+PlcDaemon+MON+CM+startup, sidesteps the Monitor gate)
-— **the ENTIRE genuine NC channel spawns+registers under FEX for the FIRST time (16 procs: Nc/IPO=ipo_progstation
-8.2MB, Nc/plc, Nc/PlcDaemon, Nc/MON, Nc/CM, Nc/startup)**. **★ THE ONE PROVABLE BLOCKER:** ipo_progstation (Nc/IPO
-t11d) requests a PCI I/O range from the HW server (`QHWServer` "Nc/IPO:GetIoRange"); the HWS stub only ECHOES QHWServer
-requests, so guest **`PciHardware::GetIoRange(PlAddresses&)` @libhwsinterface.so+0x69 throws** (×3-4) → the NCK
-stalls (threads WAIT, not a hard crash) → the NC startup cycle never runs → no PowerInterrupt → no picture-hide → no
-activation. Same PciHardware CLASS as the fixed prom crash, distinct facet (PCI I/O range vs shm attach). **NEXT
-(faithful):** extend the HWS stub (`emulator/heros_rtos.c` `hws_autoreply`) to answer GetIoRange with a valid
-PlAddresses I/O-range reply (RE the libhwsinterface reply schema), then the NCK will try to USE the range (map/read
-PCI regs) — a cascade of NCK hardware-access emulation. Inject knobs (INJECT_PROM_ACTIVATE/WMACT/REMAP/INJECT_PROM_HIDE)
-all OFF and proven UNNECESSARY. See [[project-gate2-startup-picture-nc-cycle]].
-
-**★★★★★★★★★★ FRED SIGSEGV CROSSED — it was NOT a UAF; two config/resource gaps, faithful fixes, no inject
-(2026-07-15).** The `FThread::EvalContextInQueue/EvalContextModule` SIGSEGV that gated the bar was a *downstream
-symptom*, not a lifetime bug (the `~FThread` free of `m_0x60` — RA=libbackend+0x26ec3 — was a red herring; a
-targeted leak `emulator/fkeepvec.c FKEEPVEC=1` did NOT fix it, just moved the fault → allocator-timing hypothesis
-DISPROVEN). Method that cracked it: run WITHOUT the fmdel free-logger so the crash-handler stderr is CLEAN, then
-READ the actual log errors instead of chasing the memory-corruption symptom. Two real causes: **(1) `JH_NCTYPE`
-unseeded** — `PLib++ Error: Fred.xml(516/537): uninitialized variable JH_NCTYPE` on `<?NCKcondition if =
-"JH_NCTYPE ! \"TNC640\"" ?>`. It is a PLib++ NCK-condition var seeded by `PMetricsFactory::PMetricsFactory()`
-(libProductMetrics 0xc3c0) via `AddGlobalConditionalVariable("JH_NCTYPE", getenv("JH_NCTYPE"))`; at 0xc451
-`getenv==NULL → je c8c0` SKIPS the seed, so an unset env var leaves it uninitialized. **FIX = export
-`JH_NCTYPE=TNC640`** in the constellation env (run_appstart_fex.sh; children inherit) — the genuine env-driven
-config path. **(2) 0-byte frontend.dat** — `FResMgr: Can't find SoftkeyView in file frontend.dat` (fresmgr.cpp:205):
-the run staged resources via `cp -aL` from the Mac **virtiofs** mount, which silently corrupts ~2800/3400 files to
-0 bytes under load; the empty frontend.dat (really `#SoftkeyView Type=5`) → SoftkeyView not built → NULL module →
-the EvalContextModule crash. **FIX = `restage_resources()`** — individual single-file re-copy of every 0-byte dest
-whose source is non-empty (single-file virtiofs reads are reliable), for both `$SYSW/resource` and
-`/mnt/sys/resource`. **VERIFIED un-fakeably, reproduced 2×:** crash=0 (no signal 11 / no fault), JH_NCTYPE
-errors=0, SoftkeyView-missing=0, frontend.dat=1008B, and **Fred drives the FULL real softkey conversation**
-(SkMgrLogin 028a0120 → resp 028a0140 → SetMenu 028a0981 → 24× key msgs 028a01e0 → real `.bmx` loads 028a0421)
-then stays ALIVE in its MMI event loop registering Ed/mmi.ProgEditQueue — NO inject. **NEXT = the DRAW:** Fred has
-not yet sent `SkMgrActivate(0x028a0200)` (count 0), the bar pixel-draw trigger = the separate downstream
-prom-foreground-arbitration / PATH-B activation gate (below), NOT the Fred crash. See
-[[project-gate2-fred-crash-jhnctype-frontend-dat]].
-
-**★★★★★★★★★ GATE-2 PROM CRASH CROSSED — REAL ROOT-CAUSE FIX, no inject (2026-07-15).** promview's
-`terminate: PciHardware::Exception` (the provable Gate-2 blocker that stalled the bar for weeks) was NOT
-missing hardware — it was a **cross-UID shared-memory permission bug**. Pinned un-fakeably with a new
-`__cxa_throw` interceptor (`emulator/cxathrow.c`, knob `CXATHROW=1`): throw type `PciHardware::Exception`,
-code 3, **site = libhwaccess.so +0x208f = `IpoSharedMemory::GetMemoryPointer`'s `m_attach==0` path** (the
-earlier 6d0452c triage instrumented m_ident/m_attach but the SUCCESS/openat-fail paths were LOG-suppressed).
-Root cause via `HEROSCALL_REGLOG=1` (new): `M_attach "TR_en"/"IPO_SHARED_MEMORY" -> openat(/dev/shm/heros_reg_*)
-FAILED rc=-13 (EACCES)`. The region files are created **0600 root:root** by root procs (ConfigServer/IPO), but
-**promview drops to a non-root UID** (opens the ctl file 0600 while still root at init, then the setuid — invisible
-to the execve-only strace filter — precedes the region attaches), so its `openat` is denied → `m_attach` returns
-0 → `GetMemoryPointer`/`GetVirtPciBaseSingle` throw. **FIX (`emulator/heros_rtos.c` `reg_attach`+`ctl_init`):
-create /dev/shm region + ctl files 0666 + explicit `fchmod(0666)` — models the genuine "the WHOLE control
-constellation shares this memory" semantics.** VERIFIED un-fakeably: region files now `rw-rw-rw-`, **EACCES=0,
-PciHardware throws=0, promview STAYS ALIVE** (pid Sl), reaches `OnCfgClientIsConnected():99:`, reads PLC config,
-serves QProMViewer. **NEW downstream blocker PINNED to a Fred USE-AFTER-FREE (2026-07-15 cont.):** with prom
-alive, Fred (Ed/mmi) SIGSEGVs in `libbackend.so` **`FThread::EvalContextModule` (libbackend+0x28bf2 `call
-*0x18(%edx)`**, reached `FrameThread::MainContext`←`CreateContext`←`CreateMainContext`←`FThread::Run`; the
-`+0x27bf2/EvalContextInQueue` in the earlier note was the NEXT call in the same MainContext — misattributed).
-Root cause pinned un-fakeably (4x repro A–D, ground-truth via the crash handler now dumping GP regs +
-`this`→`m_0x4c`(registry)/`m_0x60`(module-array)): the re-eval path (count=2,idx=0) reads
-`P = this->m_0x60[0]` — a FThread **context object that is a DANGLING pointer**: sometimes UNMAPPED (fault
-reading `*P` at +0x28bef), sometimes readable-but-garbage-vtable (`*P`=0x0 / 0x656d6186 / 0x881c04fe, a
-DIFFERENT garbage every run). **Forks RULED OUT:** (a) emulator message misroute/misserialize — the pre-crash
-msg `QR[307]"QEvtServer" size=373 tag=0x00320221` is **Fred-INTERNAL** (t10e→t10d, both Fred) and passed
-q_send **verbatim** (no mutation for queue 307), so a yeen byte-diff is moot by construction; (b) loader/reloc —
-all `FrameModuleAlloc`/`FrameModule` vtables + `R_386_RELATIVE` slots valid, and ONLY Fred faults; (c)
-parallelism race — pinning to 1 CPU (`HEROS_PIN_CPU=0`) still crashes deterministically. **UAF CONFIRMED** via
-`emulator/fredfree.c` (`FREDFREE=1`, process-scoped no-op `free`/`delete` in Ed/mmi only): loading it in Fred
-MOVED the crash PAST EvalContextModule (to libbackend+0x31470) — a use-before-init could not be moved by a
-free-noop, so arr[0]'s object is genuinely freed-then-reused. **Next: find the erroneous FREE site** (a
-free-logger ring in Fred + dump-on-crash → the caller that frees the context object; then decide emulator
-event-ordering vs genuine Fred double-free/temp-lifetime). NOT yet a bar draw; Fred still dies before
-activation. See [[project-gate2-fred-eval-context-uaf]], [[project-gate2-prom-crash-fixed-uid-perms]].
-Diagnostics (default OFF, keep): `CXATHROW=1` (throw tracer), `HEROSCALL_REGLOG=1` (region-op log),
-`HEROS_PIN_CPU=N` (1-CPU serialize test), `FREDFREE=1` (Fred-scoped no-op-free UAF probe); the crash handler's
-reg+FThread-walk dump is always-on under `HEROSCALL_BTRACE=1`.
-
-**★★★★★★★★ GATE 1 CROSSED (commit 353856c).** On the real-driver bar3 path Fred blocked forever on its
-`CfgWriteNew(0x170461)` — no `CfgWriteDone`. Root-caused un-fakeably via `emulator/cfg461probe.c` (LD_PRELOAD
-tracer over libConfigSystem.so): `CfgServer::OnWriteNew`→`CheckNotification` EARLY-OUTs (defers, no reply)
-while `this+232`!=0 = the SyncMap (`std::map<astring,Access>@this+212`) node-count of subscribers awaiting a
-`CfgNotifyDone`. Stuck at 1 with subscriber **`.EditThreadNotify`** (ConfigServer's OWN internal EditThread,
-queue "EditThreadNotify"=0x302). **Emulator bug:** every message ConfigServer sent to `.EditThreadNotify`
-went to the "" BLACK HOLE (0x30b) — `q_basename` strips the LEADING dot →`""`→`q_find_slot("")` matches the
-empty-named queue (id!=0) so all `!id` guards skipped. FIX = **`HEROS_QIDENT_DOTLEAD` (default ON)**: `q_ident`
-resolves a leading-dot target `.X` → the real queue `X` (disjoint from qident_notify's compound case + the
-`""` CFG_REPLY_ROUTE path). VERIFIED un-fakeable: EditThread READS 0x302 → `OnNotify@0x2719d0` sends
-CfgNotifyDone → **OnNotifyDone before=1→after=0 (SyncMap DRAINED)** → OnWriteNew(notif=0) → CheckNotification→0
-→ **WriteFinish→0**. Fred then drives the FULL real softkey conversation: SkMgrLogin(0x028a0120)→resp(0x028a0140)
-→SetMenu(0x028a0981)→real .bmx loads(0x028a0421)→MID_MAIN+24×per-key. NO injects. See
-[[project-config-gate-0x170461-editthread-syncmap]].
-**GATE 2 (the bar DRAW) — live.** Screen topology mapped (winmgr GetScreens + tnc640layout1280.xml): 3 screens
-**Nc/Machine(desktopId=0, ACTIVE — prom's boot splash, "PLC not ready→startup picture visible"), Ed/Edit(desktopId=1
-= FRED's), OEM(2)**. Bar draws when skmgr gets `SkMgrActivate(0x028a0200)` (`SkMgrGMsgController::OnActivation@0x5a5a0`
-sets state=3→GData::Notify→`SkMgrFrame::OnActivation@0x42170` draws), SENT by Fred's `SkMgrCtrlInterfaceImpl::Activate`
-(libSkMgrCtrl 0xc5d0) on view-activation. Drove a real WM screen-foreground to Edit(1) via `INJECT_WMGR_ACTIVATE`+
-`WMACT_SCREEN=1` (byte-exact `WmSelectForegroundMsg` = the genuine screen-switch, NOT INJECT_SK_ACTIVATE): winmgr
-foregrounded Edit (openbox "desktop 1" popup), **Fred RECEIVED the SCREENCHANGED(0x3067)** (never did before) and
-reacted (19× 0x3038 GetScreens) — but did NOT activate its view / send SkMgrActivate. So a raw SCREENCHANGED is
-necessary-but-NOT-sufficient. **RE'd the FULL chain (2026-07-12):** the bar draws on Fred's real
-`SkMgrActivate(0x028a0200)`, sent only after `FControl` activation-state (member85) reaches 3, set by a
-**`PromActivateNotifyMsg(0x404703E0)`**. On a real boot prom sends it; promview.elf CRASHES at init
-(`terminate: PciHardware::Exception`, libhwaccess.so; a_appstart 1544) before its message loop, so it never does.
-**★★★★★★★ PATH B — prom-less activation — CROSSED the prom-crash blocker (2026-07-12).** Route around dead prom
-via Fred's OWN standalone code (the genuine `FControl::ActivateMyApp@0x89450` self-synth branch, member136==-1):
-DELIVER the byte-exact default `PromActivateNotifyMsg` — 12-byte wire `[0x404703E0][screen=0][state=0]` from the
-genuine libGMessageGui serializer (scratchpad/build_promwire.c) — to Fred's OWN FControl queue **ProgEditQueue(id
-332)** (the queue Fred advertised to prom in its QProMRequest registration: payload "Ed/mmi.ProgEditQueue").
-`FControl::DispatchMessage@0x89b10` routes it → `OnProMActivateNotify@0x891a0` → **member85=3** + RequestClientFocus
-(member136 only gates a harmless ack to dead prom). Knob **`HEROSCALL_INJECT_PROM_ACTIVATE=1`** (heros_rtos.c,
-default off) + WMACT editor-foreground. **VERIFIED un-fakeably (hst trace):** wire delivered (`QS [332]ProgEditQueue
-size=12 tag=404703e0 ->t10e`) → Fred read editor softkey-menu config → **Fred sent its OWN real
-`SkMgrActivate(0x028a0200)` to skmgr** (`QS [31a]Q_SkMgr tag=028a0200 sndr=t10e`) → skmgr `SkMgrFrame::OnActivation
-@0x42170` queried the HSoftKeyArea geometry (0x3003/0x300c) + **loaded the REAL .bmx softkey bitmaps** (end.bmx,
-copy_paste.bmx). NO fake SkMgrActivate. See [[project-gate2-pathb-promactivate-wire]].
-**★ LAST-MILE BLOCKER — the bar does NOT yet draw pixels; provable + un-fakeably measured (2026-07-12).**
-[SUPERSEDED 2026-07-15: this paragraph's "ROOT CAUSE = the SAME prom crash" is now CROSSED by the real 0666
-fix at the top of this section — prom stays alive with NO inject. The PATH-B inject knobs below are a scouting
-fallback, not the path. The current blocker is Fred's `FThread::EvalContextInQueue` SIGSEGV, downstream of the
-now-live prom.] [CORRECTS an earlier overstatement: the map gate is NOT crossed. The RE-MAP only RESIZED a child
-window; it did not MAP the area.] After the real PATH-B activation the editor softkey area `ScreenEDIT_HorizontalManager`
-(0x800004) stays **IsUnMapped** and its DefaultView (0x800006) **IsUnviewable** — 40/40 `xwininfo` samples across a
-full REMAP-HOLD run, `_NET_CURRENT_DESKTOP`=0 throughout (scratchpad/bardiag.sh). The RE-MAP
-(`HEROSCALL_PROM_ACT_REMAP`, re-post `WmSelectForegroundMsg(editor)`) only RESIZES the DefaultView geometry
-(1x1→1280x88 via `WmWindowDesc::Resync@0x36c00`→`OnWindowUpdate`, the handle-EXISTS geometry-update branch); it does
-NOT map. `WmScreen::Map@0x2e590`→`Resync` only CREATES+maps (`ReportMapped`) a desc when handle==null AND the
-visible flag (desc+20) is set — and that flag is set by a client SHOW that **skmgr never issues**: after activation
-skmgr QUERIES the softkey-area geometry (0x3003/0x300c) then SPINS on the screen-state poll **0x3038 (186×)** waiting
-for its screen (Edit) to become the genuine foreground. It never does — the boot Machine screen ("PLC not ready"
-splash) keeps winning (curDesk stays 0; the WMACT `WmSelectForegroundMsg` foregrounds Edit in winmgr only
-transiently, openbox's current desktop doesn't follow). **ROOT CAUSE = the SAME prom crash**: promview.elf
-(PciHardware::Exception at init) never runs its loop, so nothing ARBITRATES the persistent screen-foreground that
-would let skmgr's poll proceed to the show. PATH B routed the ACTIVATION around prom; the persistent FOREGROUND
-arbitration is a SECOND prom responsibility not yet routed around. **Faithful next step** (NOT a synthesized show —
-that's a fake): make Edit the persistent foreground so skmgr's OWN 0x3038 poll proceeds to its OWN show → visible
-flag set → Resync maps the area. Needs either the promview PciHardware crash resolved OR a persistent genuine
-`WmSelectForegroundMsg` that wins the arbitration, VERIFIED by skmgr advancing past its 0x3038 poll to a
-window-show. (Dropping prom — bar4 — was a REGRESSION: Fred stalls at its QProMRequest registration when prom's
-queues don't exist, so bar3 with the crashed-but-present prom is required.) See
-[[project-gate2-pathb-promactivate-wire]]. Diagnostic repro (map-state, no pixel): `HEROSCALL_INJECT_PROM_ACTIVATE=1
-HEROSCALL_PROM_ACT_REMAP_HOLD=250 HEROSCALL_INJECT_WMGR_ACTIVATE=1 HEROSCALL_WMACT_SELECT=1 HEROSCALL_WMACT_SCREEN=1
-HEROSCALL_WMACT_ONCE=1 HEROSCALL_WMACT_DELAY=150 HEROSCALL_PROM_ACTIVATE_DELAY=15 HEROSCALL_PROM_ACT_REMAP_DELAY=20
-APPSTART_BATCH_NAME=TNC640heros_bar3.txt APPSTART_TIMEOUT=450 bash emulator/run_appstart_fex.sh` + scratchpad/bardiag.sh
-→ area IsUnMapped, dv IsUnviewable (un-fakeable).
 
 ## Key run scripts (`emulator/`)
 - `run_3proc_skmgr_guppy.sh` — the main softkey-bar constellation harness
