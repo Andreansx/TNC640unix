@@ -114,8 +114,17 @@ static const char* mshex(const void*p,uint32_t n){
                             * ConfigServer registers a ~1000-entry HwsM<task>N<ctr> mailslot pool
                             * at startup; 96 overflowed → "table full" → a retry spin (1.4GB log). */
 #define MAXREG  256
-#define QSLOTS  8          /* messages buffered per queue                        */
-#define QMSGCAP 32768      /* max bytes per message. THE REAL KERNEL CAPS Q_send AT 0x8000 = 32768, so
+#define QSLOTS  12         /* messages buffered per queue. RESTORED from the temporary 8:
+                            * at 8, bar27 reported real losses within one run —
+                            *   *** queue "QIpoKonfig"/"QEvtServer"/"DncCntxt3"/"ETHSRV_DBG"
+                            *       FULL at 8 slots — DROPPING the oldest message
+                            * so the depth is paid for by trimming QMSGCAP instead (below). */
+#define QMSGCAP 20480      /* max bytes per message. The REAL KERNEL caps Q_send at 0x8000 = 32768, but
+                            * 12 slots x 3072 queues of that size is 1.2 GB — too much to map in a 32-bit
+                            * guest whose own image sits at 0xaaaf3000. The largest message MEASURED in
+                            * the whole constellation is 18160 bytes (ConfigServer -> Server/SQL), so
+                            * 20480 carries it with headroom at 755 MB total, and the truncation warning
+                            * below will say so immediately if anything bigger ever appears. Before this,
                             * anything smaller silently CORRUPTS traffic: MEASURED (bar25) ConfigServer
                             * answering Server/SQL's config query with
                             *   *** Q_send size 18160 > QMSGCAP 16384 — TRUNCATING (queue "0-0000113CfgM")
