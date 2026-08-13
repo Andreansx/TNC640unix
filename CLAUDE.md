@@ -82,14 +82,17 @@ SharedMemServer — all shipped options): 16 processes spawn, and `Server/{SQL,D
 + `NcS/{startup,CM}` + `Nc/{MON,PlcDaemon}` all reach INITIALIZED.** `Q_SQL` is now a REAL queue
 (`QC "Q_SQL" id=348 owner=t113 flags=1000003 notify=01000000`) instead of an auto-created sink, and
 plc's requests reach the server (`notify=01000000->t113`). Remaining, in priority order:
-* **`Nc/IPO` still dies — now with `free(): invalid pointer`** (glibc abort, SIGABRT) instead of the
-  bar23 SIGSEGV. Memory corruption during its init; needs a free-site probe (the `fmdel.c` /
-  `guardfree.c` pattern) or `MALLOC_CHECK_`/`MALLOC_PERTURB_` on that process.
-* **The SQL server receives but never answers.** t113 sends only 8 messages, all config; nothing ever
-  goes back to a `DB…` mailslot. So plc keeps one live temp mailslot per outstanding request — 1851
-  and climbing, with **zero** `Q_delete`s — which will exhaust `MAXQ` (2048) and is the origin of the
-  `QI "DB…"` treadmill. Find why SqlServer answers nothing (its own `-h` options / a missing database
-  file are the first places to look).
+* **TWO processes fault, and they are different failures** (resolve each dump against its OWN maps —
+  the two dumps interleave in one stderr):
+  `line 4031 → SqlServer.elf sig=6` (glibc **`free(): invalid pointer`** → abort, moments after
+  `RUNUP_COMPLETE`) and `line 21398 → ipo_progstation.elf sig=11`.
+* **That abort is why the SQL server never answers**: it creates `Q_SQL`, reads exactly ONE request
+  and dies, so plc's requests go unanswered. **Prime suspect, now fixed:** `Q_read`'s too-big check
+  was `if (maxsize && full > maxsize)`, so a caller passing `maxsize=0` skipped it and the `memcpy`
+  wrote a whole message into a zero-capacity buffer — a guest heap smash that surfaces later exactly
+  as `free(): invalid pointer`. bar25 tests it (and logs the first `maxsize=0` read if one happens).
+* `Nc/IPO`'s SIGSEGV is a separate item — in bar23 it landed in `GMessage::IsValid`
+  (`libgmsglib.so+0x24020`, `+0x1a`, reading `[reg+0x44]`).
 * `tm_check` (heroscall **0x31**) is unimplemented — the new first-use reporter caught it in ipo.
 
 **★ THE TWO bar23 BLOCKERS (both concrete):**
